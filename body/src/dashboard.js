@@ -29,13 +29,24 @@ function parseBind (s) {
   return { host, port }
 }
 
-const SECRET = /secret|token|password|passwd|api[_-]?key|auth|credential|cookie/i
+// Secret-looking names: anything with secret/token/password/auth/credential/
+// cookie in it, or ending in "key" (ATLAS_LLM_KEY, llmKey, apiKey, key).
+const SECRET = /secret|token|passw|auth|credential|cookie|key$/i
 
-/** Deep copy of plain config data with secret-looking keys masked. */
-function maskSecrets (v, key = '') {
+/** Values of secret-looking environment variables (e.g. ATLAS_LLM_KEY), to mask wherever they appear. */
+function secretValues (env = process.env) {
+  return Object.entries(env).filter(([k, v]) => SECRET.test(k) && typeof v === 'string' && v.length >= 4).map(([, v]) => v)
+}
+
+/**
+ * Deep copy of plain config data with secrets masked: by key name, and any
+ * string that contains the value of a secret-looking environment variable.
+ */
+function maskSecrets (v, key = '', secrets = secretValues()) {
   if (SECRET.test(key) && v !== null && v !== undefined && v !== '' && v !== false) return '***'
-  if (Array.isArray(v)) return v.map(x => maskSecrets(x))
-  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).filter(([, x]) => typeof x !== 'function').map(([k, x]) => [k, maskSecrets(x, k)]))
+  if (typeof v === 'string' && secrets.some(s => v.includes(s))) return '***'
+  if (Array.isArray(v)) return v.map(x => maskSecrets(x, '', secrets))
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).filter(([, x]) => typeof x !== 'function').map(([k, x]) => [k, maskSecrets(x, k, secrets)]))
   return v
 }
 

@@ -52,7 +52,7 @@ async function startBody (t, extraCfg = {}, { spawn = true, vitals = true } = {}
   }
   const bot = fakeLiveBot()
   // backend internals that must never reach the dashboard
-  bot._client = { secretSocketState: 'x' }
+  bot._client.secretSocketState = 'x'
   bot.entities[9] = { id: 9, type: 'mob', name: 'zombie', position: new Vec3(0.5, 64, -4.5), height: 1.95, health: 17, aiTarget: 'Atlas', metadata: [1, 2] }
   bot.world.set(2, 64, -3, 'iron_ore')
   if (!vitals) { bot.health = undefined; bot.food = undefined }

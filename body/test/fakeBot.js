@@ -58,6 +58,8 @@ function fakeLiveBot () {
   bot.quit = () => {}
   bot.end = () => {}
   bot.version = '26.1'
+  bot._client = new EventEmitter() // where protocol packets (tracked_waypoint) arrive
+  bot.players = {}
   return bot
 }
 

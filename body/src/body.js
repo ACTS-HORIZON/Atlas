@@ -37,7 +37,7 @@ class Body {
     this.stats = new BuildStats()
     this.places = new KnownPlaces({ file: cfg.placesFile }).load()
     this.house = new HouseRules(cfg.protectedRegions || [])
-    this.locator = new Locator() // Locator Bar waypoints: not available yet, see src/locator.js
+    this.locator = new Locator() // Locator Bar waypoints, from the tracked_waypoint packet
     this.backoff = 5000
     this.timers = []
     this.link = new Link({
@@ -104,6 +104,7 @@ class Body {
     })
     this.bot = bot
     equipBot(bot) // pathfinder plugin
+    this.locator.attach(bot)
     this.view = new MineflayerView(bot, { sightRadius: this.cfg.sightRadius, locator: this.locator })
     this.motor = new Motor(bot, { house: this.house })
     let joinGraceUntil = Infinity

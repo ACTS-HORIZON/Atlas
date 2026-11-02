@@ -26,7 +26,7 @@ data/      known places file (gitignored)
   - Any other `@Atlas …` becomes a `task_from_chat` event, and their other chat a `player_said` event.
   - Everyone else's chat only appears in `obs.chat`.
 - **House rules:** protected regions (`ATLAS_PROTECTED_REGIONS`, a JSON list of boxes, empty by default). Nothing is dug or placed inside one.
-- **Locator Bar:** not available yet; see [Locator Bar](#locator-bar-not-available-yet).
+- **Locator Bar:** players out of sight but on the bar appear in the obs as `{name, bearing}`, and `goto` can follow them; see [Locator Bar](#locator-bar).
 - **Logs**: every contract message in or out is appended to `logs/link-YYYY-MM-DD.jsonl` as `{"ts", "dir": "in"|"out", "msg"}`.
 - **Verbs** run one at a time (`body/src/runner.js`), and the running one shows as `task` in the obs. `say`, `recall`, `inspect` and `stop` run alongside it. Any other call while a verb runs is `refused` with detail `busy`: it is not queued, and the running verb keeps going. `stop` aborts the running verb, so it returns `interrupted`, and releases every movement control.
 - **Dashboard** at `http://<atlas>:8080/` (see below).
@@ -43,12 +43,13 @@ data/      known places file (gitignored)
 - **Yaw and pitch** are in F3 degrees: yaw 0 is south and 90 is west; positive pitch looks down.
 - **Bearing-only players:** an obs `players` entry is either `{name, pos, dist, looking_at}` (in sight) or `{name, bearing}` (out of sight, on the Locator Bar).
 
-### Locator Bar (not available yet)
+### Locator Bar
 
 CONTRACT.md: players out of sight are reported by bearing only, exactly when the game's Locator Bar would show them.
-- **Protocol:** in 26.1 the server sends the bar in the `tracked_waypoint` play packet (track / untrack / update; keyed by player UUID; carrying a block position, a chunk, or only an azimuth). minecraft-protocol parses it, but **Mineflayer 4.39 has no handler for it**.
-- **What the body does instead:** it reports no bearings. It deliberately does not compute them from entity positions, because that would show players the game hides.
-- **What's ready:** the observation builder, the obs schema and `goto` by bearing all support it, and are tested with a stand-in source. Wiring the real packet changes only `body/src/locator.js`.
+- **Protocol:** in 26.1 the server sends the bar in the `tracked_waypoint` play packet (track / untrack / update; keyed by player UUID; carrying a block position, a chunk, or only an azimuth).
+- **How the body reads it:** Mineflayer 4.39 has no handler for the packet, so `body/src/locator.js` listens for minecraft-protocol's parsed packet directly. It maps the UUID to a tab-list name and turns the position, chunk centre or azimuth into a bearing. Positions never leave the locator.
+- **Who appears:** exactly who the server puts on the bar. A player the game hides (sneaking, invisible, out of range) gets no waypoint, or an untrack, so they don't appear. Nothing is ever computed from entity positions.
+- **Unchecked live:** the azimuth convention for far-away players, where the server sends only an angle. It was derived from how the client uses the angle, not observed on a server. Checklist item 2 below checks it.
 
 ## Verbs
 
@@ -370,7 +371,10 @@ Restart the body after changing either.
    - `@Atlas hello there`: the dashboard Events feed shows `task_from_chat {"from":"ACTS_HORIZON","text":"hello there"}`.
    - Plain `hi` shows `player_said`.
    - A second, non-allowlisted account's chat shows only in the Chat panel, with no event.
-2. **`@Atlas come here`** in view: Atlas walks to you, and Events shows `verb_done {…"by":"chat"}`. Out of view, it says `I can't see you, ACTS_HORIZON`, because the Locator Bar isn't available yet.
+2. **`@Atlas come here`** in view: Atlas walks to you, and Events shows `verb_done {…"by":"chat"}`.
+   - **Out of view but on the bar** (behind a hill, not sneaking): the Players panel shows `ACTS_HORIZON  out of sight  bearing …`, and `come here` follows the bearing. The Task panel shows `following ACTS_HORIZON's bearing (…°)`; it ends `done` once you're in sight.
+   - **Sneaking:** you disappear from the Players panel, and `come here` gives `I can't see you`.
+   - **Check the bearing far away**, where the server sends only an angle. Stand about 300 blocks due east of Atlas (`/tp ACTS_HORIZON ~300 ~ ~`) and make Atlas face north. The Players panel should say `bearing right`. If it says `left`, the azimuth sign is flipped; tell me.
 3. **`@Atlas stop`** during a long `goto`: Atlas halts and replies `stopped goto`, and Events shows `stop_requested`.
 4. **`goto` with digging and pillaring.**
    - `goto <x y z>` to a spot behind a 3-block wall: it tunnels through.

@@ -56,7 +56,7 @@ The nearest known place of `type` in this dimension. `near` defaults to the bot'
   - `partial`: `gave up <n> blocks short of <what> (stuck|took too long|no further path)`, `data: {pos, remaining}`. Following a bearing: `lost <name>'s bearing after <n> blocks`, `data: {pos: null, remaining: null}`
   - `failed`: `no path to <what>`
   - `refused`: `fair play: <target> has not been observed …`
-- **Locator Bar availability:** the bar is not available with the current backend (Mineflayer 4.39 does not expose its waypoint packet). An out-of-sight player target is therefore `refused` today.
+- **Who is on the Locator Bar:** whoever the server sends a waypoint for (the 26.1 `tracked_waypoint` packet); the game decides, and the body adds no rules of its own. These rules were not checked against minecraft.wiki: the site was unreachable from the build environment.
 
 ### explore {direction, distance}
 - **`direction`:** north, south, east, west, north-east, north-west, south-east, south-west, or forward (the way the bot faces).
