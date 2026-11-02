@@ -50,6 +50,10 @@ def format_message(m: dict) -> str:
     if t == "obs":
         return format_obs(m)
     if t == "result":
+        data = m.get("data")
+        if data and {"pos", "dist", "age"} <= data.keys():  # recall
+            return (f"<< result {m.get('id')}: {m.get('status')} — {data.get('type')} at {_vec(data['pos'])},"
+                    f" {data['dist']}m, seen {data['age']} ticks ago")
         return f"<< result {m.get('id')}: {m.get('status')} — {m.get('detail')}"
     if t == "event":
         return f"<< event {m.get('kind')}: {m.get('detail')}"

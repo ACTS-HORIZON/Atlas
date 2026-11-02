@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/contract/recall.schema.json",
+  "title": "recall verb, CONTRACT.md v0.1 (Known places)",
+  "description": "args: the call's args. data: the result's data when status is done. With no known entry of that type the result is failed with detail \"unknown\" and no data.",
+  "$defs": {
+    "args": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {"type": "string", "minLength": 1, "description": "block type, e.g. iron_ore, chest, nether_portal"},
+        "near": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "default: the bot's position"}
+      }
+    },
+    "data": {
+      "type": "object",
+      "required": ["type", "pos", "dist", "age"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {"type": "string"},
+        "pos": {"type": "array", "items": {"type": "integer"}, "minItems": 3, "maxItems": 3},
+        "dist": {"type": "number", "minimum": 0, "description": "from near to the block centre"},
+        "age": {"type": "integer", "minimum": 0, "description": "game ticks since last seen"}
+      }
+    }
+  }
+}

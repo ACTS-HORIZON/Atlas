@@ -4,7 +4,8 @@ const mineflayer = require('mineflayer')
 const { Link, V } = require('./link')
 const { JsonlLog } = require('./jsonl')
 const { MineflayerView } = require('./view')
-const { buildObs } = require('./fairplay/observe')
+const { buildObs, recheckKnown } = require('./fairplay/observe')
+const { KnownPlaces } = require('./places')
 const { MotionTracker, SoundMemory } = require('./fairplay/perception')
 const { runVerb } = require('./verbs')
 const { BuildStats } = require('./stats')
@@ -21,6 +22,7 @@ class Body {
     this.motion = new MotionTracker()
     this.sounds = new SoundMemory()
     this.stats = new BuildStats()
+    this.places = new KnownPlaces({ file: cfg.placesFile }).load()
     this.backoff = 5000
     this.timers = []
     this.link = new Link({
@@ -39,6 +41,7 @@ class Body {
     await this.link.ready
     console.log(`[link] listening on ws://${this.cfg.link.host}:${this.cfg.link.port}`)
     console.log(`[log] ${this.cfg.logDir}`)
+    console.log(`[places] ${this.places.size} known places from ${this.cfg.placesFile}`)
     this.connect()
     this.timers.push(setInterval(() => {
       if (this.spawned && this.link.count) { const o = this.obs(); if (o) this.link.broadcast(o) }
@@ -145,6 +148,12 @@ class Body {
     try {
       const view = this.view.snapshot({ chat: this.chat, bossBar: this.bossBar(), task: null })
       const { obs, stats } = buildObs(view, { motion: this.motion, sounds: this.sounds })
+      // Known places: record what passed the fair-play filter, and drop
+      // remembered blocks the bot can now see are gone.
+      const t0 = performance.now()
+      this.places.applyRecheck(obs.self.dim, obs.t, recheckKnown(view, this.places.inDim(obs.self.dim)))
+      this.places.recordObs(obs)
+      stats.ms += performance.now() - t0
       this.stats.add(stats)
       return obs
     } catch (err) {
@@ -162,7 +171,12 @@ class Body {
     const act = {
       connected: () => this.spawned && !!bot,
       chat: text => bot.chat(text),
-      halt: () => bot.clearControlStates()
+      halt: () => bot.clearControlStates(),
+      here: () => {
+        const p = bot.entity.position
+        return { pos: [p.x, p.y, p.z], dim: bot.game.dimension, t: Number(bot.time.age) || 0 }
+      },
+      places: this.places
     }
     const r = runVerb(act, call.verb, call.args)
     if (r.status === 'done' && call.verb === 'say') await new Promise(resolve => setTimeout(resolve, 50))

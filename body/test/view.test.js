@@ -86,3 +86,15 @@ test('MineflayerView reads chunk sections correctly and filters like the fake wo
   assert.equal(obs.world.time, 'dusk')
   assert.equal(check('obs', obs), null)
 })
+
+test('sight radius: config value, clamped to the server and client render distance', () => {
+  const bot = fakeBot()
+  const at = (cfg, server, client) => {
+    bot.game.serverViewDistance = server; bot.settings.viewDistance = client
+    return new MineflayerView(bot, { sightRadius: cfg }).sightRadius()
+  }
+  assert.equal(at(64, 10, 5), 64, 'config is the limit')
+  assert.equal(at(200, 10, 5), 80, 'bot render distance 5 chunks')
+  assert.equal(at(200, 3, 12), 48, 'server view-distance 3 chunks')
+  assert.equal(at(32, 3, 12), 32)
+})

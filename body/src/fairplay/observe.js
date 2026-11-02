@@ -164,3 +164,31 @@ function buildObs (view, state, options = {}) {
 }
 
 module.exports = { buildObs, DEFAULTS, CONTRACT_VERSION }
+
+/**
+ * Re-check remembered blocks against what the bot can see now (fair play:
+ * same line-of-sight rule as blocks_seen). For each entry {type, pos} within
+ * the sight radius whose voxel is visible: same type -> `seen`, anything
+ * else -> `gone`. Entries out of sight are left alone (the bot can't know).
+ * Nearest first, at most `max` entries per call.
+ */
+function recheckKnown (view, entries, { max = 256 } = {}) {
+  const eye = view.self.eye
+  const R = view.sightRadius
+  const near = []
+  for (const e of entries) {
+    const d = Math.hypot(e.pos[0] + 0.5 - eye[0], e.pos[1] + 0.5 - eye[1], e.pos[2] + 0.5 - eye[2])
+    if (d <= R) near.push([d, e])
+  }
+  near.sort((a, b) => a[0] - b[0])
+  const seen = []; const gone = []
+  for (const [, e] of near.slice(0, max)) {
+    const cls = view.classAt(e.pos[0], e.pos[1], e.pos[2])
+    if (cls === null) continue
+    if (!blockVisible(view, eye, e.pos[0], e.pos[1], e.pos[2], cls, null)) continue
+    ;(cls.name === e.type ? seen : gone).push(e)
+  }
+  return { seen, gone }
+}
+
+module.exports.recheckKnown = recheckKnown

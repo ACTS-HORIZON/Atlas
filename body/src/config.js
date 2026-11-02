@@ -15,6 +15,12 @@ const int = (k, d) => {
   return v
 }
 
+const positive = (k, d) => {
+  const v = int(k, d)
+  if (v < 1) throw new Error(`${k} must be at least 1`)
+  return v
+}
+
 module.exports = {
   mc: {
     host: env('ATLAS_MC_HOST', 'localhost'),
@@ -30,6 +36,9 @@ module.exports = {
   obsIntervalMs: int('ATLAS_OBS_INTERVAL_MS', 2000),
   // Upper bound on sight, in blocks. The effective radius is also limited by
   // the render distance (client and server view distance).
-  sightRadius: int('ATLAS_SIGHT_RADIUS', 64),
+  // (sight_radius in CONTRACT.md, "Sight")
+  sightRadius: positive('ATLAS_SIGHT_RADIUS', 64),
+  // Known places file (CONTRACT.md, "Known places"), relative to the repo root or absolute.
+  placesFile: path.resolve(ROOT, env('ATLAS_PLACES_FILE', 'data/known-places.json')),
   envFile: fs.existsSync(envFile) ? envFile : null
 }

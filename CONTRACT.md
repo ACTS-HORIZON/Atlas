@@ -40,7 +40,7 @@ The bot's name is configuration (default `Atlas`); `@<botname>` below means what
 
 Two views of the same filtered world, plus an on-request region view.
 
-**Full view** (mind, on events or on request), example:
+**Full view** (mind, on events or on request), example. On request means the mind sends `{"type": "observe", "v": "0.1"}` and the body answers with an `obs`.
 
 ```json
 {"type": "obs", "v": "0.1", "t": 18342,
@@ -63,7 +63,11 @@ Two views of the same filtered world, plus an on-request region view.
           "progress": "3/8", "state": "running"}}
 ```
 
-`blocks_seen` lists notable block types only (ores, logs, water, lava, chests, crafting tables, furnaces, beds, portals, spawners…), not every stone block.
+`blocks_seen` lists notable block types only (ores, logs, water, lava, chests, crafting tables, furnaces, beds, portals, spawners, obsidian, enchanting tables, anvils, brewing stands, shulker boxes, vaults…), not every stone block. Nearest first, at most 48 entries and at most 12 of any one type. A pool is listed as water at its surface only.
+
+**Sight:** `sight_radius` is config, default 64 blocks, and is never more than the server's or the bot's render distance. Glass, ice and water are transparent; leaves and lava block sight.
+
+**Known places** (body-side): the body keeps a log of every notable block (ores, chests, portals, beds, crafting stations…) that has appeared in `blocks_seen`, with position, dimension and last-seen time (game ticks), persisted to disk (JSON file, path from config) and reloaded on start. Only blocks that passed the fair-play filter enter it. An entry is dropped when the bot can see its position again and the block is no longer there. The `recall` verb reads it: `{"type": "call", "id": "c7", "verb": "recall", "args": {"type": "iron_ore", "near": [100, 64, 130]}}` → `{"type": "result", "id": "c7", "status": "done", "detail": "iron_ore at [110, 58, 129]", "data": {"type": "iron_ore", "pos": [110, 58, 129], "dist": 11.8, "age": 3600}, "obs": {...}}`. `near` defaults to the bot's position, `age` is in game ticks since last seen, and only the current dimension is searched. With no entry of that type: `failed`, detail `unknown`.
 
 **Region view** (`inspect`, on request): every block in a box, but only the faces the bot can see from where it stands — line of sight still applies. This is how it reads a design to copy or checks a dig-out.
 
@@ -73,7 +77,7 @@ Two views of the same filtered world, plus an on-request region view.
 
 Call: `{"type": "call", "id": "c41", "verb": "mine", "args": {"block": "iron_ore", "count": 8, "radius": 32}}`
 
-Result: `{"type": "result", "id": "c41", "status": "partial", "detail": "mined 3 of 8, ran out of seen ore", "obs": {...}}`
+Result: `{"type": "result", "id": "c41", "status": "partial", "detail": "mined 3 of 8, ran out of seen ore", "obs": {...}}`. Verbs that return information (e.g. `recall`) add it as `data`.
 
 Statuses: `done` · `partial` · `failed` (with reason) · `interrupted` (by reflex or `stop`) · `refused` (house rules or fair play).
 
@@ -91,13 +95,14 @@ Statuses: `done` · `partial` · `failed` (with reason) · `interrupted` (by ref
 | `place` | `block`, `pos` |       |
 | `build` | `blocks` (list of block+pos) or `copy` (`from` box, `to` pos) | places a design; `copy` uses the region view |
 | `inspect` | `box` | region view, see Observation |
+| `recall` | `type`, `near` (optional) | nearest known place of that type, see Known places |
 | `equip` | `item`, `slot` |       |
 | `eat` | `item` (optional) |       |
 | `fight` | `target`, `until` | melee; reflexes take over in close combat |
 | `flee` | `from` |       |
 | `give` | `item`, `count`, `player` | walk to the player, toss at their feet |
 | `deposit` / `withdraw` | `item`, `count`, `chest` | withdraw only from allowlisted chests |
-| `say` | `text` | chat  |
+| `say` | `text` | chat; text starting with `/` is refused |
 | `stop` |      | cancel current verb |
 
 **Later:** `shelter`, `pillar`, `bridge`, `sleep`, `use` (doors, levers, portal lighting), `throw` (eyes of ender), `shoot` (bow), `follow`, `trade`, farming (`plant`, `harvest`). Note: the dragon run needs `use`, `throw`, `shoot`, `sleep`, `bridge` and `pillar`, so core v1 alone cannot beat the game.

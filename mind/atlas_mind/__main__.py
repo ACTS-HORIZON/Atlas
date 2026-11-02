@@ -5,6 +5,7 @@
 Prints every message from the body. Type:
     say <text>    chat as the bot
     stop          cancel the current verb
+    recall <type> [x y z]   nearest known place of that type
     obs           ask for a full view now
     quit
 """
@@ -23,7 +24,7 @@ from websockets.exceptions import ConnectionClosed
 from . import CONTRACT_VERSION
 from .pretty import format_message
 
-HELP = "commands: say <text> | stop | obs | quit"
+HELP = "commands: say <text> | stop | recall <type> [x y z] | obs | quit"
 
 
 def parse_command(line: str, next_id) -> dict | None | str:
@@ -38,6 +39,17 @@ def parse_command(line: str, next_id) -> dict | None | str:
         return {"type": "call", "v": CONTRACT_VERSION, "id": next_id(), "verb": "say", "args": {"text": rest.strip()}}
     if cmd == "stop":
         return {"type": "call", "v": CONTRACT_VERSION, "id": next_id(), "verb": "stop", "args": {}}
+    if cmd == "recall":
+        parts = rest.split()
+        if len(parts) not in (1, 4):
+            return "usage: recall <type> [x y z]"
+        args: dict = {"type": parts[0]}
+        if len(parts) == 4:
+            try:
+                args["near"] = [float(v) for v in parts[1:]]
+            except ValueError:
+                return "usage: recall <type> [x y z]"
+        return {"type": "call", "v": CONTRACT_VERSION, "id": next_id(), "verb": "recall", "args": args}
     if cmd == "obs":
         return {"type": "observe", "v": CONTRACT_VERSION}
     if cmd in ("quit", "exit"):

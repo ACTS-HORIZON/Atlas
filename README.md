@@ -8,23 +8,27 @@ mind/      Python: link client (this session: a terminal client, no LLM yet)
 contract/  JSON Schema for the link messages (obs, call, result, event)
 deploy/    example systemd unit
 logs/      contract-message logs, JSONL (gitignored)
+data/      known places file (gitignored)
 ```
 
 ## What works so far
 
 - **Body** joins as `Atlas` (offline auth) and reconnects if the server goes away. It never gets op, never runs commands and never changes its gamemode; it plays in whatever gamemode you set.
-- **Link**: a WebSocket on `127.0.0.1:8765`. The body sends a full-view `obs` when the mind connects, when it is asked, and every 2 s. It accepts `call` for `say` and `stop`, answers each with a `result`, and emits `event`s for `died`, `respawned`, `player_joined` and `player_left`.
+- **Link**: a WebSocket on `127.0.0.1:8765`. The body sends a full-view `obs` when the mind connects, when it is asked, and every 2 s. It accepts `call` for `say`, `stop` and `recall`, answers each with a `result`, and emits `event`s for `died`, `respawned`, `player_joined` and `player_left`.
 - **Fair-play observation** (`body/src/fairplay/`):
-  - `blocks_seen`: notable types only. They must be within the sight radius and visible along a raycast from the eyes, where the first solid block wins. Nearest first, at most 48 blocks and at most 12 of any one type.
+  - `blocks_seen`: notable types only. They must be within the sight radius and visible along a raycast from the eyes, where the first solid block wins. Nearest first, at most 48 blocks and at most 12 of any one type. A pool is listed as water at its surface only.
+  - Sight: glass, ice and water are transparent; leaves and lava block sight. The radius is `sight_radius` (`ATLAS_SIGHT_RADIUS`, default 64), never more than the server's or the bot's render distance.
   - `entities` and `players`: only those in line of sight. No hidden state. A player's `looking_at` is filled only when the bot can see that block too.
   - `sounds`: type, bearing and near/mid/far only.
+- **Known places** (`body/src/places.js`): every notable block that has appeared in `blocks_seen` is remembered with position, dimension and last-seen game tick, saved to `data/known-places.json` (`ATLAS_PLACES_FILE`) at most every 10 s and on shutdown, and reloaded on start. Nothing else can enter it. An entry is dropped when Atlas can see the spot again and the block is gone. `recall {type, near?}` returns the nearest one as `data: {type, pos, dist, age}`, or `failed` with detail `unknown`. Use a separate file per world.
 - **Logs**: every contract message in or out is appended to `logs/link-YYYY-MM-DD.jsonl` as `{"ts", "dir": "in"|"out", "msg"}`.
-- **Mind**: `python -m atlas_mind` prints every message and takes `say <text>`, `stop`, `obs` and `quit`.
+- **Mind**: `python -m atlas_mind` prints every message and takes `say <text>`, `stop`, `recall <type> [x y z]`, `obs` and `quit`.
 
 ### Contract notes
 
-- **Requesting an obs.** CONTRACT.md says the full view is sent "on request" but names no request message. The body accepts `{"type": "observe", "v": "0.1"}` (see `contract/observe.schema.json`, marked *proposed*). It is not in CONTRACT.md until you decide.
-- **`say` and commands.** Text starting with `/` gets `refused`, because the bot never runs commands.
+- **Requesting an obs**: the mind sends `{"type": "observe", "v": "0.1"}`.
+- **`say`**: text starting with `/` gets `refused`, because the bot never runs commands.
+- **`result.data`**: verbs that return information put it in `data` (only `recall` so far).
 - **`obs: null`.** A `result` or `event` sent while the bot is not in the game carries `obs: null`.
 - **Yaw and pitch** are in F3 degrees: yaw 0 is south and 90 is west; positive pitch looks down.
 
@@ -99,7 +103,7 @@ You should see `[link] listening…`, `[bot] spawned in overworld at … gamemod
 su - atlas -c 'cd /opt/atlas/mind && .venv/bin/python -m atlas_mind'
 ```
 
-Type `say hello`, `stop`, `obs`, or `quit`. Add `--json` to see raw messages instead of the summary.
+Type `say hello`, `stop`, `recall iron_ore`, `obs`, or `quit`. Add `--json` to see raw messages instead of the summary.
 
 **Logs:**
 
@@ -141,8 +145,9 @@ If you run the body in tmux instead, restart it there.
 2. **Line of sight.** Join from your client and stand in front of Atlas: the mind shows `player <you> at (...)`. Step behind a wall or hill: you disappear from `players` within 2 s. Look at a block that Atlas can also see: `looking at (x, y, z)` matches the block you're aiming at (F3 → *Targeted Block*). Look at a block that is hidden from Atlas: `looking at -`.
 3. **No x-ray.** From your own client (you can be op; Atlas is not), bury an ore a few blocks under Atlas, for example with `/execute at Atlas run setblock ~ ~-3 ~ diamond_ore`, or `/tp Atlas` above a known vein. The ore never shows in `blocks seen`. Dig down to it from Atlas's side so a face is exposed toward Atlas, and it appears within 2 s.
 4. **`say hello`** shows up in game chat, and the mind prints `result c1: done`.
-5. **Logs fill:** `logs/link-*.jsonl` grows by one obs every 2 s while the mind is connected.
-6. **Build time:** read `[obs] build time over last N: mean … p95 …` in the body output or `journalctl`.
+5. **Known places:** let Atlas see an ore or chest, then `recall iron_ore` (or `chest`) returns its position. Restart the body; `[places] N known places` shows they were reloaded, and `recall` still finds them. An ore buried out of Atlas's sight never comes back from `recall`.
+6. **Logs fill:** `logs/link-*.jsonl` grows by one obs every 2 s while the mind is connected.
+7. **Build time:** read `[obs] build time over last N: mean … p95 …` in the body output or `journalctl`.
 
 ## Development
 
@@ -156,7 +161,7 @@ The fair-play, adapter and link tests run without a Minecraft server.
 cd body && npm run bench
 ```
 
-The benchmark measures obs build time on synthetic 26.1 chunks.
+The benchmark measures obs build time (plus known-places upkeep) on synthetic 26.1 chunks.
 
 ```bash
 cd mind && .venv/bin/python -m unittest discover -s tests

@@ -1,7 +1,9 @@
 'use strict'
-// Verbs implemented this session: say, stop. Everything else answers failed.
+// Verbs implemented so far: say, stop, recall. Everything else answers failed.
 // `act` is the body's (small) action API, so verbs never touch the backend:
-//   act.connected() -> bool, act.chat(text), act.halt()
+//   act.connected() -> bool, act.chat(text), act.halt(),
+//   act.here() -> {pos, dim, t}, act.places (KnownPlaces)
+const { check } = require('./schema')
 
 const MAX_SAY = 256
 
@@ -22,9 +24,19 @@ function stop (act) {
   return { status: 'done', detail: 'stopped (nothing was running)' }
 }
 
-const VERBS = { say, stop }
+function recall (act, args) {
+  const err = check('recallArgs', args)
+  if (err) return { status: 'failed', detail: `recall: ${err}` }
+  const here = act.here()
+  const near = args.near || here.pos
+  const hit = act.places.recall(args.type, near, here.dim, here.t)
+  if (!hit) return { status: 'failed', detail: 'unknown' }
+  return { status: 'done', detail: `${hit.type} at [${hit.pos.join(', ')}]`, data: hit }
+}
 
-/** @returns {{status: string, detail: string}} */
+const VERBS = { say, stop, recall }
+
+/** @returns {{status: string, detail: string, data?: object}} */
 function runVerb (act, verb, args = {}) {
   if (!Object.hasOwn(VERBS, verb)) return { status: 'failed', detail: `verb not implemented yet: ${verb}` }
   if (!act.connected()) return { status: 'failed', detail: 'not connected to the server' }

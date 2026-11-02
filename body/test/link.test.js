@@ -14,7 +14,8 @@ const { check } = require('../src/schema')
 
 function fakeAct () {
   const said = []
-  return { said, halted: 0, connected: () => true, chat: t => said.push(t), halt () { this.halted++ } }
+  const places = { recall: (type) => type === 'iron_ore' ? { type, pos: [1, 2, 3], dist: 4, age: 5 } : null }
+  return { said, halted: 0, places, here: () => ({ pos: [0, 0, 0], dim: 'overworld', t: 0 }), connected: () => true, chat: t => said.push(t), halt () { this.halted++ } }
 }
 
 test('say and stop', () => {
@@ -66,6 +67,11 @@ test('link: obs on connect and on request, call -> result, everything logged as 
   assert.deepEqual([r.id, r.status], ['c1', 'done'])
   assert.deepEqual(act.said, ['hi'])
 
+  ws.send(JSON.stringify({ type: 'call', v: '0.1', id: 'c9', verb: 'recall', args: { type: 'iron_ore' } }))
+  const rc = await next()
+  assert.equal(check('result', rc), null)
+  assert.deepEqual([rc.status, rc.data], ['done', { type: 'iron_ore', pos: [1, 2, 3], dist: 4, age: 5 }])
+
   ws.send(JSON.stringify({ type: 'call', v: '0.1', id: 'c2', verb: 'stop' }))
   assert.equal((await next()).status, 'done')
 
@@ -82,6 +88,6 @@ test('link: obs on connect and on request, call -> result, everything logged as 
     assert.ok(['obs', 'observe', 'call', 'result', 'event'].includes(l.msg.type))
   }
   assert.deepEqual(lines.map(l => `${l.dir}:${l.msg.type}`), [
-    'out:obs', 'in:observe', 'out:obs', 'in:call', 'out:result', 'in:call', 'out:result', 'out:result'
+    'out:obs', 'in:observe', 'out:obs', 'in:call', 'out:result', 'in:call', 'out:result', 'in:call', 'out:result', 'out:result'
   ])
 })

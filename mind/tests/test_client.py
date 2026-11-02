@@ -6,12 +6,15 @@ from atlas_mind.pretty import format_obs
 
 class ParseTest(unittest.TestCase):
     def test_commands(self):
-        ids = iter(["c1", "c2"])
+        ids = iter(["c1", "c2", "c3", "c4"])
         nid = lambda: next(ids)  # noqa: E731
         self.assertEqual(parse_command("say hello there", nid),
                          {"type": "call", "v": "0.1", "id": "c1", "verb": "say", "args": {"text": "hello there"}})
         self.assertEqual(parse_command("stop", nid)["verb"], "stop")
         self.assertEqual(parse_command("obs", nid), {"type": "observe", "v": "0.1"})
+        self.assertEqual(parse_command("recall iron_ore", nid)["args"], {"type": "iron_ore"})
+        self.assertEqual(parse_command("recall chest 1 64 -3", nid)["args"], {"type": "chest", "near": [1.0, 64.0, -3.0]})
+        self.assertTrue(parse_command("recall chest 1 2", nid).startswith("usage"))
         self.assertEqual(parse_command("quit", nid), "quit")
         self.assertIsNone(parse_command("   ", nid))
         self.assertTrue(parse_command("dance", nid).startswith("commands"))
@@ -19,6 +22,12 @@ class ParseTest(unittest.TestCase):
 
 
 class PrettyTest(unittest.TestCase):
+    def test_recall_result(self):
+        from atlas_mind.pretty import format_message
+        m = {"type": "result", "v": "0.1", "id": "c3", "status": "done", "detail": "iron_ore at [0, 10, 6]",
+             "data": {"type": "iron_ore", "pos": [0, 10, 6], "dist": 6, "age": 200}, "obs": None}
+        self.assertEqual(format_message(m), "<< result c3: done — iron_ore at (0, 10, 6), 6m, seen 200 ticks ago")
+
     def test_contract_example(self):
         o = {"type": "obs", "v": "0.1", "t": 18342,
              "self": {"pos": [104, 63, 131], "dim": "overworld", "yaw": 90, "pitch": 10, "health": 14, "food": 17,

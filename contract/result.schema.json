@@ -3,14 +3,50 @@
   "$id": "https://atlas.local/contract/result.schema.json",
   "title": "result, body -> mind, CONTRACT.md v0.1",
   "type": "object",
-  "required": ["type", "v", "id", "status", "detail", "obs"],
+  "required": [
+    "type",
+    "v",
+    "id",
+    "status",
+    "detail",
+    "obs"
+  ],
   "additionalProperties": false,
   "properties": {
-    "type": {"const": "result"},
-    "v": {"const": "0.1"},
-    "id": {"type": "string"},
-    "status": {"enum": ["done", "partial", "failed", "interrupted", "refused"]},
-    "detail": {"type": "string"},
-    "obs": {"oneOf": [{"$ref": "obs.schema.json"}, {"type": "null"}]}
+    "type": {
+      "const": "result"
+    },
+    "v": {
+      "const": "0.1"
+    },
+    "id": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "done",
+        "partial",
+        "failed",
+        "interrupted",
+        "refused"
+      ]
+    },
+    "detail": {
+      "type": "string"
+    },
+    "obs": {
+      "oneOf": [
+        {
+          "$ref": "obs.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "data": {
+      "description": "Verb-specific output, e.g. recall (see recall.schema.json#/$defs/data).",
+      "type": "object"
+    }
   }
 }

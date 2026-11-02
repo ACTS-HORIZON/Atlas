@@ -48,7 +48,10 @@ class Link {
       }
       this.log.write('in', msg)
       const r = await this.h.onCall(msg)
-      this.sendTo(ws, { type: 'result', v: V, id: msg.id, status: r.status, detail: r.detail, obs: r.obs ?? null })
+      const res = { type: 'result', v: V, id: msg.id, status: r.status, detail: r.detail }
+      if (r.data) res.data = r.data
+      res.obs = r.obs ?? null
+      this.sendTo(ws, res)
     } else if (msg.type === 'observe') {
       const err = check('observe', msg)
       if (err) return warn(`invalid observe: ${err}`)

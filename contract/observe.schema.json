@@ -1,13 +1,20 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://atlas.local/contract/observe.schema.json",
-  "title": "observe (PROPOSED, not yet in CONTRACT.md v0.1): mind asks the body for a full-view obs now",
-  "description": "CONTRACT.md says the full view is sent 'on events or on request' but names no request message. Until the contract settles it, the body accepts this and answers with an obs.",
+  "title": "observe: mind asks the body for a full-view obs now, CONTRACT.md v0.1",
+  "description": "The full view \"on request\" (CONTRACT.md, Observation). The body answers with an obs.",
   "type": "object",
-  "required": ["type", "v"],
+  "required": [
+    "type",
+    "v"
+  ],
   "additionalProperties": false,
   "properties": {
-    "type": {"const": "observe"},
-    "v": {"const": "0.1"}
+    "type": {
+      "const": "observe"
+    },
+    "v": {
+      "const": "0.1"
+    }
   }
 }
