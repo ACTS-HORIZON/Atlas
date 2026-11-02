@@ -4,7 +4,7 @@ A Minecraft agent. [`CONTRACT.md`](CONTRACT.md) is the spec every layer follows.
 
 ```
 body/      Node: Mineflayer backend, fair-play observation builder, verbs, link server, dashboard
-mind/      Python: link client (this session: a terminal client, no LLM yet)
+mind/      Python: the mind loop (LLM) and a terminal client
 contract/  JSON Schema for the link messages (obs, call, result, event)
 deploy/    example systemd unit
 logs/      contract-message logs, JSONL (gitignored)
@@ -30,7 +30,8 @@ data/      known places file (gitignored)
 - **Logs**: every contract message in or out is appended to `logs/link-YYYY-MM-DD.jsonl` as `{"ts", "dir": "in"|"out", "msg"}`.
 - **Verbs** run one at a time (`body/src/runner.js`), and the running one shows as `task` in the obs. `say`, `recall`, `inspect` and `stop` run alongside it. Any other call while a verb runs is `refused` with detail `busy`: it is not queued, and the running verb keeps going. `stop` aborts the running verb, so it returns `interrupted`, and releases every movement control.
 - **Dashboard** at `http://<atlas>:8080/` (see below).
-- **Mind**: `python -m atlas_mind` prints every message and takes `say <text>`, `stop`, `recall <type> [x y z]`, `goto <x y z | target>`, `explore <dir> <n>`, `mine <block> <n> [radius]`, `collect <item>`, `trace [kind] <text>`, `obs` and `quit`.
+- **Mind** (brain v0): `python -m atlas_mind` is the loop. It wakes on results, events and a 10 s timer, asks an OpenAI-compatible model for one action per turn, keeps a task list and a notes file, and sends its reasoning as `trace`. See [Mind (brain v0)](#mind-brain-v0).
+- **Terminal client:** `python -m atlas_mind.client` prints every message and takes typed verb commands (`say`, `goto`, `mine`, `craft`, …).
 
 ### Contract notes
 
@@ -135,13 +136,21 @@ cd /opt/atlas/body && npm start
 
 You should see `[link] listening…`, `[bot] spawned in overworld at … gamemode=…`, `[bot] ready: health 20, food 20` and `[obs] first build N ms`. After that it prints build-time stats every 60 s.
 
-**Mind** (tmux window 2, `Ctrl-b c`):
+**Mind** (tmux window 2, `Ctrl-b c`), once the `ATLAS_LLM_*` settings are in `atlas.env` (see [Mind (brain v0)](#mind-brain-v0)):
 
 ```bash
 cd /opt/atlas/mind && .venv/bin/python -m atlas_mind
 ```
 
-Type `say hello`, `goto 10 64 -20`, `explore north 48`, `mine coal_ore 3`, `collect oak_log`, `craft oak_planks 4`, `place cobblestone 3 64 -2`, `equip iron_pickaxe`, `dig 3 63 -2`, `eat`, `stop`, `recall iron_ore`, `trace plan get iron first`, `obs`, or `quit`. Add `--json` to see raw messages instead of the summary.
+It prints one line per decision (`[mind] call: <thinking>`). The dashboard's Trace feed shows the same reasoning.
+
+**Terminal client** (tmux window 3), to watch every message and to issue verbs by hand:
+
+```bash
+cd /opt/atlas/mind && .venv/bin/python -m atlas_mind.client
+```
+
+Both can be connected at once. A verb you type while the mind's verb is running gets `refused — busy`. Type `say hello`, `goto 10 64 -20`, `explore north 48`, `mine coal_ore 3`, `collect oak_log`, `craft oak_planks 4`, `place cobblestone 3 64 -2`, `equip iron_pickaxe`, `dig 3 63 -2`, `eat`, `stop`, `recall iron_ore`, `trace plan get iron first`, `obs`, or `quit`. Add `--json` to see raw messages instead of the summary.
 
 **Logs:**
 
@@ -171,6 +180,100 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
 - **No authentication.** Anyone who can reach the port can watch, which includes chat and coordinates, and can press STOP. On a shared network, set `ATLAS_DASH_BIND=127.0.0.1:8080` and reach it through Proxmox, or firewall the port. Set it to `off` to disable the dashboard.
 - **Without a mind:** obs still flow to the dashboard every 2 s, but they aren't logged, because nothing crossed the link.
 
+## Mind (brain v0)
+
+`python -m atlas_mind` runs the loop from CONTRACT.md's Mind loop.
+
+**What it does each turn:**
+- **Wakes** on a result, an event, or the idle timer (`ATLAS_IDLE_S`, 10 s). Idle wakes are skipped while a verb runs, and while it waits for an answer to `ask_player`.
+- **Builds the context:**
+  - a **system prompt**: who Atlas is, fair play, house rules, no fighting, no smelting yet, and the output format, plus `docs/verbs.md` loaded from the repo at start, so it is never stale;
+  - the **task list**;
+  - the **latest obs**, rendered compactly (a few hundred tokens, not raw JSON);
+  - the **last 15** calls, results and events;
+  - the **notes**.
+- **Asks the model for one JSON object:**
+  - **`call`**: `{verb, args}`
+  - **`say`**: `{text}`
+  - **`ask_player`**: `{player, text}`. It says the question, then waits for that player's `player_said` (or `ASK_TIMEOUT`), then decides again.
+  - **`note`**: `{text}`, appended to `data/notes.md`.
+  - **`wait`**
+  Every action carries `thinking`, sent first as a `trace` (kind `decision`).
+- **Updates tasks:** any action may also carry `task: {id, state, standing}`. Tasks come from `task_from_chat` events, and the model decides order and interleaving. It's told to confirm a task in chat before starting it and to report when it's done. Standing tasks stay until stopped. `@Atlas stop` (the body's stop) marks the active task `stopped`, and `@Atlas stop <task>` lets the model drop that task.
+
+**Guards in code, not left to the model:**
+- **Invalid replies:** a reply that isn't one valid JSON object (or names an unknown verb, or a bad task state) is retried once, with the error shown to the model; after that it waits.
+- **No repeating a failure:** the exact call that just failed or was refused is not sent again; the model is told so and asked once more.
+- **No fighting:** the prompt forbids it (there are no combat verbs). When health falls below `ATLAS_RETREAT_HEALTH` (6), the mind is woken with "health is low", and may retreat with `goto`.
+
+**Config** (in `atlas.env` or the environment):
+
+| Variable | Default | |
+|---|---|---|
+| `ATLAS_LLM_URL` | `http://127.0.0.1:8080/v1` | OpenAI-compatible base URL (`…/chat/completions` is appended) |
+| `ATLAS_LLM_MODEL` | `gemma` | model name sent in the request |
+| `ATLAS_LLM_KEY` | — | sent as `Authorization: Bearer …` if set |
+| `ATLAS_LLM_TEMPERATURE` | `0.4` | |
+| `ATLAS_LLM_MAX_TOKENS` | `600` | |
+| `ATLAS_LLM_JSON_MODE` | `1` | sends `response_format: {"type": "json_object"}`; set `0` if the server rejects it |
+| `ATLAS_LLM_TIMEOUT_S` | `120` | |
+| `ATLAS_IDLE_S` | `10` | idle wake |
+| `ATLAS_ASK_TIMEOUT_S` | `120` | how long `ask_player` waits for an answer |
+| `ATLAS_RETREAT_HEALTH` | `6` | |
+| `ATLAS_NOTES_FILE` | `data/notes.md` | |
+| `ATLAS_NOTES_MAX_LINES` | `80` | the oldest notes are dropped (and counted) past this |
+
+**The prompt.** To see the system prompt:
+
+```bash
+cd /opt/atlas/mind && .venv/bin/python -m atlas_mind --print-prompt
+```
+
+It is about 3,300 tokens, most of it the verb reference. Each turn adds a context like this one (fresh spawn, first wake):
+
+```
+WOKE BECAUSE: new task t1 from ACTS_HORIZON: get me 3 iron ingots
+
+TASKS
+t1 [new] from ACTS_HORIZON: get me 3 iron ingots
+
+OBSERVATION
+t=2410 survival in overworld at (0.5, 64, 0.5), facing yaw 0
+health 20/20, food 20/20, xp 0, holding nothing
+world: day, clear, light 15, biome plains
+inventory: empty
+blocks seen: oak_log x2 (nearest (12, 64, -3) 11.2m); water x1 (nearest (-6, 62, 9) 11.4m)
+entities: sheep 7.2m front-left
+player ACTS_HORIZON 3.9m at (3.4, 64, -2.1), looking at (3, 63, -1)
+running verb: none
+chat <ACTS_HORIZON> @Atlas get me 3 iron ingots
+
+RECENT (oldest first)
+event task_from_chat: {"from":"ACTS_HORIZON","text":"get me 3 iron ingots"}
+
+NOTES
+(no notes yet)
+
+Decide the next action. One JSON object.
+```
+
+**Prompt tuning offline.** `--replay` feeds recorded link logs through the same state and context, asks the real model, and prints each decision; nothing is sent to a body.
+
+```bash
+cd /opt/atlas/mind && .venv/bin/python -m atlas_mind --replay ../logs/link-2026-11-03.jsonl --every 15 --limit 10 --show-prompt
+```
+
+It decides on every recorded result and event, plus every 15th obs.
+
+**Tests** (no server, no model) drive the mind against a fake body speaking the real link protocol, with a scripted `FakeLLM` (`mind/tests/test_mind.py`). They cover:
+- a task through confirm, a chain of calls, and the done report;
+- a failed call not being repeated;
+- the `ask_player` round trip and its timeout;
+- stop clearing the task;
+- the invalid-reply retry;
+- the low-health wake;
+- replay.
+
 ### Optional: body as a systemd service
 
 ```bash
@@ -185,7 +288,7 @@ systemctl daemon-reload && systemctl enable --now atlas-body
 journalctl -u atlas-body -f
 ```
 
-The mind is interactive, so it stays a terminal program and gets no unit.
+The mind loop has an example unit too, `deploy/systemd/atlas-mind.service`; install it the same way. The terminal client (`python -m atlas_mind.client`) is interactive and gets no unit.
 
 ### Update
 
@@ -287,6 +390,35 @@ Restart the body after changing either.
 8. **`equip wooden_pickaxe`**, then **`dig`** a visible block: done. A buried block's coordinates: `refused — fair play`.
 9. **`eat`.** At full food: `failed — eat: not hungry (food 20/20)`. After sprinting a while, toss Atlas bread and `collect bread`; then `eat` gives `done — ate bread; food 14 → 19`.
 
+## Session 3 live checklist, part B: the mind (atlas)
+
+**Setup:**
+- Point `ATLAS_LLM_URL` and `ATLAS_LLM_MODEL` at the Gemma server, and set `ATLAS_PLAYERS=ACTS_HORIZON`.
+- Start the body, then the mind (tmux window 2), and open the dashboard. Its Trace feed shows the mind's `thinking` for every turn.
+- Start with a **fresh spawn**: new world, or Atlas with an empty inventory.
+
+**The run:** say `@Atlas get me 3 iron ingots` and don't help. Nothing below is scripted; it's what a sensible plan looks like and what to check for. The exact order and wording will vary.
+
+| Step | Trace feed (thinking, roughly) | Calls and results to expect |
+|---|---|---|
+| 1. Confirm | "Collin wants 3 iron ingots. I have nothing; I need a pickaxe chain first. Confirm." (A careful model may already mention smelting here and ask; that's fine too.) | `say "On it: …"`; task t1 → active |
+| 2. Wood | "Logs are in view; mine some." If none are in view: "No trees in sight; explore." | `mine oak_log 4` → done (or `explore …` first) |
+| 3. Planks | "Turn the logs into planks." | `craft oak_planks 12` → done |
+| 4. Table | "I need a crafting table; craft and place one." | `craft crafting_table` → done, then `place crafting_table [x,y,z]` next to it → done |
+| 5. Sticks and pickaxe | "Sticks, then a wooden pickaxe at the table." | `craft stick 4`, `craft wooden_pickaxe` → walks to the table → done |
+| 6. Stone | "Stone pickaxe needs cobblestone; mine visible stone." If none is visible: "No stone in view; dig down or explore." | `mine stone 3` → done (cobblestone in the inventory), or `failed — no stone in view` and then a reasoned move |
+| 7. Stone pickaxe | "Now a stone pickaxe." | `craft stone_pickaxe` → done |
+| 8. Iron | "Iron ore next; none in view, so strip-mine." | `mine iron_ore 3`: the Task panel shows `tunnel N`; done (raw_iron 3) or partial |
+| 9. The wall | "Iron ingots need smelting and I have no smelt verb. I'll tell Collin and ask." | `ask_player ACTS_HORIZON "I have 3 raw iron but can't smelt yet. Want the raw iron, or should I wait?"`; the mind goes quiet until you answer |
+| 10. Your answer | `player_said` arrives; "Collin wants the raw iron; …" | a reasoned next step (no `give` verb yet either, so expect it to say so) |
+
+**What to watch for:**
+- **Recovering from failure:** after a `failed` result (e.g. `craft: wooden_pickaxe needs crafting_table nearby`), the next trace deals with the reason. The same call never comes straight back; if the model tries, the trace shows the retry or "no usable decision".
+- **No busy collisions:** no `refused — busy` in Last calls from the mind itself, because it only acts after each result.
+- **Stop:** `@Atlas stop` mid-chain. Atlas halts, and the next trace mentions the stop, with task t1 `stopped`.
+- **Notes:** it may `note` things like where it put the table. They're in `data/notes.md` and in the next turns' context.
+- **Cost:** while idle with no tasks, expect a `wait` decision about every 10 s (one model call each).
+
 ## Development
 
 ```bash
@@ -310,3 +442,5 @@ The forest benchmark is a dense spruce forest over cave-riddled stone. It prints
 ```bash
 cd mind && .venv/bin/python -m unittest discover -s tests
 ```
+
+The mind tests need no server and no model: a fake body over the real link protocol and a scripted `FakeLLM`.

@@ -1,0 +1,20 @@
+# Example unit for the Atlas mind (brain v0) on the atlas LXC.
+#   cp /opt/atlas/deploy/systemd/atlas-mind.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now atlas-mind
+#   journalctl -u atlas-mind -f
+[Unit]
+Description=Atlas mind (LLM loop)
+After=atlas-body.service
+Wants=atlas-body.service
+
+[Service]
+Type=simple
+User=atlas
+WorkingDirectory=/opt/atlas/mind
+EnvironmentFile=-/opt/atlas/atlas.env
+ExecStart=/opt/atlas/mind/.venv/bin/python -m atlas_mind
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

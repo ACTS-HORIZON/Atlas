@@ -1,6 +1,6 @@
 import unittest
 
-from atlas_mind.__main__ import parse_command
+from atlas_mind.client import parse_command
 from atlas_mind.pretty import format_obs
 
 

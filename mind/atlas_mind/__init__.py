@@ -1,2 +1,2 @@
-"""Atlas mind. This session: a minimal terminal client for the link (no LLM)."""
+"""Atlas mind: the LLM loop (python -m atlas_mind) and a terminal client (python -m atlas_mind.client)."""
 CONTRACT_VERSION = "0.1"
