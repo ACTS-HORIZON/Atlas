@@ -33,6 +33,9 @@ def format_obs(o: dict) -> str:
         flags = ("hostile " if e.get("hostile") else "") + ("approaching" if e.get("approaching") else "")
         lines.append(f"   entity {e['type']} {e['dist']}m {e['bearing']} rel {_vec(e['rel'])} {flags}".rstrip())
     for p in o.get("players") or []:
+        if "pos" not in p:  # out of sight, on the Locator Bar
+            lines.append(f"   player {p['name']} out of sight, bearing {p.get('bearing')}")
+            continue
         lines.append(f"   player {p['name']} at {_vec(p['pos'])} {p['dist']}m, looking at {_vec(p.get('looking_at'))}")
     sounds = o.get("sounds") or []
     if sounds:

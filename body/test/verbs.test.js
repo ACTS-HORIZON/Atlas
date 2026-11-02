@@ -4,87 +4,10 @@
 // a fake motor standing in for Mineflayer movement and digging.
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { FakeWorld, makeView } = require('./fakeWorld')
-const { buildObs, recheckKnown } = require('../src/fairplay/observe')
-const { KnownPlaces } = require('../src/places')
-const { VerbApi } = require('../src/api')
+const { FakeWorld } = require('./fakeWorld')
 const { Runner } = require('../src/runner')
-const { VERBS } = require('../src/verbs')
 
-// Flat stone ground at y<=9, bot standing at (0.5, 10, 0.5) facing south (+Z).
-function world () { return new FakeWorld().box([-32, 0, -32], [31, 9, 31], 'stone') }
-
-/** Fake motor: records calls; movement and digging are scripted. */
-function fakeMotor (w, opt = {}) {
-  const m = {
-    pos: opt.pos || [0.5, 10, 0.5],
-    calls: [],
-    picked: new Set(),
-    here () { return [...this.pos] },
-    gamemode () { return opt.gamemode || 'survival' },
-    facing () { return opt.facing || 'south' },
-    goto (o) {
-      this.calls.push(['goto', o])
-      const r = opt.goto ? opt.goto(o, this) : { status: 'reached', remaining: 0, moved: 3 }
-      if (r === 'never') {
-        return new Promise(resolve => o.signal.addEventListener('abort', () => resolve({ status: 'aborted', remaining: 5, moved: 0 }), { once: true }))
-      }
-      if (r.status === 'reached' && o.kind !== 'look' && opt.walk) this.pos = [o.pos[0], this.pos[1], o.pos[2]]
-      return Promise.resolve(r)
-    },
-    stop () { this.calls.push(['stop']) },
-    toolFor (name) { return opt.tool ? opt.tool(name) : { ok: true, tool: 'iron_pickaxe' } },
-    async dig (pos, o = {}) {
-      this.calls.push(['dig', pos, !!o.allowHand])
-      w.set(pos[0], pos[1], pos[2], 'air')
-      return { ok: true, name: 'x' }
-    },
-    async look () {},
-    async face (d) { this.calls.push(['face', d]) },
-    drops () { return (opt.drops || []).filter(d => !this.picked.has(d.id)) },
-    entityExists (id) { return (opt.drops || []).some(d => d.id === id) && !this.picked.has(id) },
-    inventory () { return { ...(opt.inv || {}), ...(opt.invAfter ? opt.invAfter(this) : {}) } }
-  }
-  return m
-}
-
-/** act for a verb, with the real VerbApi over the fake world. */
-function setup (w, opt = {}) {
-  const motor = fakeMotor(w, opt)
-  const places = new KnownPlaces({ file: null })
-  const players = opt.players || []
-  const entities = opt.entities || []
-  const viewNow = () => makeView(w, { pos: motor.pos, yaw: 0, players, entities })
-  const observe = () => {
-    const v = viewNow()
-    const { obs } = buildObs(v, {})
-    places.applyRecheck(obs.self.dim, obs.t, recheckKnown(v, places.inDim(obs.self.dim)))
-    places.recordObs(obs)
-    return obs
-  }
-  const api = new VerbApi({
-    motor,
-    observe,
-    places,
-    sight: () => { const v = viewNow(); return { classAt: v.classAt, eye: v.self.eye, sightRadius: v.sightRadius } },
-    registry: { isBlock: n => /^[a-z_]+$/.test(n) && !n.startsWith('not_'), isItem: n => /^[a-z_]+$/.test(n) && !n.startsWith('not_') }
-  })
-  const progress = []
-  const act = {
-    connected: () => true,
-    chat () {},
-    halt () { motor.stop() },
-    here: () => api.here(),
-    places,
-    api,
-    cfg: { stripLength: 4, stripMax: 6 },
-    signal: new AbortController().signal,
-    progress: p => progress.push(p)
-  }
-  return { act, motor, api, places, progress }
-}
-
-const run = (verb, act, args) => VERBS[verb].run(act, structuredClone(args))
+const { world, setup, run } = require('./verbHarness')
 
 test('argument validation', async () => {
   const { act } = setup(world())
@@ -160,29 +83,39 @@ test('goto: done / partial (gave up, distance left) / failed (no path)', async (
   assert.equal((await run('goto', act, { pos: [1, 2, 3] })).status, 'failed')
 })
 
-test('mine: only observed blocks are dug; a type never observed is refused', async () => {
+test('mine: only observed blocks are dug; visible common blocks count as observed', async () => {
   const w = world()
   w.set(0, 10, 6, 'iron_ore').set(3, 10, 7, 'iron_ore') // in the open
   w.set(0, 7, 2, 'iron_ore') // buried: never seen
   const { act, motor, api } = setup(w)
 
-  let r = await run('mine', act, { block: 'stone', count: 3 })
-  assert.equal(r.status, 'refused')
-  assert.match(r.detail, /fair play: stone is not a type the bot observes/)
-
-  r = await run('mine', act, { block: 'iron_ore', count: 5, radius: 32 })
+  let r = await run('mine', act, { block: 'iron_ore', count: 5, radius: 32 })
   assert.equal(r.status, 'partial')
-  assert.match(r.detail, /mined 2 of 5 iron_ore; none left within 32 blocks/)
+  assert.match(r.detail, /mined 2 of 5 iron_ore; none left in view within 32 blocks/)
   assert.deepEqual(r.data, { block: 'iron_ore', mined: 2, requested: 5, tunnel: 0 })
   const dug = motor.calls.filter(c => c[0] === 'dig').map(c => c[1].join(','))
   assert.deepEqual(dug, ['0,10,6', '3,10,7'], 'nearest first, and never the buried one')
-  assert.ok(motor.calls.some(c => c[0] === 'goto' && c[1].kind === 'look' && c[1].dig === true))
+  assert.ok(motor.calls.some(c => c[0] === 'goto' && c[1].kind === 'look' && c[1].dig === true && c[1].scaffold === true))
 
   // the API itself refuses a dig at a position that was not observed
   const d = await api.digObserved([0, 7, 2], 'iron_ore', {})
   assert.equal(d.refused, true)
   assert.match(d.reason, /fair play: no iron_ore has been observed at \[0, 7, 2\]/)
   assert.equal(motor.calls.filter(c => c[0] === 'dig').length, 2)
+
+  // stone is a common type: the visible ground counts, the stone underneath does not
+  r = await run('mine', act, { block: 'stone', count: 3 })
+  assert.equal(r.status, 'done')
+  const stone = motor.calls.filter(c => c[0] === 'dig').slice(2).map(c => c[1])
+  assert.equal(stone.length, 3)
+  for (const p of stone) assert.equal(p[1], 9, 'only the exposed top layer of the ground')
+})
+
+test('mine: a common type or a non-ore not in view fails; ores not in view strip-mine', async () => {
+  const w = new FakeWorld({ fill: 'air' }) // nothing to see at all
+  const { act } = setup(w)
+  assert.deepEqual(await run('mine', act, { block: 'gravel', count: 2 }), { status: 'failed', detail: 'mine: no gravel in view within 24 blocks' })
+  assert.deepEqual(await run('mine', act, { block: 'oak_log', count: 2 }), { status: 'failed', detail: 'mine: no oak_log in view within 32 blocks' })
 })
 
 test('mine: done at count; missing tool fails before moving; unreachable targets are skipped', async () => {

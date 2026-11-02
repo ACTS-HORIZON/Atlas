@@ -18,9 +18,9 @@ test('verbs over the link: fair-play refusals, validation, result shapes', async
     assert.equal(check('result', r), null)
     return r
   }
-  let r = await call('c1', 'mine', { block: 'stone', count: 4 })
-  assert.deepEqual([r.status, r.obs.task], ['refused', null])
-  assert.match(r.detail, /fair play/)
+  let r = await call('c1', 'mine', { block: 'stone', count: 4 }) // stone in view, but no pickaxe
+  assert.deepEqual([r.status, r.obs.task], ['failed', null])
+  assert.match(r.detail, /stone needs one of: wooden_pickaxe/)
   r = await call('c2', 'goto', { target: 'diamond_ore' })
   assert.equal(r.status, 'refused')
   r = await call('c3', 'goto', { target: 'iron_ore' }) // seen in the fake world; no pathfinder on a fake bot

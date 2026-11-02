@@ -13,8 +13,10 @@ const SCHEMAS = {
     additionalProperties: false,
     properties: {
       pos: vec3,
-      target: { type: 'string', minLength: 1, description: 'a visible player name, a visible entity type, or an observed block type' },
-      range: { type: 'number', minimum: 0, maximum: 32 }
+      target: { type: 'string', minLength: 1, description: 'a visible player name, a visible entity type, an observed block type, or a player on the Locator Bar' },
+      range: { type: 'number', minimum: 0, maximum: 32 },
+      dig: { type: 'boolean', default: true },
+      scaffold: { type: 'boolean', default: true }
     },
     oneOf: [{ required: ['pos'] }, { required: ['target'] }]
   },
@@ -40,6 +42,35 @@ const SCHEMAS = {
   collect: {
     type: 'object',
     required: ['item'],
+    additionalProperties: false,
+    properties: { item: { type: 'string', minLength: 1 } }
+  },
+  craft: {
+    type: 'object',
+    required: ['item'],
+    additionalProperties: false,
+    properties: { item: { type: 'string', minLength: 1 }, count: { type: 'integer', minimum: 1, maximum: 576, default: 1 } }
+  },
+  place: {
+    type: 'object',
+    required: ['block', 'pos'],
+    additionalProperties: false,
+    properties: { block: { type: 'string', minLength: 1 }, pos: { type: 'array', items: { type: 'integer' }, minItems: 3, maxItems: 3 } }
+  },
+  equip: {
+    type: 'object',
+    required: ['item'],
+    additionalProperties: false,
+    properties: { item: { type: 'string', minLength: 1 }, slot: { enum: ['hand', 'off-hand', 'head', 'torso', 'legs', 'feet'], default: 'hand' } }
+  },
+  dig: {
+    type: 'object',
+    required: ['pos'],
+    additionalProperties: false,
+    properties: { pos: { type: 'array', items: { type: 'integer' }, minItems: 3, maxItems: 3 } }
+  },
+  eat: {
+    type: 'object',
     additionalProperties: false,
     properties: { item: { type: 'string', minLength: 1 } }
   }

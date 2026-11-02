@@ -128,7 +128,7 @@ test('dashboard read-only api: page, places, verbs, config (masked), log tail', 
   assert.deepEqual(places.nearest.map(p => p.type), ['iron_ore'])
 
   const verbs = (await get('/api/verbs')).body
-  assert.deepEqual(verbs.map(v => `${v.name}:${v.kind}`).sort(), ['collect:built-in', 'explore:built-in', 'goto:built-in', 'mine:built-in', 'pillar:live', 'recall:built-in', 'say:built-in', 'stop:built-in'])
+  assert.deepEqual(verbs.map(v => `${v.name}:${v.kind}`).sort(), ['collect:built-in', 'craft:built-in', 'dig:built-in', 'eat:built-in', 'equip:built-in', 'explore:built-in', 'goto:built-in', 'mine:built-in', 'pillar:live', 'place:built-in', 'recall:built-in', 'say:built-in', 'stop:built-in'])
   assert.match((await get('/api/verbs/say')).body.source, /act\.chat\(text\)/)
   assert.match((await get('/api/verbs/mine')).body.source, /strip-mines/)
   assert.match((await get('/api/verbs/pillar')).body.source, /function pillar/)
@@ -142,7 +142,11 @@ test('dashboard read-only api: page, places, verbs, config (masked), log tail', 
 
   const mind = client(`ws://127.0.0.1:${body.link.wss.address().port}`)
   await mind.wait(m => m.type === 'obs')
-  const log = (await get('/api/log?n=5')).body
+  let log = []
+  for (let i = 0; i < 20 && !log.length; i++) { // the log stream flushes asynchronously
+    log = (await get('/api/log?n=5')).body
+    if (!log.length) await new Promise(resolve => setTimeout(resolve, 50))
+  }
   assert.ok(log.length >= 1 && log.every(l => l.msg && l.dir))
   mind.ws.close()
   await body.close()

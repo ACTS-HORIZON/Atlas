@@ -1,21 +1,25 @@
 'use strict'
 // mine {block, count = 1, radius = 32}
 //
-// Only observed blocks are targets: blocks_seen and known places (both came
-// through the fair-play filter). For each, nearest first: walk to where a
-// face is in reach (the path may dig through what is in the way, as a player
-// tunnels to ore they saw), dig it with the best tool, pick up the drop.
-// Ends with done at `count`, or partial with the count reached when none are
-// left in the radius.
+// Only blocks it has seen are targets: notable types from blocks_seen and
+// known places, and any type (stone, dirt, gravel, sand, logs…) visible in
+// the terrain around it, by the same line-of-sight check. For each, nearest
+// first: walk to where a face is in reach (the path may dig through what is
+// in the way and pillar, as a player does), dig it with the best tool, pick
+// up the drop. Ends with done at `count`, or partial with the count reached
+// when none are left in the radius.
 //
-// If none of that type is observed at all when the verb starts, it
-// strip-mines: a 1x2 tunnel forward at the current y, a branch-mine
-// serpentine (straight for ATLAS_STRIP_LENGTH blocks, 3 across, back),
-// mining any target that comes into view, until count or stop.
+// Ores not in view: if none of that ore is observed when the verb
+// starts, it strip-mines: a 1x2 tunnel forward at the current y, a
+// branch-mine serpentine (straight for ATLAS_STRIP_LENGTH blocks, 3 across,
+// back), mining any target that comes into view, until count or stop.
+// A common type not in view fails ("no stone in view"); moving is the mind's
+// decision.
 //
-// Refused: a block type that is never observable (not notable), or a dig on
-// a position that was not observed (enforced by the API). Failed: unknown
-// block, a block that needs a tool the bot does not have, spectator mode.
+// Refused: a dig on a position that was not observed (fair play) or inside a
+// protected region (house rules), both enforced by the API. Failed: unknown
+// block, a block that needs a tool the bot does not have, spectator or
+// adventure mode, nothing of that type in view.
 const { checkArgs, failed, refused, cannotAct } = require('./common')
 
 const FLUIDS = new Set(['water', 'lava'])
@@ -31,7 +35,6 @@ async function run (act, args) {
   const api = act.api
   const { block, count, radius } = args
   if (!api.isBlock(block)) return failed(`mine: unknown block ${block}`)
-  if (!api.isObservableType(block)) return refused(`fair play: ${block} is not a type the bot observes (blocks_seen lists notable blocks only), so it can't be a mining target`)
   const no = cannotAct(api, 'mine')
   if (no) return no
   if (api.gamemode() === 'adventure') return failed('mine: cannot dig in adventure mode')
@@ -39,13 +42,18 @@ async function run (act, args) {
   if (!tool.ok) return failed(`mine: ${tool.reason}`)
 
   const skip = new Set() // targets that could not be reached or dug
-  const strip = { allowed: api.seenBlocks(block, radius).length === 0, dug: 0, stopped: null }
+  let protectedSkipped = 0; let houseReason = null
+  const notable = api.isObservableType(block)
+  const ore = /_ore$/.test(block) || block === 'ancient_debris'
+  const initial = api.targetsOfType(block, radius)
+  if (!initial.length && !ore) return failed(`mine: no ${block} in view within ${notable ? radius : Math.min(radius, 24)} blocks`)
+  const strip = { allowed: ore && initial.length === 0, dug: 0, stopped: null }
   let mined = 0
   const progress = note => act.progress(`${mined}/${count} ${block}${strip.dug ? `, tunnel ${strip.dug}` : ''}${note ? ': ' + note : ''}`)
 
   while (mined < count) {
     if (act.signal.aborted) return null
-    const targets = api.seenBlocks(block, radius).filter(t => !skip.has(t.pos.join(',')))
+    const targets = api.targetsOfType(block, radius).filter(t => !skip.has(t.pos.join(',')))
     if (!targets.length) {
       if (!strip.allowed || strip.stopped) break
       progress('none in view, strip-mining')
@@ -57,12 +65,13 @@ async function run (act, args) {
     const t = targets[0]
     const k = t.pos.join(',')
     progress(`going to [${t.pos.join(', ')}]`)
-    const g = await api.goto(t.pos, { kind: 'look', dig: true, signal: act.signal, onProgress: d => progress(`${d} blocks to [${t.pos.join(', ')}]`) })
+    const g = await api.goto(t.pos, { kind: 'look', dig: true, scaffold: true, signal: act.signal, onProgress: d => progress(`${d} blocks to [${t.pos.join(', ')}]`) })
     if (act.signal.aborted) return null
     if (g.status !== 'reached') { skip.add(k); continue }
     progress(`digging [${t.pos.join(', ')}]`)
     const d = await api.digObserved(t.pos, block, { signal: act.signal })
     if (act.signal.aborted) return null
+    if (d.refused && /^house rules/.test(d.reason)) { skip.add(k); protectedSkipped++; houseReason = d.reason; continue }
     if (d.refused) return refused(d.reason)
     if (d.needsTool) return failed(`mine: ${d.reason}`)
     if (!d.ok) { skip.add(k); continue }
@@ -73,8 +82,10 @@ async function run (act, args) {
 
   const data = { block, mined, requested: count, tunnel: strip.dug }
   if (mined >= count) return { status: 'done', detail: `mined ${mined} ${block}`, data }
-  const why = strip.stopped ? `strip-mining stopped: ${strip.stopped}` : `none left within ${radius} blocks`
-  return { status: 'partial', detail: `mined ${mined} of ${count} ${block}; ${why}`, data }
+  if (mined === 0 && protectedSkipped && !strip.stopped) return refused(`${houseReason}; no other ${block} in view`)
+  const prot = protectedSkipped ? `; ${protectedSkipped} inside protected regions left alone` : ''
+  const why = strip.stopped ? `strip-mining stopped: ${strip.stopped}` : `none left in view within ${notable ? radius : Math.min(radius, 24)} blocks`
+  return { status: 'partial', detail: `mined ${mined} of ${count} ${block}; ${why}${prot}`, data }
 }
 
 /** Walk over drops that landed in sight within 4 blocks. Best effort. */

@@ -8,6 +8,8 @@ const ROOT = path.join(__dirname, '..', '..')
 const envFile = process.env.ATLAS_ENV_FILE || path.join(ROOT, 'atlas.env')
 if (fs.existsSync(envFile)) process.loadEnvFile(envFile)
 
+const { parseRegions } = require('./house')
+
 const env = (k, d) => (process.env[k] === undefined || process.env[k] === '' ? d : process.env[k])
 const int = (k, d) => {
   const v = Number.parseInt(env(k, String(d)), 10)
@@ -55,6 +57,10 @@ module.exports = {
   // mine: strip-mining when no target is in view (straight length before a turn, total cap)
   stripLength: positive('ATLAS_STRIP_LENGTH', 24),
   stripMax: positive('ATLAS_STRIP_MAX', 256),
+  // House rules: protected regions, a JSON list of boxes (see src/house.js)
+  protectedRegions: parseRegions(env('ATLAS_PROTECTED_REGIONS', '')),
+  // Players whose chat the bot listens to ("@<botname> …" tasks, stop, status, come here)
+  players: env('ATLAS_PLAYERS', '').split(',').map(s => s.trim()).filter(Boolean),
   // Dashboard bind address, "host:port"; "off" disables it.
   dashBind: env('ATLAS_DASH_BIND', '0.0.0.0:8080'),
   // Live-written verb library (listed on the dashboard; written in a later step).

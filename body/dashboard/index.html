@@ -224,7 +224,9 @@ function renderObs (o) {
   $('ents-n').textContent = o.entities.length
   table($('ents'), ['type', 'dist', 'bearing', ''], o.entities.map(e => [e.type, e.dist, e.bearing,
     el('span', null, e.hostile ? tag('hostile', 'hostile') : null, e.approaching ? tag('approaching', 'interrupted') : null)]))
-  table($('players'), ['player', 'pos', 'dist', 'looking at'], o.players.map(p => [p.name, el('span', { class: 'mono' }, vec(p.pos)), p.dist, el('span', { class: 'mono' }, p.looking_at ? vec(p.looking_at) : '—')]))
+  table($('players'), ['player', 'pos', 'dist', 'looking at'], o.players.map(p => p.pos
+    ? [p.name, el('span', { class: 'mono' }, vec(p.pos)), p.dist, el('span', { class: 'mono' }, p.looking_at ? vec(p.looking_at) : '—')]
+    : [p.name, el('span', { class: 'muted' }, 'out of sight'), '—', el('span', null, 'bearing ' + p.bearing)]))
   table($('sounds'), ['sound', 'bearing', 'dist'], o.sounds.map(x => [x.type, x.bearing, x.dist]))
 
   const t = o.task

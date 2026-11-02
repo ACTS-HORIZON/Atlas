@@ -22,7 +22,9 @@ The bot's name is configuration (default `Atlas`); `@<botname>` below means what
 * Sounds as bearing + rough distance (near / mid / far), not exact coordinates.
 * Own coordinates, time, weather and boss bar are fine (a player has F3 and the HUD).
 * Other players: position, and the block they are looking at if it's visible (their look direction is visible).
+* Players out of line of sight: bearing only, exactly when the game's Locator Bar would show them — i.e. when the server sends a Locator Bar waypoint for that player — so a player the game hides from the bar (sneaking, invisible, …) stays hidden.
 * No ores behind rock, no hidden entity state (health, AI target), no seed-derived knowledge.
+* Pathfinding may plan over loaded-chunk terrain geometry (a player sees the ground as they walk); verbs still only target observed things, or a player by bearing.
 * A verb may only target blocks or entities the bot has actually observed.
 * Verbs — including ones Gemma writes live — use the body's filtered API only, never the raw backend.
 
@@ -87,9 +89,9 @@ The body runs one verb at a time; it appears as `task` in the obs. `say`, `recal
 
 | Verb | Args | Notes |
 |------|------|-------|
-| `goto` | `pos` or `target` | pathfinder |
+| `goto` | `pos` or `target`, `dig`, `scaffold` | pathfinder; `target` may be a player by bearing; `dig` and `scaffold` default true (tunnels and pillars like a player); house rules still apply |
 | `explore` | `direction`, `distance` | walk and look around, reports what it saw |
-| `mine` | `block`, `count`, `radius` or `box` | only seen blocks; strip-mines/caves when none seen; `box` = dig out a region |
+| `mine` | `block`, `count`, `radius` or `box` | only seen blocks: notable types from blocks_seen / known places, common types (stone, dirt, gravel, sand, logs…) by looking at the terrain around it with the same line-of-sight check (`mine stone 3` is valid when stone is visible); strip-mines/caves for ores not in view; `box` = dig out a region |
 | `dig` | `pos` | one block |
 | `collect` | `item` | pick up nearby drops (this is also how it receives tossed items) |
 | `craft` | `item`, `count` | uses a nearby crafting table if needed |
@@ -108,6 +110,8 @@ The body runs one verb at a time; it appears as `task` in the obs. `say`, `recal
 | `stop` |      | cancel current verb |
 
 **Later:** `shelter`, `pillar`, `bridge`, `sleep`, `use` (doors, levers, portal lighting), `throw` (eyes of ender), `shoot` (bow), `follow`, `trade`, farming (`plant`, `harvest`). Note: the dragon run needs `use`, `throw`, `shoot`, `sleep`, `bridge` and `pillar`, so core v1 alone cannot beat the game.
+
+**Contract and verb reference:** this contract is the what-it's-for level. Argument details, limits, data shapes and progress strings live in the repo's verb reference, which is the authority for those. Verbs are hands, not the player. They are deliberately dumb: `mine` with no pickaxe fails with the reason; it does not go make one. That decision is the mind's.
 
 **Live verb writing (Gemma):** when no verb fits, Gemma first calls a holding verb (`shelter` or `retreat`), then writes a new verb as JS against the body's filtered API. Its context: the body API reference, the two or three most similar existing verbs, and the failed attempt's error trace. The body validates the verb's API calls in a dry run, then loads it and runs it. It returns `done`/`failed` like any verb; Gemma iterates on failure. Verbs that work are saved to the library on disk and carried across worlds and servers. The advisor, if enabled, can be asked for help writing one — it never runs anything.
 

@@ -4,9 +4,13 @@
 // filtered API in api.js, which decides what may be targeted (fair play)
 // and calls in here. Everything returned is plain data.
 //
-// Fair play for movement (session 2 rule): the pathfinder may plan over the
+// Fair play for movement (CONTRACT.md): the pathfinder may plan over the
 // loaded-chunk terrain geometry, as a player sees the ground as they walk.
 // What a verb may *target* is checked in api.js, not here.
+//
+// House rules: protected regions are excluded from the pathfinder's digging
+// and placing, and bot.dig / bot.placeBlock are guarded so nothing (verb or
+// pathfinder) can dig or place inside one.
 const { Vec3 } = require('vec3')
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder')
 
@@ -15,26 +19,71 @@ const TIERS = ['wooden', 'golden', 'stone', 'copper', 'iron', 'diamond', 'nether
 const tier = name => TIERS.indexOf(String(name).split('_')[0])
 const CARDINAL = { north: [0, -1], south: [0, 1], east: [1, 0], west: [-1, 0] }
 
+const SCAFFOLD = ['dirt', 'cobblestone', 'cobbled_deepslate', 'netherrack', 'andesite', 'diorite', 'granite', 'tuff']
+const SLOTS = new Set(['hand', 'off-hand', 'head', 'torso', 'legs', 'feet'])
+// Foods that hurt (hunger, poison, nausea): eaten only when named explicitly.
+const HARMFUL_FOOD = new Set(['rotten_flesh', 'spider_eye', 'poisonous_potato', 'pufferfish', 'suspicious_stew', 'chorus_fruit'])
+
 /** Load the pathfinder plugin into a real Mineflayer bot (no-op on fakes). */
 function equipBot (bot) {
   if (typeof bot.loadPlugin === 'function' && !bot.pathfinder) bot.loadPlugin(pathfinder)
 }
 
+/**
+ * Wrap bot.dig and bot.placeBlock so neither can act inside a protected
+ * region, whoever calls them. Idempotent.
+ */
+function guardHouseRules (bot, house) {
+  if (!house || bot._atlasGuarded) return
+  bot._atlasGuarded = true
+  const dim = () => bot.game?.dimension
+  if (typeof bot.dig === 'function') {
+    const dig = bot.dig.bind(bot)
+    bot.dig = (block, ...rest) => {
+      const why = block?.position && house.check('dig', [block.position.x, block.position.y, block.position.z], dim())
+      if (why) return Promise.reject(new Error(why))
+      return dig(block, ...rest)
+    }
+  }
+  if (typeof bot.placeBlock === 'function') {
+    const place = bot.placeBlock.bind(bot)
+    bot.placeBlock = (ref, face, ...rest) => {
+      const p = ref?.position && face ? [ref.position.x + face.x, ref.position.y + face.y, ref.position.z + face.z] : null
+      const why = p && house.check('place', p, dim())
+      if (why) return Promise.reject(new Error(why))
+      return place(ref, face, ...rest)
+    }
+  }
+}
+
 class Motor {
-  constructor (bot) {
+  /** house: HouseRules (protected regions), optional */
+  constructor (bot, { house = null } = {}) {
     this.bot = bot
+    this.house = house
+    guardHouseRules(bot, house)
   }
 
-  /** Pathfinder movement rules. No block placing, no pillaring; digging only when asked. */
-  movements (dig) {
-    const m = new Movements(this.bot)
+  /**
+   * Pathfinder movement rules. dig: may break blocks in the way (tunnel);
+   * scaffold: may place blocks to pillar up and bridge, from what's in the
+   * inventory. Protected regions are excluded from both.
+   */
+  movements ({ dig = false, scaffold = false } = {}) {
+    const bot = this.bot
+    const m = new Movements(bot)
     m.canDig = !!dig
-    m.allow1by1towers = false
-    m.scafoldingBlocks = []
+    m.allow1by1towers = !!scaffold
+    m.scafoldingBlocks = scaffold ? SCAFFOLD.map(n => bot.registry.itemsByName[n]?.id).filter(id => id !== undefined) : []
     m.allowParkour = true
     m.allowSprinting = true
     m.dontCreateFlow = true
     m.dontMineUnderFallingBlock = true
+    if (this.house && this.house.regions.length) {
+      const inside = b => b && b.position && this.house.regionAt([b.position.x, b.position.y, b.position.z], bot.game?.dimension)
+      m.exclusionAreasBreak.push(b => (inside(b) ? 100 : 0)) // >= 100: never broken
+      m.exclusionAreasPlace.push(b => (inside(b) ? 1e9 : 0)) // never worth a path
+    }
     return m
   }
 
@@ -56,7 +105,7 @@ class Motor {
    * 'look' (stand where a face of block pos is in reach and view).
    * Resolves {status: reached|no_path|stuck|timeout|aborted, remaining, moved}.
    */
-  goto ({ kind = 'near', pos, range = 1, dig = false, signal, timeoutMs, stuckMs = 15000, onProgress }) {
+  goto ({ kind = 'near', pos, range = 1, dig = false, scaffold = false, signal, timeoutMs, stuckMs = 15000, onProgress }) {
     const bot = this.bot
     if (!bot.pathfinder) return Promise.resolve({ status: 'no_path', remaining: null, moved: 0, reason: 'pathfinder not loaded' })
     const target = new Vec3(pos[0], pos[1], pos[2])
@@ -72,7 +121,7 @@ class Motor {
     const t0 = Date.now()
     const limit = timeoutMs ?? 30000 + 1500 * dist()
     let best = dist(); let lastGain = Date.now()
-    bot.pathfinder.setMovements(this.movements(dig))
+    bot.pathfinder.setMovements(this.movements({ dig, scaffold }))
     return new Promise(resolve => {
       let finished = false
       const finish = status => {
@@ -217,6 +266,115 @@ class Motor {
   }
 
   entityExists (id) { return !!this.bot.entities[id] }
+
+  dimension () { return this.bot.game?.dimension }
+  food () { return this.bot.food }
+
+  // ---- crafting ----------------------------------------------------------
+
+  /**
+   * What crafting `count` of an item would take, from the inventory alone:
+   * {known, options: [{requiresTable, yields, times, missing: {name: n}}]}
+   * with the cheapest option first (fewest missing, then no table).
+   */
+  craftPlan (item, count = 1) {
+    const bot = this.bot
+    const reg = bot.registry
+    const def = reg.itemsByName[item]
+    if (!def) return { known: false, options: [] }
+    const recipes = bot.recipesAll(def.id, null, true)
+    const inv = this.inventory()
+    const options = recipes.map(r => {
+      const times = Math.ceil(count / r.result.count)
+      const missing = {}
+      for (const d of r.delta) {
+        if (d.count >= 0) continue
+        const name = reg.items[d.id]?.name
+        const need = -d.count * times - (inv[name] || 0)
+        if (need > 0) missing[name] = need
+      }
+      return { requiresTable: !!r.requiresTable, yields: r.result.count, times, missing }
+    })
+    const total = o => Object.values(o.missing).reduce((a, b) => a + b, 0)
+    options.sort((a, b) => total(a) - total(b) || a.requiresTable - b.requiresTable)
+    return { known: true, options }
+  }
+
+  /** Craft with what's in the inventory, at a crafting table at tablePos if given. */
+  async craft (item, count, tablePos) {
+    const bot = this.bot
+    const def = bot.registry.itemsByName[item]
+    let table = null
+    if (tablePos) {
+      table = bot.blockAt(new Vec3(tablePos[0], tablePos[1], tablePos[2]))
+      if (!table || table.name !== 'crafting_table') return { ok: false, reason: `no crafting_table at [${tablePos.join(', ')}] any more` }
+    }
+    const recipes = bot.recipesFor(def.id, null, count, table)
+    const recipe = recipes.find(r => !r.requiresTable) || recipes[0]
+    if (!recipe) return { ok: false, reason: 'ingredients no longer in the inventory' }
+    const before = this.inventory()[item] || 0
+    try {
+      await bot.craft(recipe, Math.ceil(count / recipe.result.count), recipe.requiresTable ? table : null)
+    } catch (err) {
+      return { ok: false, reason: err.message }
+    }
+    return { ok: true, crafted: (this.inventory()[item] || 0) - before }
+  }
+
+  // ---- placing, equipping, eating ----------------------------------------
+
+  /** Place an inventory block against the face of refPos pointing at pos. */
+  async place (item, refPos, pos) {
+    const bot = this.bot
+    const it = bot.inventory.items().find(i => i.name === item)
+    if (!it) return { ok: false, reason: `no ${item} in inventory` }
+    const ref = bot.blockAt(new Vec3(refPos[0], refPos[1], refPos[2]))
+    if (!ref) return { ok: false, reason: 'not loaded' }
+    try {
+      await bot.equip(it, 'hand')
+      await bot.placeBlock(ref, new Vec3(pos[0] - refPos[0], pos[1] - refPos[1], pos[2] - refPos[2]))
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, reason: err.message }
+    }
+  }
+
+  async equip (item, slot = 'hand') {
+    if (!SLOTS.has(slot)) return { ok: false, reason: `unknown slot ${slot}; one of ${[...SLOTS].join(', ')}` }
+    const it = this.bot.inventory.items().find(i => i.name === item)
+    if (!it) return { ok: false, reason: `no ${item} in inventory` }
+    try {
+      await this.bot.equip(it, slot)
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, reason: err.message }
+    }
+  }
+
+  /** Edible items in the inventory, best first; harmful ones last and flagged. */
+  foods () {
+    const reg = this.bot.registry
+    const inv = this.inventory()
+    return Object.keys(inv)
+      .filter(n => reg.foodsByName?.[n])
+      .map(n => ({ name: n, count: inv[n], points: reg.foodsByName[n].foodPoints, quality: reg.foodsByName[n].effectiveQuality, harmful: HARMFUL_FOOD.has(n) }))
+      .sort((a, b) => a.harmful - b.harmful || b.quality - a.quality)
+  }
+
+  isFood (name) { return !!this.bot.registry.foodsByName?.[name] }
+
+  async eat (item) {
+    const bot = this.bot
+    const it = bot.inventory.items().find(i => i.name === item)
+    if (!it) return { ok: false, reason: `no ${item} in inventory` }
+    try {
+      await bot.equip(it, 'hand')
+      await bot.consume()
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, reason: err.message }
+    }
+  }
 }
 
-module.exports = { Motor, equipBot, CARDINAL }
+module.exports = { Motor, equipBot, guardHouseRules, CARDINAL, SLOTS }

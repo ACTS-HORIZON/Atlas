@@ -10,6 +10,9 @@ const { MotionTracker, SoundMemory } = require('./fairplay/perception')
 const { VERBS } = require('./verbs')
 const { Motor, equipBot } = require('./motor')
 const { VerbApi } = require('./api')
+const { HouseRules } = require('./house')
+const { Locator } = require('./locator')
+const { classifyChat } = require('./chat')
 const { Runner } = require('./runner')
 const { Tap } = require('./tap')
 const { Dashboard, parseBind, verbLibrary, tailFile } = require('./dashboard')
@@ -21,6 +24,7 @@ class Body {
     this.cfg = cfg
     this.createBot = createBot
     this.runner = new Runner(VERBS)
+    this.chatCalls = 0
     this.tap = new Tap()
     this.log = new JsonlLog(cfg.logDir)
     this.bot = null
@@ -32,6 +36,8 @@ class Body {
     this.sounds = new SoundMemory()
     this.stats = new BuildStats()
     this.places = new KnownPlaces({ file: cfg.placesFile }).load()
+    this.house = new HouseRules(cfg.protectedRegions || [])
+    this.locator = new Locator() // Locator Bar waypoints: not available yet, see src/locator.js
     this.backoff = 5000
     this.timers = []
     this.link = new Link({
@@ -98,8 +104,8 @@ class Body {
     })
     this.bot = bot
     equipBot(bot) // pathfinder plugin
-    this.view = new MineflayerView(bot, { sightRadius: this.cfg.sightRadius })
-    this.motor = new Motor(bot)
+    this.view = new MineflayerView(bot, { sightRadius: this.cfg.sightRadius, locator: this.locator })
+    this.motor = new Motor(bot, { house: this.house })
     let joinGraceUntil = Infinity
 
     bot.once('spawn', () => {
@@ -137,6 +143,7 @@ class Body {
       if (from === bot.username) return
       this.chat.push({ from, text, t: Number(bot.time.age) || 0 })
       if (this.chat.length > 20) this.chat.shift()
+      this.onChat(from, text)
     })
     bot.on('soundEffectHeard', (name, pt) => this.sounds.add(name, [pt.x, pt.y, pt.z], Date.now()))
     bot.on('bossBarCreated', b => this.bossBars.set(b.entityUUID, b))
@@ -245,6 +252,8 @@ class Body {
       motor: this.motor,
       observe: () => this.obs(),
       places: this.places,
+      house: this.house,
+      locator: this.locator,
       sight: () => this.view.sight(),
       registry: { isBlock: n => !!reg?.blocksByName[n], isItem: n => !!reg?.itemsByName[n] }
     })
@@ -254,6 +263,44 @@ class Body {
     const r = await this.runner.run(this.act(), call)
     if (r.status === 'done' && call.verb === 'say') await new Promise(resolve => setTimeout(resolve, 50))
     return { ...r, obs: this.obs() }
+  }
+
+  /**
+   * Chat from allowlisted players: stop / status / come here are handled
+   * here (they work even with the mind busy or down); other "@<bot> …" is a
+   * task_from_chat event, the rest player_said.
+   */
+  onChat (from, text) {
+    const c = classifyChat({ from, text, botName: this.cfg.mc.username, allowlist: this.cfg.players || [] })
+    const say = t => { try { this.bot.chat(t) } catch {} }
+    if (c.kind === 'ignore') return
+    if (c.kind === 'said') return this.event('player_said', { from, text: c.text })
+    if (c.kind === 'task') return this.event('task_from_chat', { from, text: c.text })
+    if (c.kind === 'stop') {
+      const r = this.runner.stop(this.act(), `${from} in chat`)
+      say(r.detail === 'stopped (nothing was running)' ? 'nothing to stop' : r.detail)
+      return this.event('stop_requested', { from, detail: r.detail })
+    }
+    if (c.kind === 'status') return say(this.statusLine())
+    if (c.kind === 'come') {
+      const id = `chat-${++this.chatCalls}`
+      const args = { target: from }
+      this.runner.run(this.act(), { id, verb: 'goto', args }).then(r => {
+        if (r.status === 'refused' && r.detail === 'busy') say(`busy with ${this.runner.task()?.verb ?? 'something'}; say @${this.cfg.mc.username} stop first`)
+        else if (r.status === 'refused') say(`I can't see you, ${from}`)
+        else if (r.status !== 'done') say(`couldn't get to you: ${r.detail}`)
+        this.event('verb_done', { id, verb: 'goto', args, status: r.status, detail: r.detail, by: 'chat' })
+      })
+    }
+  }
+
+  /** One line for "@<bot> status". */
+  statusLine () {
+    const t = this.runner.task()
+    const b = this.bot
+    const p = b?.entity?.position
+    const doing = t ? `${t.verb}${t.progress ? ` (${t.progress})` : ''}` : 'idle'
+    return `status: ${doing} | health ${b?.health ?? '?'} food ${b?.food ?? '?'}${p ? ` | at ${Math.floor(p.x)} ${Math.floor(p.y)} ${Math.floor(p.z)}` : ''}`.slice(0, 250)
   }
 
   /** The dashboard's Stop button: the body's stop path, not through the mind. */

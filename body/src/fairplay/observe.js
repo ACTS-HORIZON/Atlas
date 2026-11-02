@@ -12,6 +12,7 @@
 //                           with centre within ~R, in a fixed order
 //   entities  [{id, type, pos (feet), height, hostile}]  (no players, no self)
 //   players   [{name, pos (feet), height, eye, look (unit vector)}]
+//   waypoints [{name, azimuth}] Locator Bar waypoints (src/locator.js), optional
 //   inventory, world {dayTime, raining, thundering, light, biome},
 //   bossBar, chat, task
 // The view may hold more than a player perceives; this module is the filter.
@@ -161,6 +162,15 @@ function buildObs (view, state, options = {}) {
   }
   players.sort((a, b) => a.dist - b.dist)
   players.length = Math.min(players.length, opts.maxPlayers)
+  // Out of sight: bearing only, and only when the Locator Bar shows them
+  // (view.waypoints; never derived from entity positions).
+  const seenNames = new Set(players.map(p => p.name))
+  for (const w of view.waypoints || []) {
+    if (seenNames.has(w.name) || players.length >= opts.maxPlayers) continue
+    const a = w.azimuth * Math.PI / 180
+    players.push({ name: w.name, bearing: bearing(s.yaw, [-Math.sin(a) * 10, 0, Math.cos(a) * 10]) })
+    seenNames.add(w.name)
+  }
 
   const sounds = state.sounds ? state.sounds.reduce(s.pos, s.yaw, now) : []
 

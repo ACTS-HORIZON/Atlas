@@ -1,5 +1,6 @@
 'use strict'
-// Built-in verbs: say, recall, goto, explore, mine, collect (stop is the
+// Built-in verbs: say, recall, goto, explore, mine, collect, craft, place,
+// equip, dig, eat (stop is the
 // Runner's own). Everything else answers failed. Verbs get `act` and never
 // touch the backend:
 //   act.connected() -> bool, act.chat(text), act.halt(),
@@ -44,5 +45,10 @@ VERBS.goto = require('./goto')
 VERBS.explore = require('./explore')
 VERBS.mine = require('./mine')
 VERBS.collect = require('./collect')
+VERBS.craft = require('./craft')
+VERBS.place = require('./place')
+VERBS.equip = require('./equip')
+VERBS.dig = require('./dig')
+VERBS.eat = require('./eat')
 
 module.exports = { VERBS }

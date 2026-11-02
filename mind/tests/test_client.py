@@ -33,6 +33,21 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(parse_command("collect oak_log", nid)["args"], {"item": "oak_log"})
         self.assertTrue(parse_command("collect", nid).startswith("usage"))
 
+    def test_session3_verbs(self):
+        ids = iter(f"c{i}" for i in range(1, 30))
+        nid = lambda: next(ids)  # noqa: E731
+        self.assertEqual(parse_command("goto 1 64 2 nodig", nid)["args"], {"pos": [1.0, 64.0, 2.0], "dig": False})
+        self.assertEqual(parse_command("goto ACTS_HORIZON noscaffold", nid)["args"], {"target": "ACTS_HORIZON", "scaffold": False})
+        self.assertEqual(parse_command("craft oak_planks 8", nid)["args"], {"item": "oak_planks", "count": 8})
+        self.assertEqual(parse_command("craft crafting_table", nid)["args"], {"item": "crafting_table"})
+        self.assertEqual(parse_command("place cobblestone 3 64 -2", nid)["args"], {"block": "cobblestone", "pos": [3, 64, -2]})
+        self.assertTrue(parse_command("place cobblestone 3 64", nid).startswith("usage"))
+        self.assertEqual(parse_command("equip shield off-hand", nid)["args"], {"item": "shield", "slot": "off-hand"})
+        self.assertEqual(parse_command("dig 3 63 -2", nid)["args"], {"pos": [3, 63, -2]})
+        self.assertTrue(parse_command("dig 3 x -2", nid).startswith("usage"))
+        self.assertEqual(parse_command("eat", nid)["args"], {})
+        self.assertEqual(parse_command("eat bread", nid)["args"], {"item": "bread"})
+
     def test_trace(self):
         nid = lambda: "c1"  # noqa: E731
         self.assertEqual(parse_command("trace check the cave first", nid, lambda: 18342),

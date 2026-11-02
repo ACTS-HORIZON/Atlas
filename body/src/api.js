@@ -6,13 +6,18 @@
 //
 // What may be targeted:
 //   - blocks: in the latest obs blocks_seen, or in known places (both are
-//     things the bot has seen through the fair-play filter);
+//     things the bot has seen through the fair-play filter), or any block
+//     visible now by the same line-of-sight check (common types: stone,
+//     dirt, gravel… that blocks_seen does not list);
+//   - players by Locator Bar bearing (when the game shows them on the bar);
 //   - players and entities: in the latest obs (visible now);
 //   - dropped items: visible now (same line-of-sight rule as entities);
 //   - the block right in front of the bot (tunnelling, as a player digs
 //     forward).
 // peek() reads a block only if a face of it is visible from the eyes.
 // Movement may plan over the loaded terrain (the walker sees the ground).
+// House rules: dig and place inside a protected region are refused here
+// (and the motor guards them again underneath).
 const { blockVisible, reachesVoxel } = require('./fairplay/raycast')
 const { entityVisible } = require('./fairplay/observe')
 const { classify } = require('./fairplay/blocks')
@@ -24,16 +29,39 @@ const DIRS = {
   'south-east': [Math.SQRT1_2, Math.SQRT1_2], 'south-west': [-Math.SQRT1_2, Math.SQRT1_2]
 }
 const AIRLIKE = new Set(['air', 'cave_air', 'void_air'])
+const REPLACEABLE = new Set(['air', 'cave_air', 'void_air', 'water', 'lava', 'short_grass', 'tall_grass', 'fern', 'large_fern', 'snow', 'vine', 'dead_bush', 'seagrass', 'tall_seagrass'])
+
+// Offsets within radius R, nearest first (cached per R).
+const OFFSETS = new Map()
+function offsetsWithin (R) {
+  const k = Math.ceil(R)
+  if (OFFSETS.has(k)) return OFFSETS.get(k)
+  const out = []
+  for (let dx = -k; dx <= k; dx++) {
+    for (let dy = -k; dy <= k; dy++) {
+      for (let dz = -k; dz <= k; dz++) {
+        const d = Math.hypot(dx, dy, dz)
+        if (d <= k) out.push([dx, dy, dz, d])
+      }
+    }
+  }
+  out.sort((a, b) => a[3] - b[3])
+  OFFSETS.set(k, out)
+  return out
+}
 const key = p => `${p[0]},${p[1]},${p[2]}`
 
 class VerbApi {
   /**
    * motor: Motor; observe(): latest fair-play obs (builds one);
    * places: KnownPlaces; sight(): {classAt, eye, sightRadius};
-   * registry: {isBlock(name), isItem(name)}
+   * registry: {isBlock(name), isItem(name)}; house: HouseRules;
+   * locator: Locator Bar waypoints (src/locator.js)
    */
-  constructor ({ motor, observe, places, sight, registry }) {
+  constructor ({ motor, observe, places, sight, registry, house = null, locator = null }) {
     this.motor = motor
+    this.house = house
+    this.locator = locator
     this._observe = observe
     this.places = places
     this.sight = sight
@@ -80,6 +108,48 @@ class VerbApi {
     return [...seen.values()].sort((a, b) => a.dist - b.dist)
   }
 
+  /**
+   * Blocks of `type` visible now, nearest first, by looking at the terrain
+   * around the bot: the same line-of-sight check as blocks_seen, for any type
+   * (blocks_seen lists notable types only). Looks at most `within` blocks
+   * out (default 24) and returns at most `limit`.
+   */
+  visibleBlocks (type, { within = 24, limit = 16 } = {}) {
+    const s = this.sight()
+    const view = { classAt: s.classAt }
+    const R = Math.min(within, s.sightRadius)
+    const e = s.eye
+    const ex = Math.floor(e[0]); const ey = Math.floor(e[1]); const ez = Math.floor(e[2])
+    const out = []
+    for (const [dx, dy, dz] of offsetsWithin(R)) {
+      const x = ex + dx; const y = ey + dy; const z = ez + dz
+      const c = s.classAt(x, y, z)
+      if (!c || c.name !== type) continue
+      if (!blockVisible(view, e, x, y, z, c, null)) continue
+      out.push({ pos: [x, y, z], dist: r1(Math.hypot(x + 0.5 - e[0], y + 0.5 - e[1], z + 0.5 - e[2])), source: 'visible' })
+      if (out.length >= limit) break
+    }
+    return out
+  }
+
+  /** Observed targets of a type: seenBlocks plus visibleBlocks, nearest first. */
+  targetsOfType (type, radius = 32) {
+    const all = new Map()
+    for (const b of this.seenBlocks(type, radius)) all.set(key(b.pos), b)
+    for (const b of this.visibleBlocks(type, { within: Math.min(radius, 24) })) if (!all.has(key(b.pos))) all.set(key(b.pos), b)
+    return [...all.values()].sort((a, b) => a.dist - b.dist)
+  }
+
+  /** Locator Bar azimuth (F3 degrees, from the bot) of a player not in sight; null if the bar doesn't show them. */
+  playerAzimuth (name) {
+    return this.locator ? this.locator.azimuthOf(name) : null
+  }
+
+  /** House-rules check: null if allowed, else the refusal reason. */
+  houseCheck (action, pos) {
+    return this.house ? this.house.check(action, pos, this.motor.dimension?.() ?? this.obs()?.self.dim) : null
+  }
+
   /** Is this exact block observed (blocks_seen or known places) as `type`? */
   observedAs (pos, type) {
     const o = this.obs()
@@ -96,12 +166,14 @@ class VerbApi {
   resolveTarget (name) {
     const o = this.observe()
     if (!o) return null
-    const p = o.players.find(x => x.name === name)
+    const p = o.players.find(x => x.name === name && x.pos) // in sight (bearing-only entries have no pos)
     if (p) return { kind: 'player', name, pos: p.pos }
     const e = o.entities.filter(x => x.type === name).sort((a, b) => a.dist - b.dist)[0]
     if (e) return { kind: 'entity', name, pos: [o.self.pos[0] + e.rel[0], o.self.pos[1] + e.rel[1], o.self.pos[2] + e.rel[2]] }
     const b = this.seenBlocks(name)[0]
     if (b) return { kind: 'block', name, pos: b.pos }
+    const az = this.playerAzimuth(name)
+    if (az !== null) return { kind: 'bearing', name, azimuth: az }
     return null
   }
 
@@ -155,20 +227,71 @@ class VerbApi {
 
   /**
    * Dig an observed block. Refused (fair play) unless pos is in blocks_seen or
-   * known places as `type`. {ok, refused?, needsTool?, gone?, reason?}
+   * known places as `type`, or is visible now as `type`; refused (house
+   * rules) inside a protected region. {ok, refused?, needsTool?, gone?, reason?}
    */
-  async digObserved (pos, type, { signal } = {}) {
-    if (!this.observedAs(pos, type)) return { ok: false, refused: true, reason: `fair play: no ${type} has been observed at [${pos.join(', ')}]` }
+  async digObserved (pos, type, { signal, allowHand = false } = {}) {
+    const house = this.houseCheck('dig', pos)
+    if (house) return { ok: false, refused: true, reason: house }
     const now = this.peek(pos)
+    if (!this.observedAs(pos, type) && now !== type) return { ok: false, refused: true, reason: `fair play: no ${type} has been observed at [${pos.join(', ')}]` }
     if (now !== null && now !== type) return { ok: false, gone: true, reason: `${type} at [${pos.join(', ')}] is now ${now}` }
-    return this.motor.dig(pos, { signal })
+    return this.motor.dig(pos, { signal, allowHand })
   }
 
   /** Dig the block directly in front (dy 0 = feet level, 1 = head level). */
   async digAhead (dir, dy, { signal } = {}) {
     if (dy !== 0 && dy !== 1) return { ok: false, refused: true, reason: 'only the two blocks in front can be tunnelled' }
-    return this.motor.dig(this.ahead(dir, dy, 1), { signal, allowHand: true })
+    const pos = this.ahead(dir, dy, 1)
+    const house = this.houseCheck('dig', pos)
+    if (house) return { ok: false, refused: true, reason: house }
+    return this.motor.dig(pos, { signal, allowHand: true })
   }
+
+  /** What a block at pos is, if observed: visible now, or a known place there. */
+  observedBlock (pos) {
+    const now = this.peek(pos)
+    if (now) return now
+    const o = this.obs()
+    const hit = o && (o.blocks_seen.find(b => key(b.pos) === key(pos)) || this.places.inDim(o.self.dim).find(e => key(e.pos) === key(pos)))
+    return hit ? hit.type : null
+  }
+
+  // ---- placing, equipping, eating, crafting -------------------------------
+  /**
+   * Place an inventory block at pos: an empty cell the bot can see and reach
+   * from where it stands, against a visible neighbouring block.
+   * {ok, refused?, reason?}
+   */
+  async place (block, pos, { reach = 4.5 } = {}) {
+    const house = this.houseCheck('place', pos)
+    if (house) return { ok: false, refused: true, reason: house }
+    if (!this.inventoryCount(block)) return { ok: false, reason: `no ${block} in inventory` }
+    const s = this.sight()
+    const d = Math.hypot(pos[0] + 0.5 - s.eye[0], pos[1] + 0.5 - s.eye[1], pos[2] + 0.5 - s.eye[2])
+    if (d > reach) return { ok: false, reason: `[${pos.join(', ')}] is out of reach (${r1(d)} blocks, max ${reach}); goto closer first` }
+    const feet = this.motor.here().map(Math.floor)
+    if (pos[0] === feet[0] && pos[2] === feet[2] && (pos[1] === feet[1] || pos[1] === feet[1] + 1)) return { ok: false, reason: `[${pos.join(', ')}] is where Atlas is standing` }
+    const here = this.peek(pos)
+    if (here === null) return { ok: false, reason: `[${pos.join(', ')}] is not visible from here` }
+    if (!REPLACEABLE.has(here)) return { ok: false, reason: `[${pos.join(', ')}] is not empty (${here})` }
+    for (const [dx, dy, dz] of [[0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]]) {
+      const ref = [pos[0] + dx, pos[1] + dy, pos[2] + dz]
+      const c = s.classAt(ref[0], ref[1], ref[2])
+      if (!c || !c.opaque || c.fluid) continue
+      const r = await this.motor.place(block, ref, pos)
+      return r.ok ? r : { ok: false, reason: r.reason }
+    }
+    return { ok: false, reason: `nothing solid next to [${pos.join(', ')}] to place against` }
+  }
+
+  equip (item, slot) { return this.motor.equip(item, slot) }
+  foods () { return this.motor.foods() }
+  isFood (name) { return this.motor.isFood(name) }
+  food () { return this.motor.food() }
+  eat (item) { return this.motor.eat(item) }
+  craftPlan (item, count) { return this.motor.craftPlan(item, count) }
+  craft (item, count, tablePos) { return this.motor.craft(item, count, tablePos) }
 
   // ---- items -------------------------------------------------------------
   /** Dropped items in sight: [{id, item, pos, dist}], nearest first. */

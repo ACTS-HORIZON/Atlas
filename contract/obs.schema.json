@@ -75,16 +75,30 @@
     },
     "players": {
       "type": "array",
+      "description": "In line of sight: name, pos, dist, looking_at. Out of sight but on the Locator Bar: name and bearing only.",
       "items": {
-        "type": "object",
-        "required": ["name", "pos", "dist", "looking_at"],
-        "additionalProperties": false,
-        "properties": {
-          "name": {"type": "string"},
-          "pos": {"$ref": "#/$defs/vec3"},
-          "dist": {"type": "number", "minimum": 0},
-          "looking_at": {"oneOf": [{"$ref": "#/$defs/ivec3"}, {"type": "null"}]}
-        }
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["name", "pos", "dist", "looking_at"],
+            "additionalProperties": false,
+            "properties": {
+              "name": {"type": "string"},
+              "pos": {"$ref": "#/$defs/vec3"},
+              "dist": {"type": "number", "minimum": 0},
+              "looking_at": {"oneOf": [{"$ref": "#/$defs/ivec3"}, {"type": "null"}]}
+            }
+          },
+          {
+            "type": "object",
+            "required": ["name", "bearing"],
+            "additionalProperties": false,
+            "properties": {
+              "name": {"type": "string"},
+              "bearing": {"$ref": "#/$defs/bearing"}
+            }
+          }
+        ]
       }
     },
     "sounds": {

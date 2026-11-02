@@ -14,13 +14,19 @@ data/      known places file (gitignored)
 ## What works so far
 
 - **Body** joins as `Atlas` (offline auth) and reconnects if the server goes away. Nothing is observed or sent until health and food are known (they arrive just after spawn), so the first obs is always complete. It never gets op, never runs commands and never changes its gamemode; it plays in whatever gamemode you set.
-- **Link**: a WebSocket on `127.0.0.1:8765`. The body sends a full-view `obs` when the mind connects, when it is asked, and every 2 s. It accepts `call` for `say`, `stop`, `recall`, `goto`, `explore`, `mine` and `collect` (see [Verbs](#verbs)), answers each with a `result`, and emits `event`s for `died`, `respawned`, `player_joined`, `player_left` and `stop_requested`. It also accepts `trace` (the mind's reasoning), which it logs and never acts on.
+- **Link**: a WebSocket on `127.0.0.1:8765`. The body sends a full-view `obs` when the mind connects, when it is asked, and every 2 s. It accepts `call` for the verbs in [docs/verbs.md](docs/verbs.md), answers each with a `result`, and emits `event`s for `died`, `respawned`, `player_joined`, `player_left`, `stop_requested`, `task_from_chat`, `player_said` and `verb_done`. It also accepts `trace` (the mind's reasoning), which it logs and never acts on.
 - **Fair-play observation** (`body/src/fairplay/`):
   - `blocks_seen`: notable types only. They must be within the sight radius and visible along a raycast from the eyes, where the first solid block wins. Nearest first, at most 48 blocks and at most 12 of any one type. A pool is listed as water at its surface only.
   - Sight: glass, ice and water are transparent; leaves and lava block sight. The radius is `sight_radius` (`ATLAS_SIGHT_RADIUS`, default 64), never more than the server's or the bot's render distance.
   - `entities` and `players`: only those in line of sight. No hidden state. A player's `looking_at` is filled only when the bot can see that block too.
   - `sounds`: type, bearing and near/mid/far only.
 - **Known places** (`body/src/places.js`): every notable block that has appeared in `blocks_seen` is remembered with position, dimension and last-seen game tick, saved at most every 10 s and on shutdown, and reloaded on start. The file is named after the configured server, `data/known-places.<host>_<port>.json` (e.g. `data/known-places.localhost_25565.json`), so the dev world and the co-op server never share one; `ATLAS_PLACES_FILE` overrides the name. The name comes from `ATLAS_MC_HOST` as written, so `localhost` and `127.0.0.1` give two files for the same server: pick one spelling and keep it. Nothing else can enter it. An entry is dropped when Atlas can see the spot again and the block is gone. `recall {type, near?}` returns the nearest one as `data: {type, pos, dist, age}`, or `failed` with detail `unknown`.
+- **Chat:** only players on `ATLAS_PLAYERS` are listened to.
+  - `@Atlas stop`, `@Atlas status` and `@Atlas come here` are handled by the body itself, so they work even with the mind busy or down.
+  - Any other `@Atlas …` becomes a `task_from_chat` event, and their other chat a `player_said` event.
+  - Everyone else's chat only appears in `obs.chat`.
+- **House rules:** protected regions (`ATLAS_PROTECTED_REGIONS`, a JSON list of boxes, empty by default). Nothing is dug or placed inside one.
+- **Locator Bar:** not available yet; see [Locator Bar](#locator-bar-not-available-yet).
 - **Logs**: every contract message in or out is appended to `logs/link-YYYY-MM-DD.jsonl` as `{"ts", "dir": "in"|"out", "msg"}`.
 - **Verbs** run one at a time (`body/src/runner.js`), and the running one shows as `task` in the obs. `say`, `recall`, `inspect` and `stop` run alongside it. Any other call while a verb runs is `refused` with detail `busy`: it is not queued, and the running verb keeps going. `stop` aborts the running verb, so it returns `interrupted`, and releases every movement control.
 - **Dashboard** at `http://<atlas>:8080/` (see below).
@@ -30,34 +36,27 @@ data/      known places file (gitignored)
 
 - **Requesting an obs**: the mind sends `{"type": "observe", "v": "0.1"}`.
 - **`say`**: text starting with `/` gets `refused`, because the bot never runs commands.
-- **`result.data`**: verbs that return information put it in `data` (`recall`, `goto`, `explore`, `mine`, `collect`; shapes below).
+- **`result.data`**: verbs that return information put it in `data`; shapes are in [docs/verbs.md](docs/verbs.md).
 - **`trace`**: `data` is optional; `t` is the tick of the latest obs the mind has.
 - **`obs: null`.** A `result` or `event` sent while the bot is not in the game carries `obs: null`.
 - **Yaw and pitch** are in F3 degrees: yaw 0 is south and 90 is west; positive pitch looks down.
-- **Not in CONTRACT.md yet:** what a goto `target` may name, the explore directions, the argument limits and the `data` shapes are the body's choices (below, and `body/src/verbs/common.js`).
+- **Bearing-only players:** an obs `players` entry is either `{name, pos, dist, looking_at}` (in sight) or `{name, bearing}` (out of sight, on the Locator Bar).
+
+### Locator Bar (not available yet)
+
+CONTRACT.md: players out of sight are reported by bearing only, exactly when the game's Locator Bar would show them.
+- **Protocol:** in 26.1 the server sends the bar in the `tracked_waypoint` play packet (track / untrack / update; keyed by player UUID; carrying a block position, a chunk, or only an azimuth). minecraft-protocol parses it, but **Mineflayer 4.39 has no handler for it**.
+- **What the body does instead:** it reports no bearings. It deliberately does not compute them from entity positions, because that would show players the game hides.
+- **What's ready:** the observation builder, the obs schema and `goto` by bearing all support it, and are tested with a stand-in source. Wiring the real packet changes only `body/src/locator.js`.
 
 ## Verbs
 
-All of them follow the one-verb-at-a-time rule: `goto`, `explore`, `mine` and `collect` become the `task` in the obs, with progress, and `stop` (mind or dashboard) interrupts them (`interrupted`, with where it got to). They act only through the body's filtered API (`body/src/api.js`), which decides what may be targeted; the Mineflayer side is `body/src/motor.js`.
+**[docs/verbs.md](docs/verbs.md) is the verb reference.** It is the authority for arguments, limits, `data` shapes, progress strings and failure reasons, and the mind loads it into its prompt.
 
-**Fair play for verbs.**
-- **Movement:** the pathfinder (mineflayer-pathfinder 2.4.5, pinned) may plan over loaded-chunk terrain, as a walker sees the ground. `goto` and `explore` never dig and never place blocks. When `mine` walks to a target, the path may dig through whatever is in the way, as a player tunnels to ore they saw.
-- **Targets:** what a verb may target must have been observed. A block must be in `blocks_seen` or known places. A player or entity must be visible now. A dropped item must be visible now, by the same line-of-sight rule. Otherwise the call is `refused`, never silently skipped.
-- **Reading blocks:** a verb may read a block's type only if the bot can see it (`peek`, same rule as `blocks_seen`). Strip-mining finds out about lava the way a player does.
-
-| Verb | Args | Result |
-|------|------|--------|
-| `goto` | `pos` [x,y,z], or `target` (a visible player's name, a visible entity type, or a seen/known block type); `range` (default 1, 2 for a target) | `done` arrived · `partial` gave up (stuck or took too long) with `remaining` · `failed` no path · `refused` target not observed. `data: {pos, remaining}` |
-| `explore` | `direction` (north, south, east, west, north-east, …, or forward), `distance` (1–512) | Walks in 16-block legs and looks left and right after each. `done`, or `partial` if blocked. `data: {direction, walked, seen: {type: count}, new_places}` |
-| `mine` | `block`, `count` (default 1), `radius` (default 32) | Mines observed blocks nearest first: walks within reach, digs with the best tool, picks up the drop. `done` at count · `partial` with the count when none are left in the radius · `failed` if the block needs a tool it doesn't have (checked before moving) · `refused` for a type it never observes (e.g. `stone`; `blocks_seen` lists notable blocks only). If none of that type is observed when it starts, it strip-mines (below). `box` is not supported yet. `data: {block, mined, requested, tunnel}` |
-| `collect` | `item` | Walks onto visible drops of that item until none are left in sight. This is how it receives tossed items. `done`, or `partial` if some stayed out of reach. `data: {item, collected, unreachable}` |
-
-**Strip-mining** (`mine` when no target is observed):
-- **Tunnel:** a 1×2 tunnel straight ahead at the bot's current y.
-- **Pattern:** a branch-mine serpentine: `ATLAS_STRIP_LENGTH` blocks (default 24), turn, 3 across, turn, back.
-- **Targets on the way:** anything of the target type that comes into view gets mined.
-- **Stops:** at the count, on `stop`, on visible lava or water ahead, on a drop or hole under the next step, on gravel that keeps falling, or at `ATLAS_STRIP_MAX` tunnel blocks (default 256), returning `partial` with the reason.
-- **Tools:** tunnel blocks are dug with the best tool, by hand if there is none (slow).
+- **Implemented:** `say`, `stop`, `recall`, `goto`, `explore`, `mine`, `collect`, `craft`, `place`, `equip`, `dig`, `eat`.
+- **One at a time:** the running verb is the `task` in the obs, with progress, and `stop` interrupts it.
+- **Filtered API:** verbs act only through `body/src/api.js`, which enforces fair play (targets must be observed; blocks are read only when visible) and house rules (protected regions). The Mineflayer side is `body/src/motor.js`, which also guards `bot.dig` and `bot.placeBlock` against protected regions, so not even the pathfinder digs or builds in one.
+- **Deliberately dumb:** a verb that can't do its job fails with a reason the mind can act on ("needs crafting_table nearby", "missing 3 oak_planks"). It doesn't go and fix the cause itself.
 
 ## Install on the `atlas` LXC
 
@@ -142,7 +141,7 @@ You should see `[link] listening…`, `[bot] spawned in overworld at … gamemod
 cd /opt/atlas/mind && .venv/bin/python -m atlas_mind
 ```
 
-Type `say hello`, `goto 10 64 -20`, `explore north 48`, `mine coal_ore 3`, `collect oak_log`, `stop`, `recall iron_ore`, `trace plan get iron first`, `obs`, or `quit`. Add `--json` to see raw messages instead of the summary.
+Type `say hello`, `goto 10 64 -20`, `explore north 48`, `mine coal_ore 3`, `collect oak_log`, `craft oak_planks 4`, `place cobblestone 3 64 -2`, `equip iron_pickaxe`, `dig 3 63 -2`, `eat`, `stop`, `recall iron_ore`, `trace plan get iron first`, `obs`, or `quit`. Add `--json` to see raw messages instead of the summary.
 
 **Logs:**
 
@@ -242,7 +241,7 @@ Run these in order, in the dev world, with your client next to Atlas and the das
    - **Result:** it walks over them, the inventory panel shows `oak_log 3`, and the result is `done — collected 3 oak_log; none left in sight`.
    - **Behind a wall:** toss one behind a wall instead. It isn't fetched; `no oak_log drops in sight`.
 10. **`mine`, missing tool.** With no pickaxe, `mine iron_ore 1` gives `failed — mine: iron_ore needs one of: stone_pickaxe, …`, before it moves.
-11. **`mine stone 3`** gives `refused — fair play: stone is not a type the bot observes…`.
+11. **`mine stone 3`** without a pickaxe gives `failed — mine: stone needs one of: wooden_pickaxe, …`. (Before session 3 this was refused; stone visible in the terrain now counts as seen.)
 12. **`mine` seen ore.** Toss Atlas an iron pickaxe, then `collect iron_pickaxe`. With exposed coal in view, `mine coal_ore 3`.
     - **Task panel:** `1/3 coal_ore: digging [...]`.
     - **Result:** the coal leaves Blocks seen, the inventory shows coal, and the result is `done — mined 3 coal_ore`, or `partial — mined N of 3; none left within 32 blocks`.
@@ -252,6 +251,41 @@ Run these in order, in the dev world, with your client next to Atlas and the das
     - **Task panel:** shows `tunnel N`. The tunnel runs 24 blocks straight, turns right, goes 3 across, turns right again and runs back.
     - **Stops:** it stops with `partial — … strip-mining stopped: lava ahead` (or similar) when lava shows. Press STOP mid-tunnel: digging stops immediately and you get `interrupted`.
 14. **Logs.** `logs/link-*.jsonl` has every call and result. Each result's `data` is under the result in Last calls.
+
+## Session 3 live checklist, part A: body (atlas)
+
+Set `ATLAS_PLAYERS=ACTS_HORIZON` in `atlas.env` first. Optionally protect a small test box, for example:
+
+```bash
+ATLAS_PROTECTED_REGIONS='[{"name":"test","from":[100,60,100],"to":[110,80,110]}]'
+```
+
+Restart the body after changing either.
+
+1. **Chat.**
+   - `@Atlas status` gets a chat reply like `status: idle | health 20 food 20 | at …`.
+   - `@Atlas hello there`: the dashboard Events feed shows `task_from_chat {"from":"ACTS_HORIZON","text":"hello there"}`.
+   - Plain `hi` shows `player_said`.
+   - A second, non-allowlisted account's chat shows only in the Chat panel, with no event.
+2. **`@Atlas come here`** in view: Atlas walks to you, and Events shows `verb_done {…"by":"chat"}`. Out of view, it says `I can't see you, ACTS_HORIZON`, because the Locator Bar isn't available yet.
+3. **`@Atlas stop`** during a long `goto`: Atlas halts and replies `stopped goto`, and Events shows `stop_requested`.
+4. **`goto` with digging and pillaring.**
+   - `goto <x y z>` to a spot behind a 3-block wall: it tunnels through.
+   - A spot 4 blocks up a cliff, with cobblestone in the inventory: it pillars.
+   - `goto <x y z> nodig noscaffold` (same spots) gives `partial` or `failed`.
+5. **Protected region.** Stand Atlas next to the test box.
+   - `dig <x y z>` on a block inside gives `refused — house rules: no dig inside protected region "test" …`.
+   - `place cobblestone <inside>` gives the same refusal.
+   - A `goto` whose shortest path tunnels through the box walks around it, or gives `partial`/`failed`; it never digs inside.
+6. **`mine stone 3`** with a wooden pickaxe, standing on stone. It mines 3 visible stone, and the inventory shows cobblestone. Without a pickaxe: `failed — mine: stone needs one of: wooden_pickaxe, …`.
+7. **`craft`.** With 2 oak_log in the inventory:
+   - `craft oak_planks 8` gives `done — crafted 8 oak_planks`.
+   - `craft crafting_table` gives `done`.
+   - `craft wooden_pickaxe` with no table seen gives `failed — craft: wooden_pickaxe needs crafting_table nearby …`.
+   - Place the table (`place crafting_table x y z` next to Atlas), then `craft stick 4`, then `craft wooden_pickaxe`. It walks to the table and gives `done`.
+   - `craft stone_pickaxe` with no cobblestone gives `failed — craft: missing 3 of cobbled_deepslate, blackstone or cobblestone for 1 stone_pickaxe`.
+8. **`equip wooden_pickaxe`**, then **`dig`** a visible block: done. A buried block's coordinates: `refused — fair play`.
+9. **`eat`.** At full food: `failed — eat: not hungry (food 20/20)`. After sprinting a while, toss Atlas bread and `collect bread`; then `eat` gives `done — ate bread; food 14 → 19`.
 
 ## Development
 

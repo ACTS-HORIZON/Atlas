@@ -33,7 +33,8 @@ class Runner {
   /** @returns {Promise<{status, detail, data?}>} */
   async run (act, call) {
     const { id, verb } = call
-    const args = call.args || {}
+    // verbs get their own copy: validation fills in defaults
+    const args = call.args && typeof call.args === 'object' ? JSON.parse(JSON.stringify(call.args)) : (call.args ?? {})
     if (verb === 'stop') return this.stop(act, `call ${id}`)
     if (this.current && !ALONGSIDE.has(verb)) return { status: 'refused', detail: 'busy' }
     const def = Object.hasOwn(this.verbs, verb) ? this.verbs[verb] : null
