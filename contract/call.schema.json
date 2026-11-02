@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/contract/call.schema.json",
+  "title": "call (verb), mind -> body, CONTRACT.md v0.1",
+  "type": "object",
+  "required": ["type", "v", "id", "verb"],
+  "additionalProperties": false,
+  "properties": {
+    "type": {"const": "call"},
+    "v": {"const": "0.1"},
+    "id": {"type": "string", "minLength": 1},
+    "verb": {"type": "string", "minLength": 1, "description": "Any verb name from CONTRACT.md; the body answers failed for verbs it does not implement yet."},
+    "args": {"type": "object", "default": {}}
+  }
+}

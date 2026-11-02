@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/contract/obs.schema.json",
+  "title": "obs (full view), CONTRACT.md v0.1",
+  "description": "Fair-play full observation, body -> mind. Entity, player and sound items are closed (additionalProperties false) so hidden state such as entity health or exact sound coordinates cannot slip in.",
+  "type": "object",
+  "required": ["type", "v", "t", "self", "inventory", "world", "blocks_seen", "entities", "players", "sounds", "boss_bar", "chat", "task"],
+  "additionalProperties": false,
+  "$defs": {
+    "vec3": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+    "ivec3": {"type": "array", "items": {"type": "integer"}, "minItems": 3, "maxItems": 3},
+    "bearing": {"enum": ["front", "front-right", "right", "behind-right", "behind", "behind-left", "left", "front-left", "above", "below"]}
+  },
+  "properties": {
+    "type": {"const": "obs"},
+    "v": {"const": "0.1"},
+    "t": {"type": "integer", "description": "world age in ticks"},
+    "self": {
+      "type": "object",
+      "required": ["pos", "dim", "yaw", "pitch", "health", "food", "xp", "on_ground", "in_water", "held", "armor", "effects", "gamemode"],
+      "additionalProperties": false,
+      "properties": {
+        "pos": {"$ref": "#/$defs/vec3"},
+        "dim": {"type": "string"},
+        "yaw": {"type": "number", "description": "F3 convention, degrees: 0 south, 90 west, 180 north, -90 east"},
+        "pitch": {"type": "number", "description": "F3 convention, degrees: positive looks down"},
+        "health": {"type": "number"},
+        "food": {"type": "number"},
+        "xp": {"type": "integer", "description": "level"},
+        "on_ground": {"type": "boolean"},
+        "in_water": {"type": "boolean"},
+        "held": {"type": ["string", "null"]},
+        "armor": {"type": "array", "items": {"type": "string"}},
+        "effects": {"type": "array", "items": {"type": "string"}},
+        "gamemode": {"enum": ["survival", "creative", "adventure", "spectator"]}
+      }
+    },
+    "inventory": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1}},
+    "world": {
+      "type": "object",
+      "required": ["time", "weather", "light", "biome"],
+      "additionalProperties": false,
+      "properties": {
+        "time": {"enum": ["dawn", "day", "dusk", "night"]},
+        "weather": {"enum": ["clear", "rain", "thunder"]},
+        "light": {"type": ["integer", "null"], "minimum": 0, "maximum": 15},
+        "biome": {"type": ["string", "null"]}
+      }
+    },
+    "blocks_seen": {
+      "type": "array",
+      "description": "Notable block types only, visible (line of sight) and within render distance; nearest first; capped.",
+      "items": {
+        "type": "object",
+        "required": ["type", "pos", "dist"],
+        "additionalProperties": false,
+        "properties": {"type": {"type": "string"}, "pos": {"$ref": "#/$defs/ivec3"}, "dist": {"type": "number", "minimum": 0}}
+      }
+    },
+    "entities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "rel", "dist", "bearing", "approaching", "hostile"],
+        "additionalProperties": false,
+        "properties": {
+          "type": {"type": "string"},
+          "rel": {"$ref": "#/$defs/ivec3"},
+          "dist": {"type": "number", "minimum": 0},
+          "bearing": {"$ref": "#/$defs/bearing"},
+          "approaching": {"type": "boolean"},
+          "hostile": {"type": "boolean"}
+        }
+      }
+    },
+    "players": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "pos", "dist", "looking_at"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "pos": {"$ref": "#/$defs/vec3"},
+          "dist": {"type": "number", "minimum": 0},
+          "looking_at": {"oneOf": [{"$ref": "#/$defs/ivec3"}, {"type": "null"}]}
+        }
+      }
+    },
+    "sounds": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "bearing", "dist"],
+        "additionalProperties": false,
+        "properties": {
+          "type": {"type": "string"},
+          "bearing": {"$ref": "#/$defs/bearing"},
+          "dist": {"enum": ["near", "mid", "far"]}
+        }
+      }
+    },
+    "boss_bar": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "object", "required": ["title", "health"], "additionalProperties": false,
+         "properties": {"title": {"type": "string"}, "health": {"type": "number", "minimum": 0, "maximum": 1}}}
+      ]
+    },
+    "chat": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from", "text", "t"],
+        "additionalProperties": false,
+        "properties": {"from": {"type": "string"}, "text": {"type": "string"}, "t": {"type": "integer"}}
+      }
+    },
+    "task": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "object", "required": ["id", "verb", "args", "state"],
+         "properties": {"id": {"type": "string"}, "verb": {"type": "string"}, "args": {"type": "object"},
+                        "progress": {"type": "string"}, "state": {"type": "string"}}}
+      ]
+    }
+  }
+}

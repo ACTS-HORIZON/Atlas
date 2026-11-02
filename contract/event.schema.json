@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/contract/event.schema.json",
+  "title": "event, body -> mind, CONTRACT.md v0.1",
+  "type": "object",
+  "required": ["type", "v", "kind", "detail", "obs"],
+  "additionalProperties": false,
+  "properties": {
+    "type": {"const": "event"},
+    "v": {"const": "0.1"},
+    "kind": {"enum": ["task_from_chat", "player_said", "item_received", "verb_done", "reflex_escalation",
+                      "damaged_badly", "died", "respawned", "inventory_full", "night_falling",
+                      "player_joined", "player_left", "stop_requested"]},
+    "detail": {},
+    "obs": {"oneOf": [{"$ref": "obs.schema.json"}, {"type": "null"}]}
+  }
+}

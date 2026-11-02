@@ -1,0 +1,22 @@
+# Example unit for the Atlas body on the atlas LXC.
+#   cp /opt/atlas/deploy/systemd/atlas-body.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now atlas-body
+#   journalctl -u atlas-body -f
+[Unit]
+Description=Atlas body (Mineflayer + fair-play observation + link)
+# If the Minecraft server runs as a unit on this LXC, order after it, e.g.:
+# After=minecraft.service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=atlas
+WorkingDirectory=/opt/atlas/body
+EnvironmentFile=-/opt/atlas/atlas.env
+ExecStart=/usr/local/bin/node src/index.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

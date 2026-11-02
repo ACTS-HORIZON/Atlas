@@ -1,0 +1,22 @@
+{
+  "name": "atlas-body",
+  "version": "0.1.0",
+  "description": "Atlas body: Mineflayer backend, fair-play observation, contract link",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test test/*.test.js",
+    "bench": "node bench/obs-bench.js"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "ajv": "^8.20.0",
+    "mineflayer": "~4.39.0",
+    "vec3": "^0.2.0",
+    "ws": "^8.22.1"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22.9"
+  }
+}
