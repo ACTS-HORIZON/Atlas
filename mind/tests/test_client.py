@@ -16,6 +16,23 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(parse_command("recall chest 1 64 -3", nid)["args"], {"type": "chest", "near": [1.0, 64.0, -3.0]})
         self.assertTrue(parse_command("recall chest 1 2", nid).startswith("usage"))
 
+    def test_verbs(self):
+        ids = iter(f"c{i}" for i in range(1, 20))
+        nid = lambda: next(ids)  # noqa: E731
+        self.assertEqual(parse_command("goto 10 64 -3.5", nid)["args"], {"pos": [10.0, 64.0, -3.5]})
+        self.assertEqual(parse_command("goto ACTS_HORIZON", nid)["args"], {"target": "ACTS_HORIZON"})
+        self.assertTrue(parse_command("goto 1 2", nid).startswith("usage"))
+        self.assertTrue(parse_command("goto 1 2 x", nid).startswith("usage"))
+        self.assertEqual(parse_command("explore north-east 48", nid)["args"], {"direction": "north-east", "distance": 48})
+        self.assertTrue(parse_command("explore up 3", nid).startswith("usage"))
+        self.assertTrue(parse_command("explore north", nid).startswith("usage"))
+        m = parse_command("mine iron_ore 8", nid)
+        self.assertEqual((m["verb"], m["args"]), ("mine", {"block": "iron_ore", "count": 8}))
+        self.assertEqual(parse_command("mine coal_ore 3 16", nid)["args"], {"block": "coal_ore", "count": 3, "radius": 16})
+        self.assertTrue(parse_command("mine coal_ore lots", nid).startswith("usage"))
+        self.assertEqual(parse_command("collect oak_log", nid)["args"], {"item": "oak_log"})
+        self.assertTrue(parse_command("collect", nid).startswith("usage"))
+
     def test_trace(self):
         nid = lambda: "c1"  # noqa: E731
         self.assertEqual(parse_command("trace check the cave first", nid, lambda: 18342),

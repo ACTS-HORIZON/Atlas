@@ -122,6 +122,7 @@ function verbLibrary (builtins, liveDir) {
     if (v.kind === 'live') return { ...v, source: fs.readFileSync(path.join(liveDir, `${name}.js`), 'utf8') }
     if (name === 'stop') return { ...v, source: '// stop is handled by the body itself (src/runner.js, Runner.stop):\n// it aborts the running verb (which returns "interrupted") and releases all controls.\n' + require('./runner').Runner.prototype.stop.toString() }
     const def = builtins[name]
+    if (def.file && path.basename(def.file) !== 'index.js') return { ...v, file: path.relative(path.join(__dirname, '..'), def.file), source: fs.readFileSync(def.file, 'utf8') }
     return { ...v, source: `${name}: {\n  ${def.run.toString()}\n}` }
   }
   return { list, source }

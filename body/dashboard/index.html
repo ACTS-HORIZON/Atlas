@@ -267,7 +267,10 @@ function renderTrace (env) {
 function renderCall (env) {
   const m = env.msg
   if (m.type === 'call') pushFeed($('calls'), el('div', null, el('span', { class: 't' }, time(env.ts)), el('span', { class: 'mono' }, `→ ${m.id} ${m.verb} ${JSON.stringify(m.args || {})}`)), 50)
-  else pushFeed($('calls'), el('div', null, el('span', { class: 't' }, time(env.ts)), tag(m.status, m.status), el('span', { class: 'mono' }, `${m.id} `), m.detail), 50)
+  else {
+    pushFeed($('calls'), el('div', null, el('span', { class: 't' }, time(env.ts)), tag(m.status, m.status), el('span', { class: 'mono' }, `${m.id} `), m.detail,
+      m.data ? el('details', null, el('summary', null, 'data'), el('pre', null, JSON.stringify(m.data, null, 2))) : null), 50)
+  }
 }
 // The tail starts from /api/log; live lines continue after the last one read,
 // so the tap's replay of the same messages is not shown twice.

@@ -27,6 +27,7 @@ class MineflayerView {
     this.maxSight = sightRadius
     this.byState = [] // stateId -> classify() result, filled lazily
     this.cols = new Map()
+    this.sectionHits = new WeakMap() // section -> cached notable indices, see sectionNotable()
     this.classAt = this.classAt.bind(this)
   }
 
@@ -41,12 +42,14 @@ class MineflayerView {
   }
 
   column (cx, cz) {
+    if (cx === this.lastCx && cz === this.lastCz) return this.lastCol // rays are spatially coherent
     const k = cx * 1048576 + cz
     let col = this.cols.get(k)
     if (col === undefined) {
       col = this.bot.world.getColumn(cx, cz) || null
       this.cols.set(k, col)
     }
+    this.lastCx = cx; this.lastCz = cz; this.lastCol = col
     return col
   }
 
@@ -63,13 +66,27 @@ class MineflayerView {
     return this.stateClass(sec.data.get(((y & 15) << 8) | ((z & 15) << 4) | (x & 15)))
   }
 
-  /** Notable blocks within R of eye. Skips sections whose palette has none. */
-  * scanNotable (eye, R) {
+  /**
+   * Notable blocks whose centre is within R of eye: visit(x, y, z, cls),
+   * in a fixed order (columns, sections, then index within the section).
+   * Sections whose palette has no notable state are skipped; packed section
+   * data is decoded a word at a time (same arithmetic as BitArray.get).
+   */
+  scanNotable (eye, R, visit) {
     const minY = this.bot.game.minY
     const cx0 = Math.floor((eye[0] - R) / 16); const cx1 = Math.floor((eye[0] + R) / 16)
     const cz0 = Math.floor((eye[2] - R) / 16); const cz1 = Math.floor((eye[2] + R) / 16)
     const R2 = R * R
+    const R2loose = R2 * (1 + 1e-9) // exact d <= R test happens in the builder
+    const ex = eye[0] - 0.5; const ey = eye[1] - 0.5; const ez = eye[2] - 0.5 // block centre offsets
     const axisGap = (v, lo) => v < lo ? lo - v : v > lo + 16 ? v - lo - 16 : 0
+    // emit(i, cls) for section-local index i, if its centre is within R
+    let bx = 0; let by = 0; let bz = 0
+    const emit = (i, c) => {
+      const x = bx + (i & 15); const y = by + (i >> 8); const z = bz + ((i >> 4) & 15)
+      const dx = x - ex; const dy = y - ey; const dz = z - ez
+      if (dx * dx + dy * dy + dz * dz <= R2loose) visit(x, y, z, c)
+    }
     for (let cx = cx0; cx <= cx1; cx++) {
       for (let cz = cz0; cz <= cz1; cz++) {
         const gx = axisGap(eye[0], cx * 16); const gz = axisGap(eye[2], cz * 16)
@@ -79,34 +96,63 @@ class MineflayerView {
         for (let sy = 0; sy < col.sections.length; sy++) {
           const sec = col.sections[sy]
           if (!sec) continue
-          const by = minY + sy * 16
+          by = minY + sy * 16
           const gy = axisGap(eye[1], by)
           if (gx * gx + gy * gy + gz * gz > R2) continue
           const data = sec.data
-          const bx = cx * 16; const bz = cz * 16
-          if (data.palette && data.data) { // indirect palette: test palette indices, not state ids
-            const pal = data.palette
-            const hit = new Array(pal.length)
-            let any = false
-            for (let j = 0; j < pal.length; j++) { hit[j] = this.stateClass(pal[j]).notable; any ||= hit[j] }
-            if (!any) continue
-            const bits = data.data
-            for (let i = 0; i < 4096; i++) {
-              const j = bits.get(i)
-              if (hit[j]) yield { pos: [bx + (i & 15), by + (i >> 8), bz + ((i >> 4) & 15)], cls: this.stateClass(pal[j]) }
-            }
+          bx = cx * 16; bz = cz * 16
+          if (data.palette && data.data) { // indirect palette: hits by palette index
+            const h = this.sectionNotable(sec, data)
+            for (let q = 0; q < h.idx.length; q++) emit(h.idx[q], h.cls[q])
             continue
           }
           if (data.value !== undefined && !data.palette) { // single-value section
-            if (!this.stateClass(data.value).notable) continue
+            const c = this.stateClass(data.value)
+            if (!c.notable) continue
+            for (let i = 0; i < 4096; i++) emit(i, c)
+            continue
           }
-          for (let i = 0; i < 4096; i++) { // single-value or direct (global) palette
+          if (data.data && data.data.valuesPerLong) { // direct (global) palette: values are state ids
+            decode(data.data, id => { const c = this.stateClass(id); return c.notable ? c : null }, emit)
+            continue
+          }
+          for (let i = 0; i < 4096; i++) { // anything else: the slow, generic way
             const c = this.stateClass(data.get(i))
-            if (c.notable) yield { pos: [bx + (i & 15), by + (i >> 8), bz + ((i >> 4) & 15)], cls: c }
+            if (c.notable) emit(i, c)
           }
         }
       }
     }
+  }
+
+  /**
+   * Notable blocks of an indirect-palette section as {idx, cls}. Cached per
+   * section and reused only while its palette and packed words are exactly
+   * equal to the copy taken when the cache entry was made; any block change
+   * in the section changes those, so the result is always what a fresh
+   * decode would give.
+   */
+  sectionNotable (sec, data) {
+    const pal = data.palette; const bits = data.data; const words = bits.data
+    const e = this.sectionHits.get(sec)
+    if (e && e.data === data && e.bits === bits.bitsPerValue && sameArray(e.pal, pal) && sameArray(e.words, words)) return e
+    const hit = new Array(pal.length)
+    let any = false
+    for (let j = 0; j < pal.length; j++) { const c = this.stateClass(pal[j]); hit[j] = c.notable ? c : null; any ||= c.notable }
+    const idx = []; const cls = []
+    if (any) decode(bits, j => hit[j], (i, c) => { idx.push(i); cls.push(c) })
+    const entry = { data, bits: bits.bitsPerValue, pal: pal.slice(), words: Uint32Array.from(words), idx, cls }
+    this.sectionHits.set(sec, entry)
+    return entry
+  }
+
+  /** Line-of-sight context for the verb API: fresh caches, eye, radius. */
+  sight () {
+    this.cols.clear()
+    this.lastCx = this.lastCz = undefined; this.lastCol = null
+    const me = this.bot.entity
+    const p = me.position
+    return { classAt: this.classAt, eye: [p.x, p.y + (me.eyeHeight || 1.62), p.z], sightRadius: this.sightRadius() }
   }
 
   sightRadius () {
@@ -123,6 +169,7 @@ class MineflayerView {
   snapshot (extra = {}) {
     const bot = this.bot
     this.cols.clear()
+    this.lastCx = this.lastCz = undefined; this.lastCol = null
     const me = bot.entity
     const p = me.position
     const pos = [p.x, p.y, p.z]
@@ -172,7 +219,7 @@ class MineflayerView {
         gamemode: bot.game.gameMode
       },
       classAt: this.classAt,
-      scanNotable: (e, R) => this.scanNotable(e, R),
+      scanNotable: (e, R, visit) => this.scanNotable(e, R, visit),
       entities,
       players,
       inventory,
@@ -190,10 +237,42 @@ class MineflayerView {
   }
 }
 
+/**
+ * Walk a prismarine-chunk BitArray (no-span layout: each 64-bit long holds
+ * floor(64/bits) values, stored as [low 32, high 32] in a Uint32Array) and
+ * call emit(i, x) for every index whose value v gives x = lookup(v) != null.
+ * Bit for bit the same as BitArray.get(i), without a call per index.
+ */
+function decode (bits, lookup, emit) {
+  const words = bits.data; const b = bits.bitsPerValue; const vpl = bits.valuesPerLong; const mask = bits.valueMask
+  const cap = Math.min(bits.capacity, 4096)
+  let i = 0
+  for (let w = 0; i < cap; w += 2) {
+    const lo = words[w]; const hi = words[w + 1]
+    for (let k = 0, off = 0; k < vpl && i < cap; k++, i++, off += b) {
+      let v
+      if (off >= 32) v = (hi >>> (off - 32)) & mask
+      else {
+        v = lo >>> off
+        if (off + b > 32) v |= hi << (32 - off)
+        v &= mask
+      }
+      const x = lookup(v)
+      if (x) emit(i, x)
+    }
+  }
+}
+
+function sameArray (a, b) {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
+  return true
+}
+
 function clientViewChunks (bot) {
   const v = bot.settings.viewDistance
   if (typeof v === 'number') return v
   return { far: 12, normal: 10, short: 8, tiny: 2 }[v] ?? 10
 }
 
-module.exports = { MineflayerView, lookVector, norm180 }
+module.exports = { MineflayerView, lookVector, norm180, decode }

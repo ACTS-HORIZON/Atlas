@@ -6,6 +6,11 @@ Prints every message from the body. Type:
     say <text>    chat as the bot
     stop          cancel the current verb
     recall <type> [x y z]   nearest known place of that type
+    goto <x> <y> <z>        walk there
+    goto <target>           walk to an observed player, entity type or block type
+    explore <dir> <n>       walk n blocks (north, south-east, ..., forward) and report
+    mine <block> <n> [radius]   mine n observed blocks (strip-mines if none seen)
+    collect <item>          pick up visible drops of that item
     trace [kind] <text>     send a trace (kind: plan, decision, rag, verb_write,
                             advisor, note; default note); logged, never acted on
     obs           ask for a full view now
@@ -26,7 +31,9 @@ from websockets.exceptions import ConnectionClosed
 from . import CONTRACT_VERSION
 from .pretty import format_message
 
-HELP = "commands: say <text> | stop | recall <type> [x y z] | trace [kind] <text> | obs | quit"
+HELP = ("commands: say <text> | stop | recall <type> [x y z] | goto <x y z | target> | explore <dir> <n> |"
+        " mine <block> <n> [radius] | collect <item> | trace [kind] <text> | obs | quit")
+DIRECTIONS = ("north", "south", "east", "west", "north-east", "north-west", "south-east", "south-west", "forward")
 TRACE_KINDS = ("plan", "decision", "rag", "verb_write", "advisor", "note")
 
 
@@ -55,6 +62,34 @@ def parse_command(line: str, next_id, now_t=lambda: 0) -> dict | None | str:
             except ValueError:
                 return "usage: recall <type> [x y z]"
         return {"type": "call", "v": CONTRACT_VERSION, "id": next_id(), "verb": "recall", "args": args}
+    def call(verb: str, args: dict) -> dict:
+        return {"type": "call", "v": CONTRACT_VERSION, "id": next_id(), "verb": verb, "args": args}
+
+    parts = rest.split()
+    if cmd == "goto":
+        if len(parts) == 3:
+            try:
+                return call("goto", {"pos": [float(v) for v in parts]})
+            except ValueError:
+                return "usage: goto <x> <y> <z> | goto <target>"
+        if len(parts) == 1:
+            return call("goto", {"target": parts[0]})
+        return "usage: goto <x> <y> <z> | goto <target>"
+    if cmd == "explore":
+        if len(parts) != 2 or parts[0] not in DIRECTIONS or not parts[1].isdigit():
+            return "usage: explore <" + "|".join(DIRECTIONS) + "> <blocks>"
+        return call("explore", {"direction": parts[0], "distance": int(parts[1])})
+    if cmd == "mine":
+        if len(parts) not in (2, 3) or not all(p.isdigit() for p in parts[1:]):
+            return "usage: mine <block> <count> [radius]"
+        args = {"block": parts[0], "count": int(parts[1])}
+        if len(parts) == 3:
+            args["radius"] = int(parts[2])
+        return call("mine", args)
+    if cmd == "collect":
+        if len(parts) != 1:
+            return "usage: collect <item>"
+        return call("collect", {"item": parts[0]})
     if cmd == "trace":
         kind, _, text = rest.strip().partition(" ")
         if kind not in TRACE_KINDS:

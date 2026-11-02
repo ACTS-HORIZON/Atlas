@@ -8,6 +8,8 @@ const { buildObs, recheckKnown } = require('./fairplay/observe')
 const { KnownPlaces } = require('./places')
 const { MotionTracker, SoundMemory } = require('./fairplay/perception')
 const { VERBS } = require('./verbs')
+const { Motor, equipBot } = require('./motor')
+const { VerbApi } = require('./api')
 const { Runner } = require('./runner')
 const { Tap } = require('./tap')
 const { Dashboard, parseBind, verbLibrary, tailFile } = require('./dashboard')
@@ -76,7 +78,7 @@ class Body {
     this.connect()
     // Periodic full view: for the mind, and for the dashboard when it watches.
     this.timers.push(setInterval(() => {
-      if (this.spawned && (this.link.count || this.dash?.count)) { const o = this.obs(); if (o) this.link.broadcast(o) }
+      if (this.ready() && (this.link.count || this.dash?.count)) { const o = this.obs(); if (o) this.link.broadcast(o) }
     }, this.cfg.obsIntervalMs))
     this.timers.push(setInterval(() => this.stats.report(), 60000))
   }
@@ -95,7 +97,9 @@ class Body {
       hideErrors: true // we log errors ourselves
     })
     this.bot = bot
+    equipBot(bot) // pathfinder plugin
     this.view = new MineflayerView(bot, { sightRadius: this.cfg.sightRadius })
+    this.motor = new Motor(bot)
     let joinGraceUntil = Infinity
 
     bot.once('spawn', () => {
@@ -105,9 +109,12 @@ class Body {
       clearInterval(this.motionTimer)
       this.motionTimer = setInterval(() => this.sampleMotion(), 250)
       this.spawned = true
-      const o = this.obs()
-      if (o) this.link.broadcast(o)
+      this.announceIfReady()
     })
+    // Health and food arrive in their own packet, often just after spawn. No
+    // obs is built or sent until both are known (a null-vitals obs is not a
+    // valid contract message).
+    bot.on('health', () => this.announceIfReady())
     bot.on('spawn', () => {
       if (this.dead) {
         this.dead = false
@@ -144,6 +151,7 @@ class Body {
       console.warn(`[bot] disconnected (${reason}); reconnecting in ${this.backoff / 1000}s`)
       clearInterval(this.motionTimer)
       this.spawned = false
+      this.announced = false
       this.bossBars.clear()
       bot.removeAllListeners()
       bot.on('error', () => {}) // late errors from the dead connection must not crash the body
@@ -154,6 +162,21 @@ class Body {
     bot.on('end', reason => reconnect(reason))
     // With version auto-detection a failed ping only emits 'error', never 'end'.
     bot.on('error', err => { if (!this.spawned) reconnect(err.code || err.message) })
+  }
+
+  /** In game, and health and food are known. */
+  ready () {
+    const b = this.bot
+    return !!(this.spawned && b && b.entity && Number.isFinite(b.health) && Number.isFinite(b.food))
+  }
+
+  /** Send the first full view once ready (spawn and vitals, in either order). */
+  announceIfReady () {
+    if (this.announced || !this.ready()) return
+    this.announced = true
+    console.log(`[bot] ready: health ${this.bot.health}, food ${this.bot.food}`)
+    const o = this.obs()
+    if (o) this.link.broadcast(o)
   }
 
   sampleMotion () {
@@ -176,7 +199,7 @@ class Body {
 
   /** Full-view obs, or null while not in game. */
   obs () {
-    if (!this.spawned || !this.bot?.entity) return null
+    if (!this.ready()) return null
     try {
       const view = this.view.snapshot({ chat: this.chat, bossBar: this.bossBar(), task: this.runner.task() })
       const { obs, stats } = buildObs(view, { motion: this.motion, sounds: this.sounds })
@@ -201,15 +224,30 @@ class Body {
   /** The action API verbs get (never the raw bot). */
   act () {
     return {
-      connected: () => this.spawned && !!this.bot,
+      connected: () => this.ready(),
       chat: text => this.bot.chat(text),
-      halt: () => { if (this.bot) this.bot.clearControlStates() },
+      halt: () => { if (this.motor) this.motor.stop() },
       here: () => {
         const p = this.bot.entity.position
         return { pos: [p.x, p.y, p.z], dim: this.bot.game.dimension, t: Number(this.bot.time.age) || 0 }
       },
-      places: this.places
+      places: this.places,
+      api: this.verbApi(),
+      cfg: { stripLength: this.cfg.stripLength, stripMax: this.cfg.stripMax }
     }
+  }
+
+  /** The filtered API verbs act through (src/api.js). */
+  verbApi () {
+    if (!this.bot || !this.motor) return null
+    const reg = this.bot.registry
+    return new VerbApi({
+      motor: this.motor,
+      observe: () => this.obs(),
+      places: this.places,
+      sight: () => this.view.sight(),
+      registry: { isBlock: n => !!reg?.blocksByName[n], isItem: n => !!reg?.itemsByName[n] }
+    })
   }
 
   async onCall (call) {

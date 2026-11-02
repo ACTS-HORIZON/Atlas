@@ -48,10 +48,10 @@ class Runner {
     const vact = { ...act, signal: ctrl.signal, progress: p => { cur.progress = String(p) } }
     try {
       const r = await Promise.race([Promise.resolve().then(() => def.run(vact, args)), abortedP(ctrl.signal)])
-      if (ctrl.signal.aborted) return { status: 'interrupted', detail: `${verb}: ${ctrl.signal.reason}` }
-      return r
+      if (ctrl.signal.aborted) return interrupted(cur)
+      return r || { status: 'failed', detail: `${verb}: ended without a result` }
     } catch (err) {
-      if (ctrl.signal.aborted) return { status: 'interrupted', detail: `${verb}: ${ctrl.signal.reason}` }
+      if (ctrl.signal.aborted) return interrupted(cur)
       return { status: 'failed', detail: `${verb}: ${err.message}` }
     } finally {
       if (this.current === cur) this.current = null
@@ -72,6 +72,11 @@ class Runner {
     c.ctrl.abort(reason)
     try { act.halt() } catch {}
   }
+}
+
+function interrupted (cur) {
+  const at = cur.progress ? ` (at: ${cur.progress})` : ''
+  return { status: 'interrupted', detail: `${cur.verb}: ${cur.ctrl.signal.reason}${at}` }
 }
 
 /** One-shot helper (tests, tools): run a verb on a fresh runner. */

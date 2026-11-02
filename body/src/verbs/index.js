@@ -1,13 +1,14 @@
 'use strict'
-// Built-in verbs. Verbs implemented so far: say, stop, recall; everything
-// else answers failed. Verbs get `act`, the body's (small) action API, and
-// never touch the backend:
+// Built-in verbs: say, recall, goto, explore, mine, collect (stop is the
+// Runner's own). Everything else answers failed. Verbs get `act` and never
+// touch the backend:
 //   act.connected() -> bool, act.chat(text), act.halt(),
-//   act.here() -> {pos, dim, t}, act.places (KnownPlaces)
+//   act.here() -> {pos, dim, t}, act.places (KnownPlaces),
+//   act.api (VerbApi: the filtered API, src/api.js), act.cfg
 // Verbs that become the task also get act.signal (AbortSignal) and
 // act.progress(text). Which verbs run alongside a running one is decided by
-// the Runner (ALONGSIDE), not here. `stop` is handled by the Runner directly.
-const { check } = require('./schema')
+// the Runner (ALONGSIDE), not here.
+const { check } = require('../schema')
 
 const MAX_SAY = 256
 
@@ -37,5 +38,11 @@ const VERBS = {
     }
   }
 }
+
+VERBS.say.file = VERBS.recall.file = __filename
+VERBS.goto = require('./goto')
+VERBS.explore = require('./explore')
+VERBS.mine = require('./mine')
+VERBS.collect = require('./collect')
 
 module.exports = { VERBS }

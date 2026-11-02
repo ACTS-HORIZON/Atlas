@@ -3,6 +3,7 @@
 // synthetic 26.1 chunks (no server): 9x9 loaded chunks of stone with caves,
 // ~1.5% ores, a lake, 30 mobs and 2 players, plus known-places upkeep
 // (recheck of 2000 remembered blocks). Run: npm run bench
+const crypto = require('crypto')
 const { Vec3 } = require('vec3')
 const registry = require('prismarine-registry')('26.1')
 const Chunk = require('prismarine-chunk')(registry)
@@ -95,8 +96,9 @@ function run (label, bot, n = 30) {
   const warm = ms.slice(3).sort((a, b) => a - b)
   const mean = warm.reduce((a, b) => a + b, 0) / warm.length
   const o = last.obs
+  const sum = crypto.createHash('sha1').update(JSON.stringify([o.blocks_seen, o.entities, o.players])).digest('hex').slice(0, 12)
   console.log(`${label.padEnd(26)} first ${ms[0].toFixed(1)} ms | warm mean ${mean.toFixed(1)} ms, p95 ${warm[Math.floor(warm.length * 0.95)].toFixed(1)} ms, max ${warm[warm.length - 1].toFixed(1)} ms` +
-    ` | ${places.size} known places | ${last.stats.candidates} candidates, ${last.stats.raycasts} rays -> ${o.blocks_seen.length} blocks, ${o.entities.length}/30 mobs, ${o.players.length}/2 players`)
+    ` | ${places.size} known places | ${last.stats.candidates} candidates, ${last.stats.raycasts} rays -> ${o.blocks_seen.length} blocks, ${o.entities.length}/30 mobs, ${o.players.length}/2 players | output ${sum}`)
 }
 
 // find a cave to stand in

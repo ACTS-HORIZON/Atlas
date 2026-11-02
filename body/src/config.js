@@ -52,6 +52,9 @@ module.exports = {
   // from host and port, unless ATLAS_PLACES_FILE (relative to the repo root,
   // or absolute) overrides it.
   placesFile: path.resolve(ROOT, env('ATLAS_PLACES_FILE', placesFileFor(env('ATLAS_MC_HOST', 'localhost'), int('ATLAS_MC_PORT', 25565)))),
+  // mine: strip-mining when no target is in view (straight length before a turn, total cap)
+  stripLength: positive('ATLAS_STRIP_LENGTH', 24),
+  stripMax: positive('ATLAS_STRIP_MAX', 256),
   // Dashboard bind address, "host:port"; "off" disables it.
   dashBind: env('ATLAS_DASH_BIND', '0.0.0.0:8080'),
   // Live-written verb library (listed on the dashboard; written in a later step).

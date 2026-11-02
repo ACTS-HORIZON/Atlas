@@ -8,7 +8,8 @@
 //   self      {pos (feet), eye, yaw/pitch (F3 degrees), dim, health, food, xp,
 //              on_ground, in_water, held, armor, effects, gamemode}
 //   classAt(x,y,z)          -> blocks.classify() result | null if unloaded
-//   scanNotable(eye, R)     -> iterable of {pos:[x,y,z], cls} (notable only)
+//   scanNotable(eye, R, visit) calls visit(x, y, z, cls) for notable blocks
+//                           with centre within ~R, in a fixed order
 //   entities  [{id, type, pos (feet), height, hostile}]  (no players, no self)
 //   players   [{name, pos (feet), height, eye, look (unit vector)}]
 //   inventory, world {dayTime, raining, thundering, light, biome},
@@ -46,24 +47,63 @@ function entityVisible (view, eye, pos, height) {
   return false
 }
 
+// Candidate buffers, reused across builds (one body, one build at a time).
+let cap = 0
+let CX, CY, CZ, CD, CC
+function grow (n) {
+  const ncap = Math.max(1024, n * 2)
+  const copy = (A, T) => { const B = new T(ncap); if (A) B.set(A.subarray(0, cap)); return B }
+  CX = copy(CX, Int32Array); CY = copy(CY, Int32Array); CZ = copy(CZ, Int32Array); CD = copy(CD, Float64Array)
+  const C = new Array(ncap); for (let i = 0; i < cap; i++) C[i] = CC[i]
+  CC = C; cap = ncap
+}
+
 function seenBlocks (view, eye, R, opts, stats) {
-  const cand = []
-  for (const c of view.scanNotable(eye, R)) {
-    const d = Math.hypot(c.pos[0] + 0.5 - eye[0], c.pos[1] + 0.5 - eye[1], c.pos[2] + 0.5 - eye[2])
-    if (d <= R) cand.push({ pos: c.pos, cls: c.cls, d })
-  }
-  stats.candidates = cand.length
-  cand.sort((a, b) => a.d - b.d)
+  // 1. scan: notable blocks within R, distance from the eye to the block centre
+  let n = 0
+  view.scanNotable(eye, R, (x, y, z, cls) => {
+    const d = Math.hypot(x + 0.5 - eye[0], y + 0.5 - eye[1], z + 0.5 - eye[2])
+    if (d > R) return
+    if (n >= cap) grow(n + 1)
+    CX[n] = x; CY[n] = y; CZ[n] = z; CD[n] = d; CC[n] = cls; n++
+  })
+  stats.candidates = n
+
+  // 2. nearest first: bucket by whole block of distance, then a stable sort
+  //    inside each bucket as it is reached. Same order as one stable sort by
+  //    distance over the scan order, but buckets past the caps are never sorted.
+  const nb = Math.floor(R) + 2
+  const counts = new Uint32Array(nb + 1)
+  for (let i = 0; i < n; i++) counts[Math.floor(CD[i]) + 1]++
+  for (let k = 1; k <= nb; k++) counts[k] += counts[k - 1]
+  const order = new Uint32Array(n)
+  const fillAt = counts.slice(0, nb)
+  for (let i = 0; i < n; i++) order[fillAt[Math.floor(CD[i])]++] = i
+
+  // 3. test candidates in that order; per-type and total caps prune early
   const out = []
   const perType = new Map()
-  for (const c of cand) {
-    if (out.length >= opts.maxBlocks || stats.raycasts >= opts.maxRaycasts) break
-    const n = perType.get(c.cls.name) || 0
-    if (n >= opts.maxPerType) continue
-    if (!blockVisible(view, eye, c.pos[0], c.pos[1], c.pos[2], c.cls, stats)) continue
-    perType.set(c.cls.name, n + 1)
-    out.push({ type: c.cls.name, pos: [c.pos[0], c.pos[1], c.pos[2]], dist: r1(c.d) })
+  const capped = cls => (perType.get(cls.name) || 0) >= opts.maxPerType
+  let done = false
+  for (let k = 0; k < nb && !done; k++) {
+    // Types already at their cap when the bucket starts are skipped whatever
+    // the order, so they are dropped before sorting.
+    const lo = counts[k]; const hi0 = counts[k + 1]
+    let hi = lo
+    for (let q = lo; q < hi0; q++) if (!capped(CC[order[q]])) order[hi++] = order[q]
+    if (hi - lo > 1) order.subarray(lo, hi).sort((a, b) => CD[a] - CD[b] || a - b)
+    for (let q = lo; q < hi; q++) {
+      if (out.length >= opts.maxBlocks || stats.raycasts >= opts.maxRaycasts) { done = true; break }
+      const i = order[q]
+      const cls = CC[i]
+      const m = perType.get(cls.name) || 0
+      if (m >= opts.maxPerType) continue
+      if (!blockVisible(view, eye, CX[i], CY[i], CZ[i], cls, stats)) continue
+      perType.set(cls.name, m + 1)
+      out.push({ type: cls.name, pos: [CX[i], CY[i], CZ[i]], dist: r1(CD[i]) })
+    }
   }
+  for (let i = 0; i < n; i++) CC[i] = undefined // don't keep block classes alive
   return out
 }
 
@@ -192,3 +232,4 @@ function recheckKnown (view, entries, { max = 256 } = {}) {
 }
 
 module.exports.recheckKnown = recheckKnown
+module.exports.entityVisible = entityVisible

@@ -42,7 +42,7 @@ class FakeWorld {
 
   classAt (x, y, z) { const i = this.idx(x, y, z); return i < 0 ? null : this.cls[this.grid[i]] }
 
-  * scanNotable (eye, R) {
+  scanNotable (eye, R, visit) {
     const notable = this.cls.map(c => c.notable)
     const xa = Math.max(this.x0, Math.floor(eye[0] - R)); const xb = Math.min(this.x0 + this.sx - 1, Math.ceil(eye[0] + R))
     const ya = Math.max(this.y0, Math.floor(eye[1] - R)); const yb = Math.min(this.y0 + this.sy - 1, Math.ceil(eye[1] + R))
@@ -51,7 +51,7 @@ class FakeWorld {
       for (let z = za; z <= zb; z++) {
         for (let x = xa; x <= xb; x++) {
           const c = this.grid[this.idx(x, y, z)]
-          if (notable[c]) yield { pos: [x, y, z], cls: this.cls[c] }
+          if (notable[c]) visit(x, y, z, this.cls[c])
         }
       }
     }
@@ -86,7 +86,7 @@ function makeView (world, { pos = [0.5, 10, 0.5], yaw = 0, pitch = 0, sightRadiu
     sightRadius,
     self,
     classAt: (x, y, z) => world.classAt(x, y, z),
-    scanNotable: (eye, R) => world.scanNotable(eye, R),
+    scanNotable: (eye, R, visit) => world.scanNotable(eye, R, visit),
     entities,
     players: players.map(p => ({ height: 1.8, ...p, eye: p.eye || [p.pos[0], p.pos[1] + 1.62, p.pos[2]] })),
     inventory: {},
