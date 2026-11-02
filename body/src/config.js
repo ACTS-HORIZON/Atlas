@@ -15,6 +15,16 @@ const int = (k, d) => {
   return v
 }
 
+/**
+ * data/known-places.<host>_<port>.json. The host is lower-cased and anything
+ * outside [a-z0-9.-] becomes '-', so IPv6 literals and odd names stay a
+ * single safe file name.
+ */
+function placesFileFor (host, port) {
+  const h = String(host).trim().toLowerCase().replace(/[^a-z0-9.-]/g, '-').replace(/^\.+/, '') || 'unknown'
+  return path.join('data', `known-places.${h}_${port}.json`)
+}
+
 const positive = (k, d) => {
   const v = int(k, d)
   if (v < 1) throw new Error(`${k} must be at least 1`)
@@ -38,7 +48,10 @@ module.exports = {
   // the render distance (client and server view distance).
   // (sight_radius in CONTRACT.md, "Sight")
   sightRadius: positive('ATLAS_SIGHT_RADIUS', 64),
-  // Known places file (CONTRACT.md, "Known places"), relative to the repo root or absolute.
-  placesFile: path.resolve(ROOT, env('ATLAS_PLACES_FILE', 'data/known-places.json')),
-  envFile: fs.existsSync(envFile) ? envFile : null
+  // Known places file (CONTRACT.md, "Known places"): one per server, named
+  // from host and port, unless ATLAS_PLACES_FILE (relative to the repo root,
+  // or absolute) overrides it.
+  placesFile: path.resolve(ROOT, env('ATLAS_PLACES_FILE', placesFileFor(env('ATLAS_MC_HOST', 'localhost'), int('ATLAS_MC_PORT', 25565)))),
+  envFile: fs.existsSync(envFile) ? envFile : null,
+  placesFileFor
 }
