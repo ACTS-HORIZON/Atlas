@@ -7,7 +7,7 @@ const path = require('path')
 const WebSocket = require('ws')
 const { Link } = require('../src/link')
 const { JsonlLog } = require('../src/jsonl')
-const { runVerb } = require('../src/verbs')
+const { runVerb } = require('../src/runner')
 const { buildObs } = require('../src/fairplay/observe')
 const { FakeWorld, makeView } = require('./fakeWorld')
 const { check } = require('../src/schema')
@@ -18,20 +18,20 @@ function fakeAct () {
   return { said, halted: 0, places, here: () => ({ pos: [0, 0, 0], dim: 'overworld', t: 0 }), connected: () => true, chat: t => said.push(t), halt () { this.halted++ } }
 }
 
-test('say and stop', () => {
+test('say and stop', async () => {
   const act = fakeAct()
-  assert.deepEqual(runVerb(act, 'say', { text: 'hello\nworld' }), { status: 'done', detail: 'said: hello world' })
+  assert.deepEqual((await runVerb(act, 'say', { text: 'hello\nworld' })), { status: 'done', detail: 'said: hello world' })
   assert.deepEqual(act.said, ['hello world'])
-  assert.equal(runVerb(act, 'say', { text: '/gamemode creative' }).status, 'refused')
-  assert.equal(runVerb(act, 'say', { text: '  /op Atlas' }).status, 'refused')
-  assert.equal(runVerb(act, 'say', {}).status, 'failed')
-  assert.equal(runVerb(act, 'say', { text: 'x'.repeat(300) }).status, 'failed')
+  assert.equal((await runVerb(act, 'say', { text: '/gamemode creative' })).status, 'refused')
+  assert.equal((await runVerb(act, 'say', { text: '  /op Atlas' })).status, 'refused')
+  assert.equal((await runVerb(act, 'say', {})).status, 'failed')
+  assert.equal((await runVerb(act, 'say', { text: 'x'.repeat(300) })).status, 'failed')
   assert.deepEqual(act.said, ['hello world'], 'nothing else was sent')
-  assert.equal(runVerb(act, 'stop').status, 'done')
+  assert.equal((await runVerb(act, 'stop')).status, 'done')
   assert.equal(act.halted, 1)
-  assert.match(runVerb(act, 'mine', { block: 'iron_ore' }).detail, /not implemented/)
-  assert.match(runVerb(act, 'constructor').detail, /not implemented/)
-  assert.equal(runVerb({ ...act, connected: () => false }, 'say', { text: 'hi' }).status, 'failed')
+  assert.match((await runVerb(act, 'mine', { block: 'iron_ore' })).detail, /not implemented/)
+  assert.match((await runVerb(act, 'constructor')).detail, /not implemented/)
+  assert.equal((await runVerb({ ...act, connected: () => false }, 'say', { text: 'hi' })).status, 'failed')
 })
 
 test('link: obs on connect and on request, call -> result, everything logged as JSONL', async () => {
@@ -44,7 +44,7 @@ test('link: obs on connect and on request, call -> result, everything logged as 
     host: '127.0.0.1',
     port: 0,
     log,
-    handlers: { buildObs: obsNow, onCall: async c => ({ ...runVerb(act, c.verb, c.args), obs: obsNow() }) }
+    handlers: { buildObs: obsNow, onCall: async c => ({ ...(await runVerb(act, c.verb, c.args)), obs: obsNow() }) }
   })
   await link.ready
   const ws = new WebSocket(`ws://127.0.0.1:${link.wss.address().port}`)
@@ -79,8 +79,7 @@ test('link: obs on connect and on request, call -> result, everything logged as 
   const bad = await next()
   assert.deepEqual([bad.id, bad.status], ['c3', 'failed'])
 
-  ws.close(); link.close(); log.close()
-  await new Promise(resolve => setTimeout(resolve, 100))
+  ws.close(); await link.close(); await log.close() // flushed
   const lines = fs.readFileSync(log.path, 'utf8').trim().split('\n').map(l => JSON.parse(l))
   for (const l of lines) {
     assert.deepEqual(Object.keys(l).sort(), ['dir', 'msg', 'ts'])

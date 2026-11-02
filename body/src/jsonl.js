@@ -28,7 +28,13 @@ class JsonlLog {
     this.file().write(JSON.stringify({ ts: new Date().toISOString(), dir, msg }) + '\n')
   }
 
-  close () { if (this.stream) this.stream.end() }
+  /** Flush and close; resolves once everything written is on disk. */
+  close () {
+    const st = this.stream
+    this.stream = null; this.day = null
+    if (!st) return Promise.resolve()
+    return new Promise(resolve => st.end(resolve))
+  }
 }
 
 module.exports = { JsonlLog }

@@ -6,7 +6,7 @@ const Ajv2020 = require('ajv/dist/2020')
 
 const DIR = path.join(__dirname, '..', '..', 'contract')
 const ajv = new Ajv2020({ allErrors: true, strict: false })
-const names = ['obs', 'call', 'result', 'event', 'observe', 'recall']
+const names = ['obs', 'call', 'result', 'event', 'observe', 'trace', 'recall']
 for (const n of names) ajv.addSchema(JSON.parse(fs.readFileSync(path.join(DIR, `${n}.schema.json`), 'utf8')))
 
 const validators = {}

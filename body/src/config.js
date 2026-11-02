@@ -52,6 +52,10 @@ module.exports = {
   // from host and port, unless ATLAS_PLACES_FILE (relative to the repo root,
   // or absolute) overrides it.
   placesFile: path.resolve(ROOT, env('ATLAS_PLACES_FILE', placesFileFor(env('ATLAS_MC_HOST', 'localhost'), int('ATLAS_MC_PORT', 25565)))),
+  // Dashboard bind address, "host:port"; "off" disables it.
+  dashBind: env('ATLAS_DASH_BIND', '0.0.0.0:8080'),
+  // Live-written verb library (listed on the dashboard; written in a later step).
+  verbDir: path.resolve(ROOT, env('ATLAS_VERB_DIR', 'data/verbs')),
   envFile: fs.existsSync(envFile) ? envFile : null,
   placesFileFor
 }

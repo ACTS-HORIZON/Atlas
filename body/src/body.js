@@ -1,5 +1,5 @@
 'use strict'
-// The body process: Mineflayer bot + fair-play observation + link.
+// The body process: Mineflayer bot + fair-play observation + link + dashboard.
 const mineflayer = require('mineflayer')
 const { Link, V } = require('./link')
 const { JsonlLog } = require('./jsonl')
@@ -7,12 +7,19 @@ const { MineflayerView } = require('./view')
 const { buildObs, recheckKnown } = require('./fairplay/observe')
 const { KnownPlaces } = require('./places')
 const { MotionTracker, SoundMemory } = require('./fairplay/perception')
-const { runVerb } = require('./verbs')
+const { VERBS } = require('./verbs')
+const { Runner } = require('./runner')
+const { Tap } = require('./tap')
+const { Dashboard, parseBind, verbLibrary, tailFile } = require('./dashboard')
 const { BuildStats } = require('./stats')
 
 class Body {
-  constructor (cfg) {
+  /** deps.createBot: injectable for tests (default mineflayer.createBot). */
+  constructor (cfg, { createBot = mineflayer.createBot } = {}) {
     this.cfg = cfg
+    this.createBot = createBot
+    this.runner = new Runner(VERBS)
+    this.tap = new Tap()
     this.log = new JsonlLog(cfg.logDir)
     this.bot = null
     this.spawned = false
@@ -29,12 +36,31 @@ class Body {
       host: cfg.link.host,
       port: cfg.link.port,
       log: this.log,
+      tap: this.tap,
       handlers: {
         buildObs: () => this.obs(),
         onCall: call => this.onCall(call),
         onClient: n => console.log(`[link] ${n} mind client(s) connected`)
       }
     })
+    const bind = parseBind(cfg.dashBind)
+    this.dash = null
+    if (bind) {
+      const verbs = verbLibrary(VERBS, cfg.verbDir)
+      this.dash = new Dashboard({
+        host: bind.host,
+        port: bind.port,
+        tap: this.tap,
+        api: {
+          places: () => this.placesSummary(),
+          verbs: () => verbs.list(),
+          verbSource: name => verbs.source(name),
+          config: () => this.cfg,
+          logTail: n => tailFile(this.log.path, n).map(l => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean),
+          stop: () => this.dashboardStop()
+        }
+      })
+    }
   }
 
   async start () {
@@ -42,9 +68,15 @@ class Body {
     console.log(`[link] listening on ws://${this.cfg.link.host}:${this.cfg.link.port}`)
     console.log(`[log] ${this.cfg.logDir}`)
     console.log(`[places] ${this.places.size} known places from ${this.cfg.placesFile}`)
+    if (this.dash) {
+      await this.dash.ready
+      const a = this.dash.server.address()
+      console.log(`[dash] http://${a.address}:${a.port}/`)
+    }
     this.connect()
+    // Periodic full view: for the mind, and for the dashboard when it watches.
     this.timers.push(setInterval(() => {
-      if (this.spawned && this.link.count) { const o = this.obs(); if (o) this.link.broadcast(o) }
+      if (this.spawned && (this.link.count || this.dash?.count)) { const o = this.obs(); if (o) this.link.broadcast(o) }
     }, this.cfg.obsIntervalMs))
     this.timers.push(setInterval(() => this.stats.report(), 60000))
   }
@@ -52,7 +84,7 @@ class Body {
   connect () {
     const { host, port, username, version } = this.cfg.mc
     console.log(`[bot] connecting to ${host}:${port} as ${username} (offline auth)`)
-    const bot = mineflayer.createBot({
+    const bot = this.createBot({
       host,
       port,
       username,
@@ -65,13 +97,13 @@ class Body {
     this.bot = bot
     this.view = new MineflayerView(bot, { sightRadius: this.cfg.sightRadius })
     let joinGraceUntil = Infinity
-    let motionTimer = null
 
     bot.once('spawn', () => {
       console.log(`[bot] spawned in ${bot.game.dimension} at ${bot.entity.position.floored()} gamemode=${bot.game.gameMode} version=${bot.version}`)
       this.backoff = 5000
       joinGraceUntil = Date.now() + 3000 // the initial tab list is not "joining"
-      motionTimer = setInterval(() => this.sampleMotion(), 250)
+      clearInterval(this.motionTimer)
+      this.motionTimer = setInterval(() => this.sampleMotion(), 250)
       this.spawned = true
       const o = this.obs()
       if (o) this.link.broadcast(o)
@@ -110,13 +142,13 @@ class Body {
       if (gone) return
       gone = true
       console.warn(`[bot] disconnected (${reason}); reconnecting in ${this.backoff / 1000}s`)
-      clearInterval(motionTimer)
+      clearInterval(this.motionTimer)
       this.spawned = false
       this.bossBars.clear()
       bot.removeAllListeners()
       bot.on('error', () => {}) // late errors from the dead connection must not crash the body
       try { bot.end() } catch {}
-      setTimeout(() => this.connect(), this.backoff)
+      if (!this.closed) this.timers.push(setTimeout(() => this.connect(), this.backoff))
       this.backoff = Math.min(this.backoff * 2, 60000)
     }
     bot.on('end', reason => reconnect(reason))
@@ -146,7 +178,7 @@ class Body {
   obs () {
     if (!this.spawned || !this.bot?.entity) return null
     try {
-      const view = this.view.snapshot({ chat: this.chat, bossBar: this.bossBar(), task: null })
+      const view = this.view.snapshot({ chat: this.chat, bossBar: this.bossBar(), task: this.runner.task() })
       const { obs, stats } = buildObs(view, { motion: this.motion, sounds: this.sounds })
       // Known places: record what passed the fair-play filter, and drop
       // remembered blocks the bot can now see are gone.
@@ -166,21 +198,55 @@ class Body {
     this.link.broadcast({ type: 'event', v: V, kind, detail, obs: this.obs() })
   }
 
-  async onCall (call) {
-    const bot = this.bot
-    const act = {
-      connected: () => this.spawned && !!bot,
-      chat: text => bot.chat(text),
-      halt: () => bot.clearControlStates(),
+  /** The action API verbs get (never the raw bot). */
+  act () {
+    return {
+      connected: () => this.spawned && !!this.bot,
+      chat: text => this.bot.chat(text),
+      halt: () => { if (this.bot) this.bot.clearControlStates() },
       here: () => {
-        const p = bot.entity.position
-        return { pos: [p.x, p.y, p.z], dim: bot.game.dimension, t: Number(bot.time.age) || 0 }
+        const p = this.bot.entity.position
+        return { pos: [p.x, p.y, p.z], dim: this.bot.game.dimension, t: Number(this.bot.time.age) || 0 }
       },
       places: this.places
     }
-    const r = runVerb(act, call.verb, call.args)
+  }
+
+  async onCall (call) {
+    const r = await this.runner.run(this.act(), call)
     if (r.status === 'done' && call.verb === 'say') await new Promise(resolve => setTimeout(resolve, 50))
     return { ...r, obs: this.obs() }
+  }
+
+  /** The dashboard's Stop button: the body's stop path, not through the mind. */
+  dashboardStop () {
+    const r = this.runner.stop(this.act(), 'dashboard')
+    console.log(`[dash] Stop pressed: ${r.detail}`)
+    this.event('stop_requested', { from: 'dashboard', detail: r.detail })
+    return r
+  }
+
+  /** Known places for the dashboard: count and the 10 nearest to the bot. */
+  placesSummary () {
+    const p = this.bot?.entity?.position
+    const dim = this.bot?.game?.dimension
+    const nearest = p && dim ? this.places.nearest([p.x, p.y, p.z], dim, 10) : []
+    return { count: this.places.size, dim: dim ?? null, nearest }
+  }
+
+  close () {
+    if (!this.closing) this.closing = this._close()
+    return this.closing
+  }
+
+  async _close () {
+    this.closed = true
+    for (const t of this.timers) { clearInterval(t); clearTimeout(t) }
+    clearInterval(this.motionTimer)
+    try { this.bot?.quit() } catch {}
+    try { this.places.save() } catch (err) { console.warn(`[places] save failed: ${err.message}`) }
+    await Promise.all([this.link.close(), this.dash?.close()])
+    await this.log.close()
   }
 }
 

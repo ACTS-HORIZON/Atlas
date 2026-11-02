@@ -3,7 +3,7 @@
 A Minecraft agent. [`CONTRACT.md`](CONTRACT.md) is the spec every layer follows.
 
 ```
-body/      Node: Mineflayer backend, fair-play observation builder, verbs, link server
+body/      Node: Mineflayer backend, fair-play observation builder, verbs, link server, dashboard
 mind/      Python: link client (this session: a terminal client, no LLM yet)
 contract/  JSON Schema for the link messages (obs, call, result, event)
 deploy/    example systemd unit
@@ -14,7 +14,7 @@ data/      known places file (gitignored)
 ## What works so far
 
 - **Body** joins as `Atlas` (offline auth) and reconnects if the server goes away. It never gets op, never runs commands and never changes its gamemode; it plays in whatever gamemode you set.
-- **Link**: a WebSocket on `127.0.0.1:8765`. The body sends a full-view `obs` when the mind connects, when it is asked, and every 2 s. It accepts `call` for `say`, `stop` and `recall`, answers each with a `result`, and emits `event`s for `died`, `respawned`, `player_joined` and `player_left`.
+- **Link**: a WebSocket on `127.0.0.1:8765`. The body sends a full-view `obs` when the mind connects, when it is asked, and every 2 s. It accepts `call` for `say`, `stop` and `recall`, answers each with a `result`, and emits `event`s for `died`, `respawned`, `player_joined`, `player_left` and `stop_requested`. It also accepts `trace` (the mind's reasoning), which it logs and never acts on.
 - **Fair-play observation** (`body/src/fairplay/`):
   - `blocks_seen`: notable types only. They must be within the sight radius and visible along a raycast from the eyes, where the first solid block wins. Nearest first, at most 48 blocks and at most 12 of any one type. A pool is listed as water at its surface only.
   - Sight: glass, ice and water are transparent; leaves and lava block sight. The radius is `sight_radius` (`ATLAS_SIGHT_RADIUS`, default 64), never more than the server's or the bot's render distance.
@@ -22,13 +22,16 @@ data/      known places file (gitignored)
   - `sounds`: type, bearing and near/mid/far only.
 - **Known places** (`body/src/places.js`): every notable block that has appeared in `blocks_seen` is remembered with position, dimension and last-seen game tick, saved at most every 10 s and on shutdown, and reloaded on start. The file is named after the configured server, `data/known-places.<host>_<port>.json` (e.g. `data/known-places.localhost_25565.json`), so the dev world and the co-op server never share one; `ATLAS_PLACES_FILE` overrides the name. The name comes from `ATLAS_MC_HOST` as written, so `localhost` and `127.0.0.1` give two files for the same server: pick one spelling and keep it. Nothing else can enter it. An entry is dropped when Atlas can see the spot again and the block is gone. `recall {type, near?}` returns the nearest one as `data: {type, pos, dist, age}`, or `failed` with detail `unknown`.
 - **Logs**: every contract message in or out is appended to `logs/link-YYYY-MM-DD.jsonl` as `{"ts", "dir": "in"|"out", "msg"}`.
-- **Mind**: `python -m atlas_mind` prints every message and takes `say <text>`, `stop`, `recall <type> [x y z]`, `obs` and `quit`.
+- **Verbs** run one long-running verb at a time (`body/src/runner.js`). `stop` aborts it, so it returns `interrupted`, and releases every movement control. `say` and `recall` are instant and run alongside. A running verb shows as `task` in the obs.
+- **Dashboard** at `http://<atlas>:8080/` (see below).
+- **Mind**: `python -m atlas_mind` prints every message and takes `say <text>`, `stop`, `recall <type> [x y z]`, `trace [kind] <text>`, `obs` and `quit`.
 
 ### Contract notes
 
 - **Requesting an obs**: the mind sends `{"type": "observe", "v": "0.1"}`.
 - **`say`**: text starting with `/` gets `refused`, because the bot never runs commands.
 - **`result.data`**: verbs that return information put it in `data` (only `recall` so far).
+- **`trace`**: `data` is optional; `t` is the tick of the latest obs the mind has.
 - **`obs: null`.** A `result` or `event` sent while the bot is not in the game carries `obs: null`.
 - **Yaw and pitch** are in F3 degrees: yaw 0 is south and 90 is west; positive pitch looks down.
 
@@ -103,13 +106,35 @@ You should see `[link] listening…`, `[bot] spawned in overworld at … gamemod
 su - atlas -c 'cd /opt/atlas/mind && .venv/bin/python -m atlas_mind'
 ```
 
-Type `say hello`, `stop`, `recall iron_ore`, `obs`, or `quit`. Add `--json` to see raw messages instead of the summary.
+Type `say hello`, `stop`, `recall iron_ore`, `trace plan get iron first`, `obs`, or `quit`. Add `--json` to see raw messages instead of the summary.
 
 **Logs:**
 
 ```bash
 tail -f /opt/atlas/logs/link-$(date -u +%F).jsonl
 ```
+
+### Dashboard
+
+The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:8080`). Open `http://10.0.0.52:8080/` in a browser on your LAN.
+
+- **Data source:** a read-only tap of the link. Every `obs`, `call`, `result`, `event`, `trace` and `observe` crossing it is pushed to the page as-is, and recent messages are replayed when the page connects.
+- **What reaches the page:**
+  - Tap messages are copied through JSON and must validate against the contract schemas; anything else is dropped. Raw Mineflayer objects and hidden entity state can't reach the page.
+  - The rest comes from read-only `GET /api/*` endpoints: known places, verb library, config with secrets masked, and the log tail.
+- **Panels:**
+  - vitals, inventory and world
+  - blocks seen, entities, players and sounds
+  - current task with its verb and progress, plus the last calls
+  - events, chat and the trace feed
+  - known places: the count and the 10 nearest to the bot
+  - verb library: built-in or live-written; click a verb to see its source
+  - config as loaded
+  - live log tail
+  - placeholders for reflexes and advisor calls, marked "not wired yet"
+- **The one control: STOP.** It calls the body's stop path directly (`POST /api/stop`), not through the mind. The running verb returns `interrupted`, movement controls are released, and the mind gets a `stop_requested` event with `{"from": "dashboard"}`. Every other endpoint is read-only and answers `405` to writes.
+- **No authentication.** Anyone who can reach the port can watch, which includes chat and coordinates, and can press STOP. On a shared network, set `ATLAS_DASH_BIND=127.0.0.1:8080` and reach it through Proxmox, or firewall the port. Set it to `off` to disable the dashboard.
+- **Without a mind:** obs still flow to the dashboard every 2 s, but they aren't logged, because nothing crossed the link.
 
 ### Optional: body as a systemd service
 
@@ -147,7 +172,8 @@ If you run the body in tmux instead, restart it there.
 4. **`say hello`** shows up in game chat, and the mind prints `result c1: done`.
 5. **Known places:** let Atlas see an ore or chest, then `recall iron_ore` (or `chest`) returns its position. Restart the body; `[places] N known places` shows they were reloaded, and `recall` still finds them. An ore buried out of Atlas's sight never comes back from `recall`.
 6. **Logs fill:** `logs/link-*.jsonl` grows by one obs every 2 s while the mind is connected.
-7. **Build time:** read `[obs] build time over last N: mean … p95 …` in the body output or `journalctl`.
+7. **Dashboard:** open `http://10.0.0.52:8080/`. The tap pill shows *live*, and the obs panels update every 2 s. Type `trace plan test` in the mind: it shows in the trace feed. Press STOP: the events feed shows `stop_requested`.
+8. **Build time:** read `[obs] build time over last N: mean … p95 …` in the body output or `journalctl`.
 
 ## Development
 
@@ -155,7 +181,7 @@ If you run the body in tmux instead, restart it there.
 cd body && npm test
 ```
 
-The fair-play, adapter and link tests run without a Minecraft server.
+The fair-play, adapter, link, runner and dashboard tests run without a Minecraft server (the dashboard tests drive a real Body with a fake bot).
 
 ```bash
 cd body && npm run bench

@@ -10,10 +10,7 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {
     console.log(`[body] ${sig}, shutting down`)
     body.stats.report()
-    try { body.places.save() } catch (err) { console.warn(`[places] save failed: ${err.message}`) }
-    try { body.bot?.quit() } catch {}
-    body.link.close()
-    body.log.close()
+    body.close().catch(err => console.warn(`[body] close: ${err.message}`))
     setTimeout(() => process.exit(0), 300)
   })
 }

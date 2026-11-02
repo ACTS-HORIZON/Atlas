@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.local/contract/trace.schema.json",
+  "title": "trace, mind -> body, CONTRACT.md v0.1",
+  "description": "The mind's reasoning (plan, decision, RAG hits, verb writing, advisor calls, notes). The body logs it and never acts on it.",
+  "type": "object",
+  "required": ["type", "v", "t", "kind", "text"],
+  "additionalProperties": false,
+  "properties": {
+    "type": {"const": "trace"},
+    "v": {"const": "0.1"},
+    "t": {"type": "integer", "description": "world age in ticks, from the latest obs the mind has"},
+    "kind": {"enum": ["plan", "decision", "rag", "verb_write", "advisor", "note"]},
+    "text": {"type": "string"},
+    "data": {"type": "object", "description": "optional structured detail", "default": {}}
+  }
+}

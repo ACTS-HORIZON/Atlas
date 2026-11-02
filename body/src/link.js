@@ -1,6 +1,7 @@
 'use strict'
 // The link (CONTRACT.md, "Processes"): one WebSocket, JSON messages, v "0.1".
-// Body side. Every contract message in or out is appended to the JSONL log.
+// Body side. Every contract message in or out is appended to the JSONL log
+// and pushed to the dashboard tap (if any).
 const { WebSocketServer } = require('ws')
 const { check } = require('./schema')
 
@@ -8,12 +9,14 @@ const V = '0.1'
 
 class Link {
   /**
-   * handlers: onCall(call) -> Promise<{status, detail, obs}>,
+   * handlers: onCall(call) -> Promise<{status, detail, data?, obs}>,
    *           buildObs() -> obs|null, onClient(count)
+   * tap: optional Tap
    */
-  constructor ({ host, port, log, handlers }) {
+  constructor ({ host, port, log, handlers, tap = null }) {
     this.log = log
     this.h = handlers
+    this.tap = tap
     this.clients = new Set()
     this.wss = new WebSocketServer({ host, port })
     this.wss.on('connection', ws => this.accept(ws))
@@ -35,6 +38,12 @@ class Link {
     if (obs) this.sendTo(ws, obs) // full view on connect (or on spawn, if not yet in game)
   }
 
+  /** A valid incoming contract message: log it and tap it. */
+  received (msg) {
+    this.log.write('in', msg)
+    this.tap?.push('in', msg, true)
+  }
+
   async receive (ws, data) {
     let msg
     try { msg = JSON.parse(String(data)) } catch { return warn('ignored non-JSON message') }
@@ -46,7 +55,7 @@ class Link {
         if (typeof msg.id === 'string') this.sendTo(ws, { type: 'result', v: V, id: msg.id, status: 'failed', detail: `invalid call: ${err}`, obs: null })
         return
       }
-      this.log.write('in', msg)
+      this.received(msg)
       const r = await this.h.onCall(msg)
       const res = { type: 'result', v: V, id: msg.id, status: r.status, detail: r.detail }
       if (r.data) res.data = r.data
@@ -55,9 +64,14 @@ class Link {
     } else if (msg.type === 'observe') {
       const err = check('observe', msg)
       if (err) return warn(`invalid observe: ${err}`)
-      this.log.write('in', msg)
+      this.received(msg)
       const obs = this.h.buildObs()
       if (obs) this.sendTo(ws, obs)
+    } else if (msg.type === 'trace') {
+      // The mind's reasoning: logged like everything else, never acted on.
+      const err = check('trace', msg)
+      if (err) return warn(`invalid trace: ${err}`)
+      this.received(msg)
     } else {
       warn(`ignored message type ${JSON.stringify(msg.type)}`)
     }
@@ -65,17 +79,24 @@ class Link {
 
   sendTo (ws, msg) {
     this.log.write('out', msg)
+    this.tap?.push('out', msg, true)
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg))
   }
 
+  /**
+   * Send to every mind client. With no mind connected nothing crosses the
+   * link, so nothing is logged; the dashboard tap still sees it (logged=false).
+   */
   broadcast (msg) {
-    if (!this.clients.size) return
-    this.log.write('out', msg)
+    const sent = this.clients.size > 0
+    if (sent) this.log.write('out', msg)
+    this.tap?.push('out', msg, sent)
+    if (!sent) return
     const s = JSON.stringify(msg)
     for (const ws of this.clients) if (ws.readyState === ws.OPEN) ws.send(s)
   }
 
-  close () { for (const ws of this.clients) ws.terminate(); this.wss.close() }
+  close () { for (const ws of this.clients) ws.terminate(); return new Promise(resolve => this.wss.close(() => resolve())) }
 }
 
 function warn (m) { console.warn(`[link] ${m}`) }

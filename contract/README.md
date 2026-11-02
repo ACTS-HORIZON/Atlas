@@ -10,6 +10,7 @@ CONTRACT.md is the spec; these files only make it machine-checkable.
 | `result.schema.json` | `result` | body → mind |
 | `event.schema.json` | `event` | body → mind |
 | `observe.schema.json` | `observe` (request a full view now) | mind → body |
+| `trace.schema.json` | `trace` (the mind's reasoning; logged, never acted on) | mind → body |
 | `recall.schema.json` | `recall` verb: call `args` and result `data` | — |
 
 `result.data` carries verb output (only `recall` so far). `result.obs` and `event.obs` may be `null` only while the bot is not spawned

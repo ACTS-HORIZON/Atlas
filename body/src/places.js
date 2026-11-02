@@ -78,6 +78,16 @@ class KnownPlaces {
     return { type: best.type, pos: [...best.pos], dist: r1(bd), age: Math.max(0, Math.trunc(now - best.t)) }
   }
 
+  /** The n entries in `dim` nearest to pos, as {type, pos, dist, t}. */
+  nearest (pos, dim, n = 10) {
+    const out = []
+    for (const e of this.map.values()) {
+      if (e.dim !== dim) continue
+      out.push({ type: e.type, pos: [...e.pos], dist: r1(Math.hypot(e.pos[0] + 0.5 - pos[0], e.pos[1] + 0.5 - pos[1], e.pos[2] + 0.5 - pos[2])), t: e.t })
+    }
+    return out.sort((a, b) => a.dist - b.dist).slice(0, n)
+  }
+
   changed () {
     this.dirty = true
     if (this.map.size > this.maxEntries) {

@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atlas</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --panel2: #1c222b; --line: #2a313c;
+    --text: #d6dde6; --dim: #8b96a5; --faint: #5d6774;
+    --accent: #6cb6ff; --good: #57c27a; --warn: #e3b341; --bad: #f05d5e; --violet: #b394f0;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 14px; padding: 10px 16px; background: #0b0e12; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 15px; margin: 0; letter-spacing: .02em; }
+  .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); }
+  .pill.ok { color: var(--good); border-color: #2c5a3a; }
+  .pill.bad { color: var(--bad); border-color: #6a2b2c; }
+  header .spacer { flex: 1; }
+  #stop { background: var(--bad); color: #fff; border: 0; border-radius: 6px; padding: 8px 22px; font-weight: 700; font-size: 14px; letter-spacing: .06em; cursor: pointer; }
+  #stop:hover { filter: brightness(1.1); }
+  #stop:active { transform: translateY(1px); }
+  #stopmsg { color: var(--dim); font-size: 12px; min-width: 160px; }
+  main { display: grid; gap: 12px; padding: 12px 16px 24px; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-width: 0; display: flex; flex-direction: column; }
+  section.wide { grid-column: span 2; }
+  @media (max-width: 760px) { section.wide { grid-column: auto; } main { padding: 12px; } }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 0 0 8px; display: flex; justify-content: space-between; gap: 8px; }
+  h2 .n { color: var(--faint); text-transform: none; letter-spacing: 0; }
+  .scroll { overflow: auto; max-height: 300px; }
+  .scroll.tall { max-height: 420px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  td, th { text-align: left; padding: 3px 6px 3px 0; border-bottom: 1px solid #20262f; vertical-align: top; }
+  th { color: var(--faint); font-weight: 500; font-size: 11px; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; }
+  .kv .k { color: var(--dim); }
+  .mono, pre, code { font-family: var(--mono); font-size: 12px; }
+  pre { margin: 0; white-space: pre-wrap; word-break: break-word; background: var(--panel2); padding: 8px; border-radius: 6px; }
+  .bar { height: 8px; background: #252c36; border-radius: 4px; overflow: hidden; margin: 2px 0 6px; }
+  .bar > i { display: block; height: 100%; }
+  .muted { color: var(--faint); }
+  .empty { color: var(--faint); font-style: italic; }
+  .tag { display: inline-block; font-size: 10px; padding: 0 6px; border-radius: 4px; background: var(--panel2); color: var(--dim); margin-right: 4px; border: 1px solid var(--line); }
+  .tag.hostile, .tag.refused, .tag.failed { color: var(--bad); border-color: #6a2b2c; }
+  .tag.done, .tag.in { color: var(--good); border-color: #2c5a3a; }
+  .tag.interrupted, .tag.partial { color: var(--warn); border-color: #6b5520; }
+  .tag.live { color: var(--violet); border-color: #4b3d6b; }
+  .feed > div { padding: 4px 0; border-bottom: 1px solid #20262f; }
+  .feed .t { color: var(--faint); font-family: var(--mono); font-size: 11px; margin-right: 6px; }
+  .placeholder { border-style: dashed; opacity: .75; }
+  .placeholder .note { color: var(--warn); font-size: 12px; }
+  ul.verbs { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  ul.verbs button { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; cursor: pointer; font: inherit; }
+  ul.verbs button.sel { border-color: var(--accent); color: var(--accent); }
+  .log { font-family: var(--mono); font-size: 11px; }
+  .log div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .log .in { color: var(--good); } .log .out { color: var(--accent); }
+  details summary { cursor: pointer; color: var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Atlas</h1>
+  <span id="conn" class="pill bad">tap: connecting…</span>
+  <span id="seen" class="pill">no obs yet</span>
+  <span class="spacer"></span>
+  <span id="stopmsg"></span>
+  <button id="stop" title="Stop the running verb now (the body's own stop path, not through the mind)">STOP</button>
+</header>
+
+<main>
+  <section>
+    <h2>Self <span class="n" id="self-n"></span></h2>
+    <div id="self" class="empty">waiting for an obs…</div>
+  </section>
+
+  <section>
+    <h2>World &amp; inventory</h2>
+    <div id="world" class="empty">—</div>
+    <div class="scroll" style="margin-top:8px"><table id="inv"></table></div>
+  </section>
+
+  <section>
+    <h2>Task</h2>
+    <div id="task" class="empty">idle</div>
+    <h2 style="margin-top:10px">Last calls</h2>
+    <div id="calls" class="feed scroll"></div>
+  </section>
+
+  <section>
+    <h2>Blocks seen <span class="n" id="blocks-n"></span></h2>
+    <div class="scroll"><table id="blocks"></table></div>
+  </section>
+
+  <section>
+    <h2>Entities <span class="n" id="ents-n"></span></h2>
+    <div class="scroll"><table id="ents"></table></div>
+  </section>
+
+  <section>
+    <h2>Players &amp; sounds</h2>
+    <div class="scroll"><table id="players"></table></div>
+    <div class="scroll" style="margin-top:8px"><table id="sounds"></table></div>
+  </section>
+
+  <section>
+    <h2>Events <span class="n" id="events-n"></span></h2>
+    <div id="events" class="feed scroll tall"></div>
+  </section>
+
+  <section>
+    <h2>Chat</h2>
+    <div id="chat" class="feed scroll tall"></div>
+  </section>
+
+  <section>
+    <h2>Trace (the mind's reasoning) <span class="n" id="trace-n"></span></h2>
+    <div id="trace" class="feed scroll tall"><div class="empty">no trace messages yet</div></div>
+  </section>
+
+  <section>
+    <h2>Known places <span class="n" id="places-n"></span></h2>
+    <div class="scroll"><table id="places"></table></div>
+  </section>
+
+  <section>
+    <h2>Verb library</h2>
+    <ul class="verbs" id="verbs"></ul>
+    <div class="scroll tall"><pre id="verbsrc" class="muted">click a verb to see its source</pre></div>
+  </section>
+
+  <section class="placeholder">
+    <h2>Reflexes</h2>
+    <div class="note">not wired yet</div>
+    <div class="muted">Last choice and action probabilities from the d1 reflex loop will show here.</div>
+  </section>
+
+  <section class="placeholder">
+    <h2>Advisor calls</h2>
+    <div class="note">not wired yet</div>
+    <div class="muted">Advisor questions, answers and spend will show here.</div>
+  </section>
+
+  <section class="wide">
+    <h2>Log tail <span class="n">contract messages, as written to logs/link-*.jsonl</span></h2>
+    <div id="log" class="log scroll tall"></div>
+  </section>
+
+  <section>
+    <h2>Config as loaded <span class="n">secrets masked</span></h2>
+    <div class="scroll tall"><pre id="config">—</pre></div>
+  </section>
+</main>
+
+<script>
+'use strict'
+// Read-only view of the body. Data comes from the link tap (contract messages,
+// as-is) and the body's read-only /api. Every value is inserted as text, never
+// as HTML: chat and traces come from players and models.
+const $ = id => document.getElementById(id)
+function el (tag, attrs, ...kids) {
+  const e = document.createElement(tag)
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === 'class') e.className = v
+    else if (k === 'style') e.style.cssText = v
+    else if (k === 'onclick') e.onclick = v
+    else e.setAttribute(k, v)
+  }
+  for (const k of kids.flat()) if (k !== null && k !== undefined && k !== false) e.append(k instanceof Node ? k : String(k))
+  return e
+}
+const vec = v => Array.isArray(v) ? '(' + v.join(', ') + ')' : '—'
+const time = iso => { try { return new Date(iso).toLocaleTimeString() } catch { return '' } }
+const tag = (text, cls) => el('span', { class: 'tag ' + (cls || '') }, text)
+const fill = (node, ...kids) => { node.replaceChildren(...kids.flat()); node.classList.remove('empty') }
+function table (node, head, rows) {
+  if (!rows.length) { node.replaceChildren(el('tr', null, el('td', { class: 'empty' }, 'none'))); return }
+  node.replaceChildren(el('tr', null, head.map(h => el('th', null, h))), ...rows.map(r => el('tr', null, r.map(c => el('td', null, c)))))
+}
+function bar (frac, color) { return el('div', { class: 'bar' }, el('i', { style: `width:${Math.max(0, Math.min(1, frac)) * 100}%;background:${color}` })) }
+function pushFeed (node, item, max = 200) {
+  const atTop = node.scrollTop < 8
+  if (node.firstChild && node.firstChild.classList && node.firstChild.classList.contains('empty')) node.replaceChildren()
+  node.prepend(item)
+  while (node.childNodes.length > max) node.lastChild.remove()
+  if (atTop) node.scrollTop = 0
+}
+
+let lastObsAt = 0
+
+// ---- obs ----
+function renderObs (o) {
+  lastObsAt = Date.now()
+  const s = o.self
+  $('self-n').textContent = 't=' + o.t
+  fill($('self'),
+    el('div', { class: 'kv' },
+      el('span', { class: 'k' }, 'health'), el('span', null, `${s.health} / 20`)),
+    bar(s.health / 20, 'var(--bad)'),
+    el('div', { class: 'kv' }, el('span', { class: 'k' }, 'food'), el('span', null, `${s.food} / 20`)),
+    bar(s.food / 20, 'var(--warn)'),
+    el('div', { class: 'kv' },
+      el('span', { class: 'k' }, 'gamemode'), el('span', null, s.gamemode),
+      el('span', { class: 'k' }, 'pos'), el('span', { class: 'mono' }, vec(s.pos) + '  ' + s.dim),
+      el('span', { class: 'k' }, 'facing'), el('span', { class: 'mono' }, `yaw ${s.yaw}  pitch ${s.pitch}`),
+      el('span', { class: 'k' }, 'xp level'), el('span', null, s.xp),
+      el('span', { class: 'k' }, 'held'), el('span', null, s.held || '—'),
+      el('span', { class: 'k' }, 'armor'), el('span', null, s.armor.join(', ') || '—'),
+      el('span', { class: 'k' }, 'effects'), el('span', null, s.effects.join(', ') || '—'),
+      el('span', { class: 'k' }, 'state'), el('span', null, [s.on_ground ? 'on ground' : 'airborne', s.in_water ? 'in water' : null].filter(Boolean).join(', '))))
+  const w = o.world
+  fill($('world'), el('div', { class: 'kv' },
+    el('span', { class: 'k' }, 'time'), el('span', null, w.time),
+    el('span', { class: 'k' }, 'weather'), el('span', null, w.weather),
+    el('span', { class: 'k' }, 'light'), el('span', null, w.light ?? '—'),
+    el('span', { class: 'k' }, 'biome'), el('span', null, w.biome ?? '—'),
+    el('span', { class: 'k' }, 'boss bar'), el('span', null, o.boss_bar ? `${o.boss_bar.title} ${Math.round(o.boss_bar.health * 100)}%` : '—')))
+  table($('inv'), ['item', 'count'], Object.entries(o.inventory).sort((a, b) => b[1] - a[1]).map(([k, v]) => [k, v]))
+
+  $('blocks-n').textContent = o.blocks_seen.length
+  table($('blocks'), ['type', 'pos', 'dist'], o.blocks_seen.map(b => [b.type, el('span', { class: 'mono' }, vec(b.pos)), b.dist]))
+  $('ents-n').textContent = o.entities.length
+  table($('ents'), ['type', 'dist', 'bearing', ''], o.entities.map(e => [e.type, e.dist, e.bearing,
+    el('span', null, e.hostile ? tag('hostile', 'hostile') : null, e.approaching ? tag('approaching', 'interrupted') : null)]))
+  table($('players'), ['player', 'pos', 'dist', 'looking at'], o.players.map(p => [p.name, el('span', { class: 'mono' }, vec(p.pos)), p.dist, el('span', { class: 'mono' }, p.looking_at ? vec(p.looking_at) : '—')]))
+  table($('sounds'), ['sound', 'bearing', 'dist'], o.sounds.map(x => [x.type, x.bearing, x.dist]))
+
+  const t = o.task
+  if (t) {
+    fill($('task'), el('div', { class: 'kv' },
+      el('span', { class: 'k' }, 'verb'), el('span', null, el('b', null, t.verb), ' ', tag(t.state, 'interrupted')),
+      el('span', { class: 'k' }, 'call'), el('span', { class: 'mono' }, t.id),
+      el('span', { class: 'k' }, 'args'), el('span', { class: 'mono' }, JSON.stringify(t.args)),
+      el('span', { class: 'k' }, 'progress'), el('span', null, t.progress ?? '—')))
+  } else {
+    $('task').replaceChildren('idle'); $('task').classList.add('empty')
+  }
+  renderChat(o.chat)
+}
+
+const chatSeen = new Set()
+function renderChat (chat) {
+  for (const c of chat) {
+    const k = `${c.t}|${c.from}|${c.text}`
+    if (chatSeen.has(k)) continue
+    chatSeen.add(k)
+    pushFeed($('chat'), el('div', null, el('span', { class: 't' }, 't=' + c.t), el('b', null, '<' + c.from + '> '), c.text))
+  }
+}
+
+// ---- other messages ----
+let nEvents = 0; let nTrace = 0
+function renderEvent (env) {
+  const m = env.msg
+  $('events-n').textContent = ++nEvents
+  pushFeed($('events'), el('div', null, el('span', { class: 't' }, time(env.ts)), tag(m.kind), el('span', { class: 'mono' }, m.detail === null ? '' : JSON.stringify(m.detail))))
+}
+function renderTrace (env) {
+  const m = env.msg
+  $('trace-n').textContent = ++nTrace
+  const item = el('div', null, el('span', { class: 't' }, 't=' + m.t), tag(m.kind, m.kind === 'decision' ? 'done' : ''), m.text)
+  if (m.data && Object.keys(m.data).length) item.append(el('details', null, el('summary', null, 'data'), el('pre', null, JSON.stringify(m.data, null, 2))))
+  pushFeed($('trace'), item)
+}
+function renderCall (env) {
+  const m = env.msg
+  if (m.type === 'call') pushFeed($('calls'), el('div', null, el('span', { class: 't' }, time(env.ts)), el('span', { class: 'mono' }, `→ ${m.id} ${m.verb} ${JSON.stringify(m.args || {})}`)), 50)
+  else pushFeed($('calls'), el('div', null, el('span', { class: 't' }, time(env.ts)), tag(m.status, m.status), el('span', { class: 'mono' }, `${m.id} `), m.detail), 50)
+}
+// The tail starts from /api/log; live lines continue after the last one read,
+// so the tap's replay of the same messages is not shown twice.
+let logFrom = ''
+let logAtFrom = new Set()
+function renderLog (env) {
+  const m = env.msg
+  const k = env.dir + JSON.stringify(m)
+  if (env.ts < logFrom || (env.ts === logFrom && logAtFrom.has(k))) return
+  if (env.ts > logFrom) { logFrom = env.ts; logAtFrom = new Set() }
+  logAtFrom.add(k)
+  const summary = m.type === 'obs' ? `t=${m.t} pos ${vec(m.self.pos)}`
+    : m.type === 'call' ? `${m.id} ${m.verb} ${JSON.stringify(m.args || {})}`
+      : m.type === 'result' ? `${m.id} ${m.status}: ${m.detail}`
+        : m.type === 'event' ? `${m.kind} ${JSON.stringify(m.detail)}`
+          : m.type === 'trace' ? `${m.kind}: ${m.text}` : ''
+  const line = el('div', { title: JSON.stringify(env) }, el('span', { class: env.dir }, `${env.ts.slice(11, 23)} ${env.dir.padEnd(3)} ${m.type.padEnd(7)} `), summary)
+  const box = $('log')
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 20
+  box.append(line)
+  while (box.childNodes.length > 400) box.firstChild.remove()
+  if (atBottom) box.scrollTop = box.scrollHeight
+}
+
+function onEnvelope (env) {
+  const m = env.msg
+  if (env.logged) renderLog(env)
+  if (m.type === 'obs') renderObs(m)
+  else if (m.type === 'event') { renderEvent(env); if (m.obs) renderObs(m.obs) } else if (m.type === 'trace') renderTrace(env)
+  else if (m.type === 'call') renderCall(env)
+  else if (m.type === 'result') { renderCall(env); if (m.obs) renderObs(m.obs) }
+}
+
+// ---- tap ----
+let backoff = 1000
+// The body replays recent messages on every (re)connect. Skip what was
+// already shown: anything older than the newest timestamp seen, and exact
+// repeats of messages at that same timestamp.
+let lastTs = ''
+let atLastTs = new Set()
+function connect () {
+  const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/tap')
+  ws.onopen = () => { backoff = 1000; $('conn').textContent = 'tap: live'; $('conn').className = 'pill ok' }
+  ws.onmessage = ev => {
+    let env
+    try { env = JSON.parse(ev.data) } catch { return }
+    if (env.ts < lastTs) return
+    const k = env.dir + JSON.stringify(env.msg)
+    if (env.ts === lastTs) { if (atLastTs.has(k)) return } else { lastTs = env.ts; atLastTs = new Set() }
+    atLastTs.add(k)
+    onEnvelope(env)
+  }
+  ws.onclose = () => {
+    $('conn').textContent = 'tap: reconnecting…'; $('conn').className = 'pill bad'
+    setTimeout(connect, backoff); backoff = Math.min(backoff * 2, 15000)
+  }
+}
+
+// ---- read-only api ----
+async function api (p) { const r = await fetch(p, { cache: 'no-store' }); if (!r.ok) throw new Error(p + ': ' + r.status); return r.json() }
+
+async function loadPlaces () {
+  try {
+    const p = await api('/api/places')
+    $('places-n').textContent = `${p.count} known${p.dim ? ' · nearest in ' + p.dim : ''}`
+    table($('places'), ['type', 'pos', 'dist', 'last seen t'], p.nearest.map(e => [e.type, el('span', { class: 'mono' }, vec(e.pos)), e.dist, e.t]))
+  } catch {}
+}
+
+async function loadVerbs () {
+  try {
+    const verbs = await api('/api/verbs')
+    $('verbs').replaceChildren(...verbs.map(v => el('li', null, el('button', {
+      onclick: async ev => {
+        for (const b of $('verbs').querySelectorAll('button')) b.classList.remove('sel')
+        ev.currentTarget.classList.add('sel')
+        try { const s = await api('/api/verbs/' + encodeURIComponent(v.name)); $('verbsrc').textContent = s.source; $('verbsrc').classList.remove('muted') } catch (e) { $('verbsrc').textContent = String(e) }
+      }
+    }, v.name, ' ', tag(v.kind, v.kind === 'live' ? 'live' : '')))))
+  } catch {}
+}
+
+async function loadConfig () {
+  try {
+    const c = await api('/api/config')
+    $('config').textContent = JSON.stringify(c, null, 2)
+    if (c.mc && c.mc.username) { $('title').textContent = c.mc.username; document.title = c.mc.username }
+  } catch {}
+}
+
+async function loadLog () {
+  try { for (const env of await api('/api/log?n=150')) renderLog({ ...env, logged: true }) } catch {}
+}
+
+// ---- the one control ----
+$('stop').onclick = async () => {
+  $('stopmsg').textContent = 'stopping…'
+  try {
+    const r = await (await fetch('/api/stop', { method: 'POST' })).json()
+    $('stopmsg').textContent = `${r.status}: ${r.detail}`
+  } catch (e) { $('stopmsg').textContent = 'stop failed: ' + e.message }
+}
+
+setInterval(() => {
+  const s = lastObsAt ? Math.round((Date.now() - lastObsAt) / 1000) : null
+  $('seen').textContent = s === null ? 'no obs yet' : `last obs ${s}s ago`
+  $('seen').className = 'pill ' + (s !== null && s < 6 ? 'ok' : 'bad')
+}, 1000)
+
+loadConfig(); loadVerbs(); loadPlaces(); loadLog().then(connect)
+setInterval(loadPlaces, 5000)
+setInterval(loadVerbs, 30000)
+</script>
+</body>
+</html>

@@ -6,6 +6,8 @@ Prints every message from the body. Type:
     say <text>    chat as the bot
     stop          cancel the current verb
     recall <type> [x y z]   nearest known place of that type
+    trace [kind] <text>     send a trace (kind: plan, decision, rag, verb_write,
+                            advisor, note; default note); logged, never acted on
     obs           ask for a full view now
     quit
 """
@@ -24,11 +26,14 @@ from websockets.exceptions import ConnectionClosed
 from . import CONTRACT_VERSION
 from .pretty import format_message
 
-HELP = "commands: say <text> | stop | recall <type> [x y z] | obs | quit"
+HELP = "commands: say <text> | stop | recall <type> [x y z] | trace [kind] <text> | obs | quit"
+TRACE_KINDS = ("plan", "decision", "rag", "verb_write", "advisor", "note")
 
 
-def parse_command(line: str, next_id) -> dict | None | str:
-    """Turn a typed line into a contract message, 'quit', or an error string."""
+def parse_command(line: str, next_id, now_t=lambda: 0) -> dict | None | str:
+    """Turn a typed line into a contract message, 'quit', or an error string.
+
+    now_t() gives the world tick of the latest obs, for trace messages."""
     line = line.strip()
     if not line:
         return None
@@ -50,6 +55,13 @@ def parse_command(line: str, next_id) -> dict | None | str:
             except ValueError:
                 return "usage: recall <type> [x y z]"
         return {"type": "call", "v": CONTRACT_VERSION, "id": next_id(), "verb": "recall", "args": args}
+    if cmd == "trace":
+        kind, _, text = rest.strip().partition(" ")
+        if kind not in TRACE_KINDS:
+            kind, text = "note", rest.strip()
+        if not text.strip():
+            return "usage: trace [kind] <text>"
+        return {"type": "trace", "v": CONTRACT_VERSION, "t": int(now_t()), "kind": kind, "text": text.strip(), "data": {}}
     if cmd == "obs":
         return {"type": "observe", "v": CONTRACT_VERSION}
     if cmd in ("quit", "exit"):
@@ -74,6 +86,7 @@ async def main(url: str, raw: bool) -> None:
 
     threading.Thread(target=read_stdin, daemon=True).start()
     counter = 0
+    last_t = 0
 
     def next_id() -> str:
         nonlocal counter
@@ -87,8 +100,12 @@ async def main(url: str, raw: bool) -> None:
                 print(f"connected to {url}")
 
                 async def reader() -> None:
+                    nonlocal last_t
                     async for data in ws:
                         msg = json.loads(data)
+                        obs = msg if msg.get("type") == "obs" else msg.get("obs")
+                        if isinstance(obs, dict) and isinstance(obs.get("t"), int):
+                            last_t = obs["t"]
                         print(json.dumps(msg, indent=2) if raw else format_message(msg), flush=True)
 
                 async def writer() -> None:
@@ -96,7 +113,7 @@ async def main(url: str, raw: bool) -> None:
                         line = await lines.get()
                         if line is None:
                             return
-                        out = parse_command(line, next_id)
+                        out = parse_command(line, next_id, lambda: last_t)
                         if out == "quit":
                             return
                         if isinstance(out, str):
@@ -105,6 +122,8 @@ async def main(url: str, raw: bool) -> None:
                             await ws.send(json.dumps(out))
                             if out["type"] == "call":
                                 print(f">> call {out['id']}: {out['verb']} {out['args'] or ''}".rstrip())
+                            elif out["type"] == "trace":
+                                print(f">> trace {out['kind']} t={out['t']}: {out['text']}")
 
                 tasks = [asyncio.create_task(reader()), asyncio.create_task(writer())]
                 done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)

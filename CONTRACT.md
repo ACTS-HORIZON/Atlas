@@ -8,7 +8,7 @@ The contract is the version-agnostic part of the project. Every layer talks only
 
 * **Body** — game backend + verb library + verb loader + reflex loop + fair-play filter + house rules. Node, in the `atlas` LXC on pve3. v1 backend: Mineflayer, connected to the offline-mode 26.1 dev server in the same LXC (LAN-only). End state: the Fabric mod on the co-op server (26.3) replaces Mineflayer *under* the body, exposing the same primitives (observe, move, dig, place, use…); the body, the JS verbs and this contract stay unchanged.
 * **Mind** — Gemma loop, notes (persistent across sessions), wiki RAG, live verb writing, chat task handling, optional advisor calls.
-* **Link** — one WebSocket between them, JSON messages, every message carries `"v": "0.1"`. Everything is logged as JSONL. Logs contain contract messages only — never anything backend-specific — so they stay valid fine-tuning data across backends.
+* **Link** — one WebSocket between them, JSON messages, every message carries `"v": "0.1"`. Body → mind: `obs`, `result`, `event`. Mind → body: `call`, `observe`, `trace`. Everything is logged as JSONL. Logs contain contract messages only — never anything backend-specific — so they stay valid fine-tuning data across backends.
 
 The reflex loop lives inside the body, so the 20 Hz path never crosses the link.
 
@@ -124,6 +124,8 @@ Statuses: `done` · `partial` · `failed` (with reason) · `interrupted` (by ref
 `{"type": "event", "kind": "...", "detail": ..., "obs": {...}}`
 
 Kinds: `task_from_chat`, `player_said` (any chat from an allowlisted player that isn't a task — answers to its questions), `item_received`, `verb_done` (redundant with result, for logging), `reflex_escalation`, `damaged_badly`, `died`, `respawned`, `inventory_full`, `night_falling`, `player_joined` / `player_left`, `stop_requested`.
+
+**Trace** (mind → body): `{"type": "trace", "v": "0.1", "t": <tick>, "kind": "plan|decision|rag|verb_write|advisor|note", "text": "...", "data": {...}}` records the mind's reasoning; the body logs it like every other message and never acts on it.
 
 ## Mind loop
 

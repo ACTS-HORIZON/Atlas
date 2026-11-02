@@ -1,4 +1,5 @@
 # Example unit for the Atlas body on the atlas LXC.
+# The body also serves the dashboard on ATLAS_DASH_BIND (default 0.0.0.0:8080).
 #   cp /opt/atlas/deploy/systemd/atlas-body.service /etc/systemd/system/
 #   systemctl daemon-reload && systemctl enable --now atlas-body
 #   journalctl -u atlas-body -f

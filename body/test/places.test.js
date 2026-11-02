@@ -7,7 +7,7 @@ const path = require('path')
 const { FakeWorld, makeView } = require('./fakeWorld')
 const { buildObs, recheckKnown } = require('../src/fairplay/observe')
 const { KnownPlaces } = require('../src/places')
-const { runVerb } = require('../src/verbs')
+const { runVerb } = require('../src/runner')
 const { check } = require('../src/schema')
 
 const tmpFile = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-places-')), 'known-places.json')
@@ -75,18 +75,18 @@ test('a file that cannot be read is moved aside, not fatal', () => {
   assert.ok(fs.readdirSync(path.dirname(file)).some(f => f.includes('.bad-')))
 })
 
-test('recall verb: nearest known entry, or failed "unknown"', () => {
+test('recall verb: nearest known entry, or failed "unknown"', async () => {
   const places = new KnownPlaces({ file: null })
   const w = world().set(-6, 10, 14, 'iron_ore')
   tick(places, w)
   const act = { connected: () => true, chat () {}, halt () {}, here: () => ({ pos: [0.5, 10, 0.5], dim: 'overworld', t: 1200 }), places }
-  let r = runVerb(act, 'recall', { type: 'iron_ore' })
+  let r = await runVerb(act, 'recall', { type: 'iron_ore' })
   assert.equal(r.status, 'done')
   assert.deepEqual(r.data, { type: 'iron_ore', pos: [0, 10, 6], dist: 6, age: 200 })
   assert.equal(check('recallData', r.data), null)
-  r = runVerb(act, 'recall', { type: 'iron_ore', near: [-6, 10, 15] })
+  r = await runVerb(act, 'recall', { type: 'iron_ore', near: [-6, 10, 15] })
   assert.deepEqual(r.data.pos, [-6, 10, 14])
-  assert.deepEqual(runVerb(act, 'recall', { type: 'diamond_ore' }), { status: 'failed', detail: 'unknown' })
-  assert.equal(runVerb(act, 'recall', {}).status, 'failed')
-  assert.equal(runVerb(act, 'recall', { type: 'iron_ore', near: [1, 2] }).status, 'failed')
+  assert.deepEqual((await runVerb(act, 'recall', { type: 'diamond_ore' })), { status: 'failed', detail: 'unknown' })
+  assert.equal((await runVerb(act, 'recall', {})).status, 'failed')
+  assert.equal((await runVerb(act, 'recall', { type: 'iron_ore', near: [1, 2] })).status, 'failed')
 })

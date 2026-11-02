@@ -15,6 +15,15 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(parse_command("recall iron_ore", nid)["args"], {"type": "iron_ore"})
         self.assertEqual(parse_command("recall chest 1 64 -3", nid)["args"], {"type": "chest", "near": [1.0, 64.0, -3.0]})
         self.assertTrue(parse_command("recall chest 1 2", nid).startswith("usage"))
+
+    def test_trace(self):
+        nid = lambda: "c1"  # noqa: E731
+        self.assertEqual(parse_command("trace check the cave first", nid, lambda: 18342),
+                         {"type": "trace", "v": "0.1", "t": 18342, "kind": "note", "text": "check the cave first", "data": {}})
+        self.assertEqual(parse_command("trace plan get iron, then come back", nid)["kind"], "plan")
+        self.assertEqual(parse_command("trace plan get iron", nid)["text"], "get iron")
+        self.assertTrue(parse_command("trace", nid).startswith("usage"))
+        self.assertTrue(parse_command("trace decision", nid).startswith("usage"))
         self.assertEqual(parse_command("quit", nid), "quit")
         self.assertIsNone(parse_command("   ", nid))
         self.assertTrue(parse_command("dance", nid).startswith("commands"))
