@@ -21,17 +21,43 @@ test('stop interrupts the running verb; it returns interrupted', async () => {
   assert.ok(act.halts >= 1)
 })
 
-test('a new long verb preempts the running one; instant verbs do not', async () => {
-  const r = new Runner({ ...VERBS, a: { run: never }, b: { run: never } })
-  const act = fakeAct()
-  const pa = r.run(act, { id: 'c1', verb: 'a' })
+test('while a verb runs, other calls are refused "busy": not queued, nothing cancelled', async () => {
+  let bRuns = 0
+  const r = new Runner({ ...VERBS, a: { run: never }, b: { run: () => { bRuns++; return { status: 'done', detail: 'b' } } } })
+  const act = { ...fakeAct(), here: () => ({ pos: [0, 0, 0], dim: 'overworld', t: 0 }), places: { recall: () => null } }
+  let aSettled = false
+  const pa = r.run(act, { id: 'c1', verb: 'a' }).then(x => { aSettled = true; return x })
   await new Promise(resolve => setImmediate(resolve))
-  assert.equal((await r.run(act, { id: 'c2', verb: 'say', args: { text: 'hi' } })).status, 'done')
-  assert.equal(r.task().verb, 'a', 'say ran alongside')
-  r.run(act, { id: 'c3', verb: 'b' })
+
+  for (const [id, verb] of [['c2', 'b'], ['c3', 'a'], ['c4', 'mine'], ['c5', 'goto']]) {
+    assert.deepEqual(await r.run(act, { id, verb, args: {} }), { status: 'refused', detail: 'busy' }, verb)
+  }
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(bRuns, 0, 'refused, not queued')
+  assert.equal(aSettled, false, 'the running verb was not cancelled')
+  assert.equal(r.task().id, 'c1')
+  assert.equal(act.halts, 0)
+
+  // say, recall, inspect run alongside (inspect is not implemented yet, but is not "busy")
+  assert.deepEqual(await r.run(act, { id: 'c6', verb: 'say', args: { text: 'hi' } }), { status: 'done', detail: 'said: hi' })
+  assert.deepEqual(await r.run(act, { id: 'c7', verb: 'recall', args: { type: 'iron_ore' } }), { status: 'failed', detail: 'unknown' })
+  assert.deepEqual(await r.run(act, { id: 'c8', verb: 'inspect', args: { box: [[0, 0, 0], [1, 1, 1]] } }), { status: 'failed', detail: 'verb not implemented yet: inspect' })
+  assert.equal(r.task().id, 'c1', 'still the task')
+  assert.deepEqual(act.said, ['hi'])
+
+  // stop also runs alongside, and ends it; then other calls run again
+  assert.deepEqual(await r.run(act, { id: 'c9', verb: 'stop' }), { status: 'done', detail: 'stopped a' })
   assert.equal((await pa).status, 'interrupted')
-  assert.equal(r.task().verb, 'b')
-  r.stop(act, 'test')
+  assert.deepEqual(await r.run(act, { id: 'c10', verb: 'b' }), { status: 'done', detail: 'b' })
+  assert.equal(bRuns, 1)
+  assert.equal(r.task(), null)
+})
+
+test('say and recall never become the task', async () => {
+  const r = new Runner()
+  const act = { ...fakeAct(), here: () => ({ pos: [0, 0, 0], dim: 'overworld', t: 0 }), places: { recall: () => null } }
+  await r.run(act, { id: 'c1', verb: 'say', args: { text: 'x' } })
+  assert.equal(r.task(), null)
 })
 
 test('stop works with nothing running and while disconnected', async () => {

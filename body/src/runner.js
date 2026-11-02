@@ -1,9 +1,14 @@
 'use strict'
-// Runs verbs, one long-running verb at a time, and stops them.
+// Runs verbs (CONTRACT.md, Verbs): one verb at a time, shown as `task` in
+// the obs. say, recall, inspect and stop run alongside a running verb; any
+// other call while one is running is refused with reason "busy" (not queued,
+// and the running verb is not cancelled).
 // stop (from the mind's `stop` call or the dashboard's Stop button) aborts
 // the running verb, which then returns `interrupted`, and releases every
 // movement control. It works even when not connected.
 const { VERBS } = require('./verbs')
+
+const ALONGSIDE = new Set(['say', 'recall', 'inspect', 'stop'])
 
 const abortedP = signal => new Promise(resolve => {
   if (signal.aborted) resolve()
@@ -30,13 +35,13 @@ class Runner {
     const { id, verb } = call
     const args = call.args || {}
     if (verb === 'stop') return this.stop(act, `call ${id}`)
+    if (this.current && !ALONGSIDE.has(verb)) return { status: 'refused', detail: 'busy' }
     const def = Object.hasOwn(this.verbs, verb) ? this.verbs[verb] : null
     if (!def) return { status: 'failed', detail: `verb not implemented yet: ${verb}` }
     if (!act.connected()) return { status: 'failed', detail: 'not connected to the server' }
-    if (def.instant) {
+    if (ALONGSIDE.has(verb)) {
       try { return await def.run(act, args) } catch (err) { return { status: 'failed', detail: `${verb}: ${err.message}` } }
     }
-    if (this.current) this.interrupt(act, `preempted by ${verb} (${id})`)
     const ctrl = new AbortController()
     const cur = { id, verb, args, ctrl, progress: null }
     this.current = cur
@@ -74,4 +79,4 @@ function runVerb (act, verb, args = {}) {
   return new Runner().run(act, { id: 'x', verb, args })
 }
 
-module.exports = { Runner, runVerb }
+module.exports = { Runner, runVerb, ALONGSIDE }

@@ -122,7 +122,7 @@ function verbLibrary (builtins, liveDir) {
     if (v.kind === 'live') return { ...v, source: fs.readFileSync(path.join(liveDir, `${name}.js`), 'utf8') }
     if (name === 'stop') return { ...v, source: '// stop is handled by the body itself (src/runner.js, Runner.stop):\n// it aborts the running verb (which returns "interrupted") and releases all controls.\n' + require('./runner').Runner.prototype.stop.toString() }
     const def = builtins[name]
-    return { ...v, source: `${name}: {${def.instant ? ' instant: true,' : ''}\n  ${def.run.toString()}\n}` }
+    return { ...v, source: `${name}: {\n  ${def.run.toString()}\n}` }
   }
   return { list, source }
 }

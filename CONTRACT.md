@@ -81,6 +81,8 @@ Result: `{"type": "result", "id": "c41", "status": "partial", "detail": "mined 3
 
 Statuses: `done` · `partial` · `failed` (with reason) · `interrupted` (by reflex or `stop`) · `refused` (house rules or fair play).
 
+The body runs one verb at a time; it appears as `task` in the obs. `say`, `recall`, `inspect` and `stop` run alongside a running verb. Any other call while one is running is `refused` with reason `busy`.
+
 **Core (v1):**
 
 | Verb | Args | Notes |

@@ -112,6 +112,11 @@ test('the Stop endpoint stops a running verb directly, without the mind', async 
   const o = await mind.wait(m => m.type === 'obs' && m.task)
   assert.deepEqual(o.task, { id: 'c7', verb: 'dig_forever', args: {}, progress: '0/1', state: 'running' })
 
+  // over the link too: a second call while busy is refused, the first keeps running
+  mind.send({ type: 'call', v: '0.1', id: 'c8', verb: 'dig_forever', args: {} })
+  const busy = await mind.wait(m => m.type === 'result' && m.id === 'c8')
+  assert.deepEqual([busy.status, busy.detail, busy.obs.task.id], ['refused', 'busy', 'c7'])
+
   const halts = bot.halts
   const r = await (await fetch(`${dashUrl}/api/stop`, { method: 'POST' })).json()
   assert.deepEqual(r, { status: 'done', detail: 'stopped dig_forever' })

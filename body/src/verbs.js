@@ -4,16 +4,15 @@
 // never touch the backend:
 //   act.connected() -> bool, act.chat(text), act.halt(),
 //   act.here() -> {pos, dim, t}, act.places (KnownPlaces)
-// Long-running verbs also get act.signal (AbortSignal) and act.progress(text).
-// `instant` verbs run alongside a running verb instead of preempting it.
-// `stop` is not in this table: the Runner handles it directly.
+// Verbs that become the task also get act.signal (AbortSignal) and
+// act.progress(text). Which verbs run alongside a running one is decided by
+// the Runner (ALONGSIDE), not here. `stop` is handled by the Runner directly.
 const { check } = require('./schema')
 
 const MAX_SAY = 256
 
 const VERBS = {
   say: {
-    instant: true,
     run (act, args) {
       if (typeof args.text !== 'string') return { status: 'failed', detail: 'say needs args.text (string)' }
       const text = args.text.replace(/[\r\n]+/g, ' ').trim()
@@ -27,7 +26,6 @@ const VERBS = {
   },
 
   recall: {
-    instant: true,
     run (act, args) {
       const err = check('recallArgs', args)
       if (err) return { status: 'failed', detail: `recall: ${err}` }
