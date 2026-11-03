@@ -70,6 +70,7 @@ The nearest known place of `type` in this dimension. `near` defaults to the bot'
 
 ### mine {block, count = 1, radius = 32}
 - **Blocks, not items:** mine takes block names; items come from blocks (cobblestone ← stone, raw_iron ← iron_ore, coal ← coal_ore, dirt ← grass_block). Asking for an item fails with the block to mine instead.
+- **Cobblestone needs no furnace:** mining stone gives cobblestone; smelting cobblestone gives stone (the reverse).
 - **Finding stone:** stone is usually under 1–4 blocks of dirt/grass, or exposed on hillsides and in caves. If none is in view, dig down a few blocks (`mine dirt`, `dig`) or into a slope rather than exploring the surface.
 - **Limits:** `count` 1–512, `radius` 1–128.
 - **Targets:** notable types (ores, logs, …) come from `blocks_seen` and known places within `radius`. Any type, stone included, also counts when visible in the terrain around the bot, looked for up to 24 blocks out.
