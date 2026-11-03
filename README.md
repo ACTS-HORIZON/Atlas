@@ -57,7 +57,7 @@ CONTRACT.md: players out of sight are reported by bearing only, exactly when the
 
 **[docs/verbs.md](docs/verbs.md) is the verb reference.** It is the authority for arguments, limits, `data` shapes, progress strings and failure reasons, and the mind loads it into its prompt.
 
-- **Implemented:** `say`, `stop`, `recall`, `goto`, `explore`, `mine`, `collect`, `craft`, `place`, `equip`, `dig`, `eat`.
+- **Implemented:** `say`, `stop`, `recall`, `goto`, `explore`, `mine` (with `y`: staircase down first), `collect`, `craft`, `place`, `equip`, `dig`, `eat`, `give`, `deposit`, `withdraw`, `smelt`.
 - **One at a time:** the running verb is the `task` in the obs, with progress, and `stop` interrupts it.
 - **Filtered API:** verbs act only through `body/src/api.js`, which enforces fair play (targets must be observed; blocks are read only when visible) and house rules (protected regions). The Mineflayer side is `body/src/motor.js`, which also guards `bot.dig` and `bot.placeBlock` against protected regions, so not even the pathfinder digs or builds in one.
 - **Deliberately dumb:** a verb that can't do its job fails with a reason the mind can act on ("needs crafting_table nearby", "missing 3 oak_planks"). It doesn't go and fix the cause itself.
@@ -153,7 +153,7 @@ It prints one line per decision (`[mind] call: <thinking>`). The dashboard's Tra
 cd /opt/atlas/mind && .venv/bin/python -m atlas_mind.client
 ```
 
-Both can be connected at once. A verb you type while the mind's verb is running gets `refused — busy`. Type `say hello`, `goto 10 64 -20`, `explore north 48`, `mine coal_ore 3` (or `mine iron_ore 3 y=16` to staircase down first), `collect oak_log`, `craft oak_planks 4`, `place cobblestone 3 64 -2`, `equip iron_pickaxe`, `dig 3 63 -2`, `eat`, `stop`, `recall iron_ore`, `trace plan get iron first`, `obs`, or `quit`. Add `--json` to see raw messages instead of the summary.
+Both can be connected at once. A verb you type while the mind's verb is running gets `refused — busy`. Type `say hello`, `goto 10 64 -20`, `explore north 48`, `mine coal_ore 3` (or `mine iron_ore 3 y=16` to staircase down first), `collect oak_log`, `craft oak_planks 4`, `smelt iron_ingot 3`, `place cobblestone 3 64 -2`, `equip iron_pickaxe`, `dig 3 63 -2`, `eat`, `stop`, `recall iron_ore`, `trace plan get iron first`, `obs`, or `quit`. Add `--json` to see raw messages instead of the summary.
 
 **Logs:**
 
@@ -194,7 +194,7 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
   - **Skipped:** idle ticks while a verb runs, or while an `ask_player` question is open.
   - **Follow-up turns:** a turn that only talked (say, note, done) while a task is open gets one follow-up turn to carry on, at most 3 in a row without new input.
 - **Builds the context:**
-  - a **system prompt**: who Atlas is, fair play, house rules, no fighting, no smelting yet, trust the wiki over memory, and the output format, plus `docs/verbs.md` loaded from the repo at start, so it is never stale;
+  - a **system prompt**: who Atlas is, fair play, house rules, no fighting, trust the wiki over memory, and the output format, plus `docs/verbs.md` loaded from the repo at start, so it is never stale;
   - the **task list**;
   - the **latest obs**, rendered compactly (a few hundred tokens, not raw JSON);
   - the **last 15** calls, results and events;
@@ -538,6 +538,36 @@ Start the mind with `python -u … | tee -a logs/mind.out` (see Run) and keep th
    - `withdraw` from that chest works.
    - From another chest: `refused — house rules: … has not been given to Atlas …`.
    - `deposit` into any chest it can see works.
+
+## Session 5 live checklist (atlas)
+
+**Setup.**
+1. Pull, then restart the body and the mind.
+2. Build the wiki knowledge once: `python3 scripts/wiki_fetch.py`, then `python3 scripts/wiki_index.py` (see [Wiki knowledge](#wiki-knowledge)).
+3. Restart the mind. `mind.out` must not say `no wiki index`.
+
+1. **The index answers.** `python3 scripts/wiki_index.py --query "iron ore y level"` puts an ore-distribution chunk first (Iron Ore › Natural generation, or the Ore page's distribution table).
+2. **The ore table.** Run `python3 scripts/wiki_index.py --check-ores` and compare it with the ore table in `docs/verbs.md`. Send me any differences; the table is marked unverified until then.
+3. **The test: an iron pickaxe from the canopy spot, without help.** Put Atlas back at the spruce-canopy spot from Session 4, with cobblestone in its inventory and no iron. Say `@Atlas get me an iron pickaxe`, then don't help: no items, no answers beyond "yes/no" if it asks. What to expect:
+   - **Knowledge:** the Trace feed shows `rag` traces whose titles include an iron-ore chunk. It may also make a `lookup` (`rag` with `lookup: true`). Its thinking mentions the level, about y 16.
+   - **Iron:** `mine iron_ore` with `y` around 16. The Task panel shows `stairs n … staircase <dir>, y <now> -> 16`, then the tunnel, then ore mined. If the staircase stops (lava, water, a drop), the result names it and the next action is a different approach, not a question.
+   - **Furnace:** `craft furnace` (it has the cobblestone), then `place furnace …`.
+   - **Smelting:** `smelt iron_ingot 3`, with the Task panel at `n/3 smelted`.
+   - **The pickaxe:** sticks and a crafting table if needed, then `craft iron_pickaxe`, then `give iron_pickaxe 1 ACTS_HORIZON` and a closing report.
+4. **Count the questions.** The goal is zero.
+   - **Questions asked:** `grep -c '^\[mind\] ask_player' logs/mind.out`, or count them in the Trace feed. Note each one and what it asked.
+   - **Questions the guard stopped:** `grep -c 'is hard, not unclear' logs/mind.out`.
+   - **For each failure:** check the task's journal in the prompt (`--replay … --show-prompt`). The next call should differ from the failed one.
+5. **Smelt on its own** (terminal client, with the mind stopped):
+   - With no furnace in sight: `smelt iron_ingot 1` gives `failed — smelt: needs a furnace or blast_furnace … craft furnace (8 cobblestone), then place it`.
+   - Next to a furnace, holding 2 raw iron and 1 coal: `smelt iron_ingot 3` gives `partial — smelted 2 of 3 iron_ingot; only 2 raw_iron in inventory`. The furnace's slots are empty afterwards (the coal burned; nothing is left behind).
+   - With a furnace inside a protected region: `refused — house rules: no furnace use inside protected region …`.
+6. **The staircase on its own.** From the surface, holding a stone pickaxe: `mine iron_ore 3 y=16`.
+   - It digs a 1-wide staircase straight ahead and steps down onto solid floor only.
+   - At y 16 it tunnels.
+   - Stand on the stairs and look: no holes under the steps.
+
+Send back the `mind.out` of item 3, the question count, any staircase stop reasons, and the `--check-ores` output.
 
 ## Development
 

@@ -518,6 +518,49 @@ class Motor {
     })
   }
 
+  /**
+   * Smelt in the furnace at pos (within reach): put fuelCount fuel and count
+   * input in, take the output as it comes, then take back whatever input and
+   * fuel are left. The furnace must not hold someone else's items.
+   * {ok, smelted, reason?}
+   */
+  async smelt (pos, { input, output, count, fuel, fuelCount, signal, onProgress, pollMs = 500, stallMs = 25000 }) {
+    const bot = this.bot
+    const block = bot.blockAt(new Vec3(pos[0], pos[1], pos[2]))
+    if (!block) return { ok: false, smelted: 0, reason: 'not loaded' }
+    const id = n => bot.registry.itemsByName[n].id
+    let f
+    try { f = await bot.openFurnace(block) } catch (err) { return { ok: false, smelted: 0, reason: `could not open the ${block.name}: ${err.message}` } }
+    let smelted = 0; let reason = null
+    const take = async () => {
+      const o = f.outputItem()
+      if (!o || !o.count) return
+      try { await f.takeOutput(); smelted += o.count; onProgress && onProgress(smelted) } catch (err) { reason = /full|space/i.test(err.message) ? 'the inventory is full' : err.message }
+    }
+    try {
+      for (const [slot, it, want] of [['input', f.inputItem(), input], ['fuel', f.fuelItem(), fuel], ['output', f.outputItem(), null]]) {
+        if (it && it.count && it.name !== want) return { ok: false, smelted: 0, reason: `the ${block.name} is in use: its ${slot} slot holds ${it.count} ${it.name}` }
+      }
+      try {
+        await f.putFuel(id(fuel), null, fuelCount)
+        await f.putInput(id(input), null, count)
+      } catch (err) { reason = err.message }
+      let last = Date.now()
+      while (!reason && smelted < count && !signal?.aborted) {
+        await new Promise(resolve => setTimeout(resolve, pollMs))
+        const before = smelted
+        await take()
+        if (smelted > before) last = Date.now()
+        else if (Date.now() - last > stallMs) reason = `the ${block.name} stopped: nothing came out for ${Math.round(stallMs / 1000)} s`
+      }
+      await take()
+      for (const [slot, get, back] of [['input', () => f.inputItem(), () => f.takeInput()], ['fuel', () => f.fuelItem(), () => f.takeFuel()]]) {
+        if (get()?.count) { try { await back() } catch (err) { reason = reason || `could not take back the ${slot}: ${err.message}` } }
+      }
+      return { ok: smelted > 0, smelted, reason }
+    } finally { try { f.close() } catch {} }
+  }
+
   async eat (item) {
     const bot = this.bot
     const it = bot.inventory.items().find(i => i.name === item)

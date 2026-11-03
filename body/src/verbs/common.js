@@ -88,6 +88,12 @@ const SCHEMAS = {
     additionalProperties: false,
     properties: { item: { type: 'string', minLength: 1 }, count: { type: 'integer', minimum: 1, maximum: 2304, default: 1 }, chest: { type: 'array', items: { type: 'integer' }, minItems: 3, maxItems: 3 } }
   },
+  smelt: {
+    type: 'object',
+    required: ['item'],
+    additionalProperties: false,
+    properties: { item: { type: 'string', minLength: 1 }, count: { type: 'integer', minimum: 1, maximum: 576, default: 1 }, fuel: { type: 'string', minLength: 1 } }
+  },
   eat: {
     type: 'object',
     additionalProperties: false,

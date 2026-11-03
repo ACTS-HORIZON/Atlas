@@ -186,8 +186,34 @@ Takes from an observed chest, but only from one that has been given to Atlas (ho
   - `refused`: `house rules: the <chest> at [x, y, z] has not been given to Atlas (…)`, or fair play (not observed)
   - Results carry `data: {item, withdrawn}`.
 
+### smelt {item, count = 1, fuel?}
+Smelts in a furnace Atlas has seen: in view, or a known place within 32 blocks. It never places one: get one with `craft furnace` (8 cobblestone), then `place furnace …`.
+- **`item`:** what to make (`iron_ingot`, `stone`, `glass`, `cooked_beef`, `charcoal`) or what to put in (`raw_iron`). For an output, the input is whatever in the inventory smelts into it (raw_iron or iron_ore for iron_ingot). `count` is how many come out (1–576).
+- **Which furnace:** ores and raw metals go in a furnace or a blast_furnace; food in a furnace or a smoker; anything else only in a furnace. The nearest one that takes it is used.
+- **Fuel:** the `fuel` item if given, else the best in the inventory: coal, charcoal, coal_block, then planks, then logs. It is never the input itself, and only as much as the count needs. Per item: coal and charcoal smelt 8, planks and logs 1.5, a stick 0.5.
+- **How it runs:** walks to the furnace, puts the fuel and the input in, waits (10 s per item; 5 s in a blast furnace or smoker), and takes the output as it comes. At the end it takes back any input and fuel left over.
+- **Someone else's furnace:** one whose slots hold other items is left alone.
+- **Progress:** `going to the furnace at [x, y, z]`, then `<n>/<N> smelted`.
+- **Results:**
+  - `done`: `smelted <n> <item> in the furnace at [x, y, z]`
+  - `partial`: `smelted <n> of <count> <item>; <shortage>`, where the shortage is one of:
+    - `only <n> <input> in inventory`
+    - `not enough fuel: <n> <fuel> smelts <m>; <k> more <fuel> needed`
+    - `the furnace stopped: nothing came out for 25 s`
+    - `the inventory is full`
+  - `failed`, before moving:
+    - `smelt: needs a furnace or blast_furnace (none seen or known within 32 blocks); craft furnace (8 cobblestone), then place it`
+    - `smelt: no fuel in inventory (coal, charcoal, planks or logs)`
+    - `smelt: nothing to smelt into <item>: no <inputs> in inventory`
+    - `smelt: <item> is not made in a furnace` (with `; it is crafted: use craft <item>` when it is crafted)
+    - `smelt: <fuel> is not a fuel`
+  - `failed`, at the furnace: `smelt: the furnace is in use: its <slot> slot holds <n> <item>`.
+  - `refused`: the only furnace in reach is inside a protected region: `house rules: no furnace use inside protected region "<name>" (…)`.
+  - Results carry `data: {item, input, smelted, requested, fuel, fuel_used, furnace}`.
+- **Example, iron to a pickaxe:** `mine {block: "iron_ore", count: 3, y: 16}` → `craft {item: "furnace"}` (8 cobblestone) → `place {block: "furnace", pos: […]}` → `smelt {item: "iron_ingot", count: 3}` → `craft {item: "iron_pickaxe"}` (3 iron_ingot, 2 sticks, at a crafting table).
+
 ## Not implemented yet
-`inspect`, `build`, `smelt`, `fight`, `flee` and the Later list in CONTRACT.md. Calling one gives `failed` with `verb not implemented yet: <verb>`.
+`inspect`, `build`, `fight`, `flee` and the Later list in CONTRACT.md. Calling one gives `failed` with `verb not implemented yet: <verb>`.
 
 ## Chat the body handles itself
 From players on `ATLAS_PLAYERS` only:

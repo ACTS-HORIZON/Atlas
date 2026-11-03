@@ -324,6 +324,7 @@ class VerbApi {
   eat (item) { return this.motor.eat(item) }
   craftPlan (item, count) { return this.motor.craftPlan(item, count) }
   craft (item, count, tablePos) { return this.motor.craft(item, count, tablePos) }
+  smelt (pos, opts) { return this.motor.smelt(pos, opts) }
 
   // ---- items -------------------------------------------------------------
   /** Dropped items in sight: [{id, item, pos, dist}], nearest first. */
@@ -355,6 +356,7 @@ class VerbApi {
   }
 
   inventoryCount (item) { return this.motor.inventory()[item] || 0 }
+  inventory () { return this.motor.inventory() }
 
   /** Known-place keys in a dimension (to count new ones). */
   placeKeys (dim) { return new Set(this.places.inDim(dim).map(e => key(e.pos))) }

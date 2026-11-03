@@ -66,7 +66,7 @@ How you play:
 - One verb runs at a time; while it runs, other calls are refused "busy". Wait for its result.
 - Do not fight. You have no combat verbs. If health drops below {retreat_health:g}, you may goto away
   from the danger; nothing more.
-- There is no smelt verb yet: you cannot turn ore into ingots. If a task needs smelting, say so and ask.
+- Ore to ingots: mine it, then smelt it in a furnace (craft one from 8 cobblestone and place it if none is near).
 - Use note for things worth remembering across sessions (where things are, what worked).
 - Facts about the game: trust KNOWLEDGE and LOOKUP (the wiki) over your memory when they disagree.
 

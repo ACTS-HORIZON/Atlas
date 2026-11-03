@@ -66,6 +66,12 @@ function fakeMotor (w, opt = {}) {
       if (opt.inv) opt.inv[item] -= moved
       return { ok: moved > 0, moved, reason: moved < count ? 'the chest is full' : null }
     },
+    async smelt (pos, o) {
+      this.calls.push(['smelt', pos, { ...o, signal: undefined, onProgress: undefined }])
+      const r = opt.smelt ? opt.smelt(pos, o) : { ok: true, smelted: o.count }
+      for (let i = 1; i <= r.smelted; i++) o.onProgress(i)
+      return r
+    },
     async withdraw (pos, item, count) {
       this.calls.push(['withdraw', pos, item, count])
       const available = (opt.chestItems || {})[item] || 0

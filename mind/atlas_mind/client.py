@@ -12,6 +12,7 @@ Prints every message from the body. Type:
     mine <block> <n> [radius] [y=<level>]   mine n observed blocks (strip-mines if none seen; y: staircase down first)
     collect <item>          pick up visible drops of that item
     craft <item> [n]        craft (2x2, or at a crafting table it has seen)
+    smelt <item> [n] [fuel] smelt in a furnace it has seen (item: what to make or what to put in)
     place <block> <x> <y> <z>   place a block next to Atlas
     equip <item> [slot]     hand, off-hand, head, torso, legs, feet
     dig <x> <y> <z>         dig one observed block
@@ -40,7 +41,7 @@ from . import CONTRACT_VERSION
 from .pretty import format_message
 
 HELP = ("commands: say <text> | stop | recall <type> [x y z] | goto <x y z | target> | explore <dir> <n> |"
-        " mine <block> <n> [radius] [y=<level>] | collect <item> | craft <item> [n] | place <block> <x y z> | equip <item> [slot] |"
+        " mine <block> <n> [radius] [y=<level>] | collect <item> | craft <item> [n] | smelt <item> [n] [fuel] | place <block> <x y z> | equip <item> [slot] |"
         " dig <x y z> | eat [item] | give <item> <n> <player> | deposit|withdraw <item> <x y z> [n] |"
         " trace [kind] <text> | obs | quit")
 DIRECTIONS = ("north", "south", "east", "west", "north-east", "north-west", "south-east", "south-west", "forward")
@@ -117,6 +118,15 @@ def parse_command(line: str, next_id, now_t=lambda: 0) -> dict | None | str:
         if len(parts) != 3 or not parts[1].isdigit():
             return "usage: give <item> <count> <player>"
         return call("give", {"item": parts[0], "count": int(parts[1]), "player": parts[2]})
+    if cmd == "smelt":
+        if not 1 <= len(parts) <= 3 or (len(parts) >= 2 and not parts[1].isdigit()):
+            return "usage: smelt <item> [count] [fuel]"
+        args = {"item": parts[0]}
+        if len(parts) >= 2:
+            args["count"] = int(parts[1])
+        if len(parts) == 3:
+            args["fuel"] = parts[2]
+        return call("smelt", args)
     if cmd in ("deposit", "withdraw"):
         pos = ints(parts[1:4]) if len(parts) in (4, 5) else None
         if not pos or (len(parts) == 5 and not parts[4].isdigit()):
