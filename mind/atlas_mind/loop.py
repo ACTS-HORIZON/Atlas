@@ -32,13 +32,12 @@ Wake policy (no model call is wasted):
 Guards that don't rely on the model:
 - an unusable reply is logged (raw text, finish_reason) and retried once
   with the error shown, then the mind waits;
-- the exact call that just failed or was refused is not sent again, and
-  after a task's call fails its next call must differ in verb, target or
-  method (the count doesn't count);
+- nothing is refused for repeating a failure: calls that failed recently
+  are listed in the context (FAILED RECENTLY); the fuse: the identical call
+  failing ATLAS_FUSE_COUNT (5) times in a row pauses the mind for
+  ATLAS_FUSE_S (30 s), logged "fuse: <call> x5", then it carries on;
 - each task keeps a journal (calls with status and detail, "ruled out"
-  notes) shown in the context; once a task has a failure, ask_player for it
-  is refused until 3 different approaches were tried (tasks.py), unless a
-  failure said no verb can do it or a house rule is in the way;
+  notes) shown in the context;
 - a task that is already confirmed is not confirmed again, and work on a
   new task starts with confirming it;
 - after a turn that only talked while a task is open, one follow-up turn
@@ -64,7 +63,7 @@ from .llm import LLMError
 from .notes import Notes
 from .prompt import OUTPUT_FORMAT, context, load_verb_reference, system_prompt
 from .render import history_line, render_inventory, render_obs, render_surroundings
-from .tasks import OPEN, TaskList, fine_key, one_line, place_cell
+from .tasks import OPEN, TaskList, one_line, place_cell
 
 V = CONTRACT_VERSION
 QUIET_VERBS = {"say", "recall", "stop"}  # their results don't wake a turn
@@ -95,57 +94,6 @@ class Recent(deque):
 NOISE_RE = re.compile(r"\[[^\]]*\]|-?\b\d+(\.\d+)?\b|\bm\d+\b")  # coordinates, numbers, call ids
 SAY_REPEAT_WINDOW_S = 60  # a say matching one of the last 3 says within this window is dropped
 STUCK_RE = re.compile(r"\b(stuck|gave up)\b")  # a partial with this in its detail counts as failed
-
-
-DELIVERY_RE = re.compile(r"\b(get|bring|fetch|give|grab|hand|find|make|craft)\s+(me|us)\b|\bi\s+need\b|\bcan\s+i\s+(have|get)\b|\bi\s+want\b", re.I)
-GAVE_UP_RE = re.compile(r"\b(can't|cannot|can not|couldn't|could not|unable|won't be able|sorry)\b", re.I)
-
-
-def vertical_hint(detail: str) -> str:
-    """For a bearing-follow that found the player above or below: what to do instead."""
-    m = re.search(r"(\w+) is (above|below) you", detail or "")
-    if not m:
-        return ""
-    way = "up to the surface (goto a pos above you, scaffold on)" if m.group(2) == "above" else "down (goto a pos below you, dig on)"
-    return f" [{m.group(1)} is {m.group(2).upper()} you: go {way}, not another bearing follow]"
-
-
-def is_delivery(text: str) -> bool:
-    """A request that is done only when the player has the thing: get/bring/fetch/give me X, I need X."""
-    return bool(DELIVERY_RE.search(text or ""))
-
-
-FAMILIES = {"log", "planks", "wool", "wood", "stem", "leaves", "sapling", "slab", "stairs", "fence", "door", "bed", "boat"}
-WORD_NUM = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "eight": 8, "ten": 10, "a stack of": 64}
-
-
-def requested_from_inventory(text: str, inventory: dict) -> list[tuple[str, int, int]]:
-    """Items a request names that the inventory already holds in quantity: [(item, have, wanted)].
-    "get me an iron pickaxe" + {iron_pickaxe: 1} -> [("iron_pickaxe", 1, 1)]; "bring me 8 logs" matches any *_log."""
-    low = " " + " ".join(re.findall(r"[a-z0-9]+", (text or "").lower())) + " "
-    out = []
-    for item, have in (inventory or {}).items():
-        words = item.split("_")
-        phrase = " ".join(words)
-        forms = [phrase, phrase + "s", phrase + "es"]
-        if words[-1] in FAMILIES:
-            forms += [words[-1], words[-1] + "s"]
-        hit = next((f for f in forms if f" {f} " in low), None)
-        if not hit:
-            continue
-        m = re.search(r" (\d+|a stack of|a|an|one|two|three|four|five|six|eight|ten) (?:[a-z]+ ){0,2}?" + re.escape(hit) + " ", low)
-        wanted = (int(m.group(1)) if m.group(1).isdigit() else WORD_NUM.get(m.group(1), 1)) if m else 1
-        if have >= wanted:
-            out.append((item, have, wanted))
-    return out
-
-
-def delivered(task) -> bool:
-    """Has a give or deposit for this task succeeded (done, or partial with something handed over)?"""
-    for e in task.journal:
-        if e.get("kind") == "call" and e.get("status") in ("done", "partial") and re.match(r"(give|deposit)\b", e.get("text", "")):
-            return True
-    return False
 
 
 def norm_request(text: str) -> str:
@@ -232,7 +180,9 @@ class Mind:
         self.reasoning_turns = 0
         self.says: deque = deque(maxlen=3)  # (normalised text, time) of the last says sent
         self.connect_t = None  # game tick of the first obs since the link came up
-        self.last_call_target: dict[str, str] = {}  # verb -> target of its latest call
+        self.last_call_target: dict[str, str] = {}
+        self.fuse_streak: tuple = (None, 0)  # (call key, identical failures in a row)
+        self.fuse_until = 0.0  # verb -> target of its latest call
         self.call_meta: dict[str, tuple] = {}  # call id -> (task id, place cell when sent)
         self.retriever = retriever if retriever is not None else wiki.load_retriever(cfg.wiki_index)
         if self.retriever is None:
@@ -276,6 +226,8 @@ class Mind:
             task = self.tasks.get(tid)
             if task and call["verb"] not in QUIET_VERBS and m["detail"] != "busy":
                 self.tasks.result(task, call["verb"], call.get("args"), place, m["status"], m.get("detail") or "", failed)
+            if call["verb"] not in QUIET_VERBS and m["detail"] != "busy":
+                self.fuse_check(call, failed)
             if failed and m["detail"] != "busy":
                 key = (call["verb"], canon(call.get("args")))
                 self.failures = [f for f in self.failures if (f["verb"], f["args"]) != key]
@@ -404,6 +356,20 @@ class Mind:
 
     # ---- thinking -------------------------------------------------------------
     # ---- failures and hints -------------------------------------------------------
+    def fuse_check(self, call: dict, failed: bool) -> None:
+        """The fuse (not a guard: nothing is refused): the identical call failing fuse_count times in a
+        row pauses the mind for fuse_s seconds, then it carries on as before."""
+        key = f"{call['verb']} {canon(call.get('args'))}"
+        if not failed:
+            self.fuse_streak = (None, 0)
+            return
+        n = self.fuse_streak[1] + 1 if self.fuse_streak[0] == key else 1
+        self.fuse_streak = (key, n)
+        if n >= self.cfg.fuse_count:
+            self.fuse_until = time.monotonic() + self.cfg.fuse_s
+            self.fuse_streak = (None, 0)
+            self.log(f"[mind] fuse: {key} ×{n}; pausing {self.cfg.fuse_s:g} s")
+
     def recent_failures(self) -> list[dict]:
         """Failed calls still in force: within the last FAILED_WINDOW RECENT lines and
         HINT_TURNS turns. A stuck/gave-up one also ends when a later call of the same
@@ -417,10 +383,6 @@ class Mind:
             out.append(f)
         self.failures = out
         return out
-
-    def failed_recently(self, verb: str, args) -> dict | None:
-        key = (verb, canon(args))
-        return next((f for f in self.recent_failures() if (f["verb"], f["args"]) == key), None)
 
     def hint_alive(self, h: dict | None) -> bool:
         return bool(h) and self.turns - h["turn"] <= HINT_TURNS
@@ -479,14 +441,9 @@ class Mind:
         fails = self.recent_failures()
         if fails:
             extra += "\nFAILED RECENTLY (don't repeat): " + "; ".join(
-                f"{f['verb']} {f['args']} -> {one_line(f['detail'], 90)}{vertical_hint(f['detail'])}" for f in fails[-4:]) + "\n"
-        have_lines = []
-        for t in self.tasks.open():
-            if is_delivery(t.text) and not delivered(t):
-                for item, have, wanted in requested_from_inventory(t.text, (self.obs or {}).get("inventory")):
-                    have_lines.append(f"YOU ALREADY HAVE {item} ×{have} ({t.id} asks for {wanted}) — give it, don't craft")
+                f"{f['verb']} {f['args']} -> {one_line(f['detail'], 90)}" for f in fails[-4:]) + "\n"
         user = context(self.tasks.render(), render_obs(self.fresh_obs(), inventory=False), list(self.recent), self.notes.render(), wake, extra,
-                       knowledge, "\n".join([render_inventory(self.obs)] + have_lines), render_surroundings(self.obs) if self.obs else "")
+                       knowledge, render_inventory(self.obs), render_surroundings(self.obs) if self.obs else "")
         return [{"role": "system", "content": self.system}, {"role": "user", "content": user}]
 
     def resolve_task_ref(self, value: str):
@@ -563,29 +520,7 @@ class Mind:
             raise ActionError(f"no open task, so you are idle: {what} is not allowed. Idle allows say, note, wait and eat "
                               f"(and goto away from danger when health is below {self.cfg.retreat_health:g}). Work comes from players "
                               "(@-tasks); a standing task is how a player keeps you doing something. Reply with wait.")
-        if a["action"] == "call" and (f := self.failed_recently(a["verb"], a["args"])):
-            raise ActionError(f"that exact call ({a['verb']} {canon(a['args'])}) failed recently: {f['detail']}. "
-                              "Don't repeat it: choose a different action that deals with the reason.")
         t = self.task_for(a)
-        if t and a["action"] == "call" and t.last_failed == fine_key(a["verb"], a["args"]):
-            raise ActionError(f"{a['verb']} {canon(a['args'])} just failed for {t.id} (see its journal). After a failure the next "
-                              "action must differ in verb, target or method.")
-        if t and t.state in OPEN and is_delivery(t.text) and not delivered(t) and a["action"] in ("call", "plan"):
-            held = {item: (have, wanted) for item, have, wanted in requested_from_inventory(t.text, (self.obs or {}).get("inventory"))}
-            for st in ([a] if a["action"] == "call" else a["steps"]):
-                made = (st.get("args") or {}).get("item") or (st.get("args") or {}).get("block")
-                if st["verb"] in ("craft", "smelt", "mine", "collect") and made in held:
-                    have, wanted = held[made]
-                    raise ActionError(f"you already have {made} ×{have} ({t.id} asks for {wanted}): give it to {t.by} "
-                                      f"(give {{item: \"{made}\", count: {wanted}, player: \"{t.by}\"}}), don't {st['verb']} another.")
-        if t and a["action"] == "ask_player" and t.state in OPEN:
-            why = self.tasks.ask_blocked(t)
-            if why:
-                raise ActionError(why)
-        if t and a.get("closes") and t.state in OPEN and is_delivery(t.text) and not delivered(t) and not GAVE_UP_RE.search(a.get("text", "")):
-            raise ActionError(f"{t.id} asks for something to be brought ({t.text!r}): the player doesn't have it yet — give it to them "
-                              f"first (give {{item, count, player: \"{t.by}\"}}, or deposit into the chest they named), then close it. "
-                              "If it can't be done, say so plainly (\"I can't …\") when you close it.")
         if t and a["action"] in ("say", "ask_player", "call", "done") and t.state in ("done", "stopped"):
             raise ActionError(f"{t.id} is already {t.state}; leave it alone")
         if t and a["action"] == "say" and "closes" not in a and t.state == "confirmed":
@@ -600,16 +535,6 @@ class Mind:
             if self.lookup and self.lookups_in_row and a["query"].lower() == self.lookup["query"].lower():
                 raise ActionError(f'you just looked up "{a["query"]}"; the answer is under LOOKUP. Act on it.')
         if a["action"] == "plan":
-            first = a["steps"][0]
-            # only the first step: later steps may come after steps that fix their cause
-            # (craft planks -> craft wooden_pickaxe); if still wrong they simply fail
-            f = self.failed_recently(first["verb"], first["args"])
-            if f:
-                raise ActionError(f"plan step 1 ({first['verb']} {canon(first['args'])}) failed recently: {f['detail']}. "
-                                  "Plan around the reason instead: a different verb, target or method.")
-            if t and t.last_failed == fine_key(first["verb"], first["args"]):
-                raise ActionError(f"the plan starts with the call that just failed for {t.id} ({first['verb']}). "
-                                  "Plan around the reason instead: a different verb, target or method.")
             if t and t.state == "new" and any(st["verb"] not in QUIET_VERBS for st in a["steps"]):
                 raise ActionError(f"{t.id} is new: confirm it in chat first (a say with \"about\": \"{t.id}\"), then plan the work.")
         return a
@@ -620,7 +545,7 @@ class Mind:
         fails = self.recent_failures()
         lines = [f"That reply was not usable: {err}"]
         if fails:
-            lines.append("FAILED RECENTLY (don't repeat): " + "; ".join(f"{f['verb']} {f['args']} -> {f['detail']}{vertical_hint(f['detail'])}" for f in fails[-4:]))
+            lines.append("FAILED RECENTLY (don't repeat): " + "; ".join(f"{f['verb']} {f['args']} -> {f['detail']}" for f in fails[-4:]))
         lines.append("Reply again with exactly one valid JSON object, one of:")
         lines += [ln for ln in OUTPUT_FORMAT.splitlines() if ln.startswith("{")]
         return "\n".join(lines)
@@ -759,7 +684,6 @@ class Mind:
         if task is not None and verb not in QUIET_VERBS:
             place = place_cell(((self.obs or {}).get("self") or {}).get("pos"))
             self.call_meta[cid] = (task.id, place)
-            self.tasks.sent(task, verb, args, place)
         msg = {"type": "call", "v": V, "id": cid, "verb": verb, "args": args}
         self.pending[cid] = msg
         if verb not in QUIET_VERBS and target_of(verb, args):
@@ -827,6 +751,9 @@ class Mind:
     async def think_forever(self) -> None:
         while True:
             reason = await self.next_wake()
+            pause = self.fuse_until - time.monotonic()
+            if pause > 0:
+                await asyncio.sleep(pause)  # the fuse: wake reasons wait, then go on as usual
             if PLAN_NEXT in reason:
                 rest = [r for r in reason.split("; ") if r != PLAN_NEXT]
                 await self.plan_next()

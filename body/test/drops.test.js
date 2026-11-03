@@ -23,23 +23,23 @@ test('the map comes from the loot tables (normal mining, no silk touch)', () => 
 })
 
 test('hints', () => {
-  assert.equal(mineHint(registry, 'raw_iron'), 'raw_iron is an item, not a block; it drops from iron_ore or deepslate_iron_ore. Use mine iron_ore')
-  assert.equal(mineHint(registry, 'cobblestone'), 'cobblestone the item drops from stone (also cobblestone drops from cobblestone blocks). Use mine stone')
+  assert.equal(mineHint(registry, 'raw_iron'), 'raw_iron is an item; blocks that drop it: iron_ore or deepslate_iron_ore')
+  assert.equal(mineHint(registry, 'cobblestone'), 'blocks that drop cobblestone: stone (also cobblestone drops from cobblestone blocks)')
   assert.equal(mineHint(registry, 'cobblestone', { inView: true }), null, 'cobblestone blocks in view: fine to mine')
-  assert.equal(mineHint(registry, 'iron_ingot'), 'iron_ingot is an item, not a block, and no block drops it (it is crafted, smelted or found)')
+  assert.equal(mineHint(registry, 'iron_ingot'), 'iron_ingot is an item; no block drops it')
   assert.equal(mineHint(registry, 'stone'), null)
   assert.equal(mineHint(registry, 'oak_log'), null)
   // crafted items point at craft, not at a leaf block; storage-block "recipes" don't count
-  assert.equal(mineHint(registry, 'stick'), 'stick is an item, not a block; it is crafted from planks of any kind, or bamboo, not mined. Use craft stick')
-  assert.equal(mineHint(registry, 'oak_planks'), 'oak_planks is crafted from oak_log. Use craft oak_planks')
+  assert.equal(mineHint(registry, 'stick'), 'stick is an item; it is crafted from planks of any kind, or bamboo')
+  assert.equal(mineHint(registry, 'oak_planks'), 'oak_planks is crafted from oak_log')
   assert.equal(mineHint(registry, 'oak_planks', { inView: true }), null, 'planks in view: mine them')
-  assert.equal(mineHint(registry, 'crafting_table'), 'crafting_table is crafted from planks of any kind. Use craft crafting_table')
-  assert.match(mineHint(registry, 'raw_iron'), /drops from iron_ore/, 'raw_iron <- raw_iron_block is unpacking, not crafting')
-  assert.match(mineHint(registry, 'coal'), /drops from coal_ore/)
-  assert.match(mineHint(registry, 'diamond'), /Use mine diamond_ore$/)
+  assert.equal(mineHint(registry, 'crafting_table'), 'crafting_table is crafted from planks of any kind')
+  assert.match(mineHint(registry, 'raw_iron'), /blocks that drop it: iron_ore/, 'raw_iron <- raw_iron_block is unpacking, not crafting')
+  assert.match(mineHint(registry, 'coal'), /blocks that drop it: coal_ore/)
+  assert.match(mineHint(registry, 'diamond'), /^diamond is an item; blocks that drop it: diamond_ore/)
   // placed-from-item blocks (no hardness) come after natural ones
-  assert.match(mineHint(registry, 'redstone'), /Use mine redstone_ore$/)
-  assert.equal(collectHint(registry, 'iron_ore'), 'mining iron_ore drops raw_iron, not iron_ore; collect raw_iron')
+  assert.match(mineHint(registry, 'redstone'), /^redstone is an item; blocks that drop it: redstone_ore/)
+  assert.equal(collectHint(registry, 'iron_ore'), 'mining iron_ore drops raw_iron, not iron_ore')
   assert.equal(collectHint(registry, 'oak_log'), null)
 })
 
@@ -47,12 +47,12 @@ test('mine / collect / dig give the reason, so the mind stops looking for cobble
   // flat stone ground, nothing else: no cobblestone blocks anywhere
   let s = setup(world())
   let r = await run('mine', s.act, { block: 'cobblestone', count: 3 })
-  assert.deepEqual(r, { status: 'failed', detail: 'mine: no cobblestone in view within 24 blocks; cobblestone the item drops from stone (also cobblestone drops from cobblestone blocks). Use mine stone' })
+  assert.deepEqual(r, { status: 'failed', detail: 'mine: no cobblestone in view within 24 blocks; blocks that drop cobblestone: stone (also cobblestone drops from cobblestone blocks)' })
   assert.equal(s.motor.calls.length, 0, 'no walking, no exploring')
   r = await run('mine', s.act, { block: 'raw_iron', count: 3 })
-  assert.deepEqual(r, { status: 'failed', detail: 'mine: raw_iron is an item, not a block; it drops from iron_ore or deepslate_iron_ore. Use mine iron_ore' })
+  assert.deepEqual(r, { status: 'failed', detail: 'mine: raw_iron is an item; blocks that drop it: iron_ore or deepslate_iron_ore' })
   r = await run('mine', s.act, { block: 'coal' })
-  assert.match(r.detail, /^mine: coal is an item, not a block; it drops from coal_ore/)
+  assert.match(r.detail, /^mine: coal is an item; blocks that drop it: coal_ore/)
   assert.deepEqual(await run('mine', s.act, { block: 'not_a_thing' }), { status: 'failed', detail: 'mine: unknown block not_a_thing' })
 
   // cobblestone blocks in view are a fine target
@@ -62,7 +62,7 @@ test('mine / collect / dig give the reason, so the mind stops looking for cobble
 
   s = setup(world(), { drops: [] })
   r = await run('collect', s.act, { item: 'iron_ore' })
-  assert.equal(r.detail, 'no iron_ore drops in sight (mining iron_ore drops raw_iron, not iron_ore; collect raw_iron)')
+  assert.equal(r.detail, 'no iron_ore drops in sight (mining iron_ore drops raw_iron, not iron_ore)')
 
   s = setup(world())
   r = await run('dig', s.act, { pos: [0, 9, 2] }) // visible stone, with a pickaxe

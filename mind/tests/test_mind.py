@@ -140,51 +140,10 @@ class MindTest(MindHarness, unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.6)
         self.assertEqual(len(self.llm.prompts), 3, "closed: no more turns without new input")
 
-    async def test_failed_call_is_not_repeated(self):
-        fail = "mine: iron_ore needs one of: stone_pickaxe, iron_pickaxe; none in inventory"
-        await self.start([
-            {"thinking": "Confirm.", "action": "say", "text": "On it.", "about": "t1"},
-            {"thinking": "Iron is needed.", "action": "call", "verb": "mine", "args": {"block": "iron_ore", "count": 3}, "about": "t1"},
-            {"thinking": "Try again.", "action": "call", "verb": "mine", "args": {"count": 3, "block": "iron_ore"}, "about": "t1"},
-            {"thinking": "I need a stone pickaxe first.", "action": "call", "verb": "craft", "args": {"item": "stone_pickaxe"}, "about": "t1"},
-        ], respond=lambda c: ("failed", fail, None) if c["verb"] == "mine" else ("failed", "craft: missing 3 cobblestone for 1 stone_pickaxe", None))
-        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "get iron"})
-        await until(lambda: len(self.body.calls()) >= 3)
-        self.assertEqual([c["verb"] for c in self.body.calls()[:3]], ["say", "mine", "craft"], "the failed mine was not sent again")
-        retry = self.llm.prompts[3][-1]["content"]
-        self.assertIn("failed recently: " + fail, retry)
-        self.assertIn("FAILED RECENTLY (don't repeat): ", self.prompt_text(2))
-        self.assertIn('mine {"block":"iron_ore","count":3} -> mine: iron_ore needs one of', self.prompt_text(2))
-
     def running_task(self, text="get iron"):
         t = self.mind.tasks.add("ACTS_HORIZON", text)
         t.state = "running"
         return t
-
-    async def test_a_failed_call_is_refused_for_the_next_10_recent_lines_not_only_right_after(self):
-        await self.start([
-            {"thinking": "Go.", "action": "call", "verb": "goto", "args": {"pos": [9, 64, 9]}},
-            {"thinking": "Look elsewhere.", "action": "call", "verb": "recall", "args": {"type": "iron_ore"}},
-            {"thinking": "Walk a bit.", "action": "call", "verb": "explore", "args": {"direction": "north", "distance": 16}},
-            {"thinking": "Back to the spot.", "action": "call", "verb": "goto", "args": {"pos": [9, 64, 9]}},
-            {"thinking": "Plan it: sticks, then the spot.", "action": "plan", "steps": [{"verb": "craft", "args": {"item": "stick"}}, {"verb": "goto", "args": {"pos": [9, 64, 9]}}]},
-            {"thinking": "Plan starting with the failed goto.", "action": "plan", "steps": [{"verb": "goto", "args": {"pos": [9, 64, 9]}}, {"verb": "craft", "args": {"item": "stick"}}]},
-            {"thinking": "Mine instead.", "action": "call", "verb": "mine", "args": {"block": "stone"}},
-        ], respond=lambda c: ("partial", STUCK, None) if c["verb"] == "goto" else ("done", "ok", None))
-        self.running_task()
-        logs = []
-        self.mind.log = logs.append
-        self.mind.wake("go")
-        await until(lambda: len(self.body.calls()) >= 6)
-        self.assertEqual([c["verb"] for c in self.body.calls()[:6]], ["goto", "recall", "explore", "craft", "goto", "mine"],
-                         "the single goto two calls later was refused; a plan whose LATER step is that goto ran (step 2 failed again); "
-                         "a plan STARTING with it was refused")
-        self.assertTrue(any('that exact call (goto {"pos":[9,64,9]}) failed recently' in str(x) for x in logs))
-        self.assertTrue(any('plan step 1 (goto {"pos":[9,64,9]}) failed recently' in str(x) for x in logs))
-        # 10 RECENT lines later it may be tried again
-        f = self.mind.failures[-1]
-        self.mind.recent.n = f["at"] + 10
-        self.assertIsNone(self.mind.failed_recently("goto", {"pos": [9, 64, 9]}))
 
     async def test_a_verb_name_as_the_action_is_a_call(self):
         await self.start([
@@ -506,18 +465,6 @@ class MindTest(MindHarness, unittest.IsolatedAsyncioTestCase):
         self.assertIn("t1 [new] from ACTS_HORIZON: bring me 8 spruce logs", seen["context"])
         self.assertIn("WOKE BECAUSE: new task t1 from ACTS_HORIZON: bring me 8 spruce logs", seen["context"])
 
-    async def test_stuck_partial_counts_as_failed_for_the_repeat_guard(self):
-        await self.start([
-            {"thinking": "Confirm.", "action": "say", "text": "Coming.", "about": "t1"},
-            {"thinking": "Go to him.", "action": "call", "verb": "goto", "args": {"target": "ACTS_HORIZON"}, "about": "t1"},
-            {"thinking": "Try again.", "action": "call", "verb": "goto", "args": {"target": "ACTS_HORIZON"}, "about": "t1"},
-            {"thinking": "Dig down first.", "action": "call", "verb": "dig", "args": {"pos": [-14, 75, -11]}, "about": "t1"},
-        ], respond=lambda c: ("partial", 'gave up 13.3 blocks short of player ACTS_HORIZON at [-1.5, 64, -3.5] (stuck: feet air, head air, below spruce_log; in front: spruce_leaves (would dig) at [-13, 76, -10]; dig on, scaffold on; last plan: partial, no next step)', {"pos": [-1.5, 64, -3.5], "remaining": 13.3}) if c["verb"] == "goto" else ("done", "ok", None))
-        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "come here"})
-        await until(lambda: len(self.body.calls()) >= 3)
-        self.assertEqual([c["verb"] for c in self.body.calls()[:3]], ["say", "goto", "dig"], "the stuck goto was not sent again")
-        self.assertIn("failed recently: gave up 13.3 blocks short", self.llm.prompts[3][-1]["content"])
-
     async def test_repeated_say_is_dropped(self):
         logs = []
         await self.start([
@@ -537,42 +484,6 @@ class MindTest(MindHarness, unittest.IsolatedAsyncioTestCase):
         await self.body.event("player_said", {"from": "ACTS_HORIZON", "text": "still there?"})
         await until(lambda: len(self.body.calls()) == 2)
 
-    async def test_three_failures_of_one_kind_then_a_different_approach_not_ask_player(self):
-        await self.start([
-            {"thinking": "Confirm.", "action": "say", "text": "Coming.", "about": "t1"},
-            {"thinking": "Go.", "action": "call", "verb": "goto", "args": {"pos": [9, 64, 9]}, "about": "t1"},
-            {"thinking": "Go a bit left.", "action": "call", "verb": "goto", "args": {"pos": [8, 64, 9]}, "about": "t1"},
-            {"thinking": "Go a bit right.", "action": "call", "verb": "goto", "args": {"pos": [10, 64, 9]}, "about": "t1"},
-            {"thinking": "I'm stuck; ask.", "action": "ask_player", "player": "ACTS_HORIZON", "text": "I'm stuck, can you come closer?", "about": "t1"},
-            {"thinking": "Fine: look for another way out.", "action": "call", "verb": "explore", "args": {"direction": "south", "distance": 32}, "about": "t1"},
-        ], respond=lambda c: ("partial", STUCK, None) if c["verb"] == "goto" else ("done", "ok", None))
-        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "come here"})
-        await until(lambda: len(self.body.calls()) >= 5)
-        await asyncio.sleep(0.1)
-        self.assertEqual([c["verb"] for c in self.body.calls()], ["say", "goto", "goto", "goto", "explore"],
-                         "the question was not asked: the fourth action is a different approach")
-        retry = self.llm.prompts[5][-1]["content"]
-        self.assertIn("t1 is hard, not unclear: you have tried 1 approach(es) (goto a position from 0,4,0)", retry)
-        self.assertIn("Try at least 3 different approaches", retry)
-        p = self.llm.prompts[4][-1]["content"]
-        self.assertIn("    approaches tried since the first failure: 1 (ask_player needs 3)", p)
-        self.assertIn("    - goto pos=[10, 64, 9] -> partial: gave up 13.3 blocks short of [9, 64, 9] (stuck:", p)
-        self.assertNotIn("ROUTE:", p, "the journal replaces the route hint")
-
-    async def test_ask_player_is_allowed_after_three_approaches(self):
-        fail = lambda c: ("failed", f"{c['verb']}: no iron_ore in view", None) if c["verb"] != "say" else ("done", "ok", None)  # noqa: E731
-        await self.start([
-            {"thinking": "Confirm.", "action": "say", "text": "On it.", "about": "t1"},
-            {"thinking": "Mine.", "action": "call", "verb": "mine", "args": {"block": "iron_ore"}, "about": "t1"},
-            {"thinking": "Deeper.", "action": "call", "verb": "mine", "args": {"block": "iron_ore", "y": 16}, "about": "t1"},
-            {"thinking": "Look around.", "action": "call", "verb": "explore", "args": {"direction": "north", "distance": 32}, "about": "t1"},
-            {"thinking": "Ask.", "action": "ask_player", "player": "ACTS_HORIZON", "text": "Know where iron is?", "about": "t1"},
-        ], respond=fail)
-        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "get iron"})
-        await until(lambda: len(self.body.calls()) >= 5)
-        self.assertEqual(self.body.calls()[4]["args"], {"text": "Know where iron is?"})
-        self.assertEqual(len(self.mind.tasks.get("t1").approaches), 3)
-
     async def test_no_capable_verb_ask_player_at_once(self):
         await self.start([
             {"thinking": "Confirm.", "action": "say", "text": "A house? Let me think.", "about": "t1"},
@@ -582,28 +493,6 @@ class MindTest(MindHarness, unittest.IsolatedAsyncioTestCase):
         await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "build me a house"})
         await until(lambda: len(self.body.calls()) >= 2)
         self.assertEqual(self.body.calls()[1]["args"]["text"], "I can't build yet. Want me to gather the wood for it?")
-
-    async def test_not_implemented_failure_lets_it_ask(self):
-        await self.start([
-            {"thinking": "Confirm.", "action": "say", "text": "On it.", "about": "t1"},
-            {"thinking": "Try.", "action": "call", "verb": "mine", "args": {"block": "stone"}, "about": "t1"},
-            {"thinking": "Can't; ask.", "action": "ask_player", "player": "ACTS_HORIZON", "text": "That needs a verb I lack. Skip it?", "about": "t1"},
-        ], respond=lambda c: ("failed", "verb not implemented yet: mine", None) if c["verb"] == "mine" else ("done", "ok", None))
-        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "do it"})
-        await until(lambda: len(self.body.calls()) >= 3)
-        self.assertEqual(self.body.calls()[2]["args"]["text"], "That needs a verb I lack. Skip it?")
-
-    async def test_after_a_failure_the_next_call_differs(self):
-        await self.start([
-            {"thinking": "Confirm.", "action": "say", "text": "On it.", "about": "t1"},
-            {"thinking": "Mine 3.", "action": "call", "verb": "mine", "args": {"block": "iron_ore", "count": 3}, "about": "t1"},
-            {"thinking": "Mine 5 then.", "action": "call", "verb": "mine", "args": {"block": "iron_ore", "count": 5}, "about": "t1"},
-            {"thinking": "Mine deeper.", "action": "call", "verb": "mine", "args": {"block": "iron_ore", "count": 3, "y": 16}, "about": "t1"},
-        ], respond=lambda c: ("failed", "mine: no iron_ore in view", None) if c["verb"] == "mine" and "y" not in c["args"] else ("done", "ok", None))
-        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "get iron"})
-        await until(lambda: len(self.body.calls()) >= 3)
-        self.assertEqual(self.body.calls()[2]["args"], {"block": "iron_ore", "count": 3, "y": 16}, "only the count changed: not sent")
-        self.assertIn("After a failure the next action must differ in verb, target or method", self.llm.prompts[3][-1]["content"])
 
     async def test_note_about_a_task_is_ruled_out_in_its_journal(self):
         await self.start([
@@ -892,16 +781,6 @@ class JournalTest(unittest.TestCase):
         self.assertIn("attempt 29", lines[-2])
         self.assertEqual(lines[-1], "    - ruled out: no iron in the cave east of spawn")
 
-    def test_approach_keys(self):
-        from atlas_mind.tasks import approach_key, fine_key, place_cell
-        here = place_cell([0.5, 64, 0.5])
-        self.assertEqual(approach_key("goto", {"pos": [9, 64, 9]}, here), approach_key("goto", {"pos": [1, 70, -3], "range": 3}, here),
-                         "goto toward other spots from the same place is one approach")
-        self.assertNotEqual(approach_key("mine", {"block": "iron_ore"}, here), approach_key("mine", {"block": "iron_ore"}, place_cell([100, 64, 0])),
-                            "the same verb from another place is another approach")
-        self.assertNotEqual(approach_key("mine", {"block": "iron_ore"}, here), approach_key("mine", {"block": "iron_ore", "y": 16}, here))
-        self.assertNotEqual(approach_key("goto", {"pos": [9, 64, 9]}, here), approach_key("goto", {"pos": [9, 64, 9], "dig": False}, here))
-        self.assertEqual(fine_key("mine", {"block": "x", "count": 3}), fine_key("mine", {"block": "x", "count": 9}))
 
 
 SHAFT = {"summary": "in a 1-wide shaft 5 deep, stone all sides, open above", "feet": "air", "head": "air",
@@ -979,97 +858,88 @@ class OldChatTest(MindHarness, unittest.IsolatedAsyncioTestCase):
         self.assertEqual([t.text for t in self.mind.tasks.tasks], ["get me 3 logs"])
 
 
-class DeliveryTest(MindHarness, unittest.IsolatedAsyncioTestCase):
-    async def test_a_bring_me_task_closes_only_after_give(self):
-        await self.start([
-            {"thinking": "Confirm.", "action": "say", "text": "On it: an iron pickaxe.", "about": "t1"},
-            {"thinking": "Craft it.", "action": "call", "verb": "craft", "args": {"item": "iron_pickaxe"}, "about": "t1"},
-            {"thinking": "Crafted: report.", "action": "say", "text": "I have crafted the iron pickaxe.", "closes": "t1"},
-            {"thinking": "Right, hand it over.", "action": "call", "verb": "give", "args": {"item": "iron_pickaxe", "player": "Rook"}, "about": "t1"},
-            {"thinking": "Delivered.", "action": "say", "text": "Here's your iron pickaxe.", "closes": "t1"},
-        ], respond=lambda c: ("done", "crafted 1 iron_pickaxe", None) if c["verb"] == "craft" else
-           ("done", "gave 1 iron_pickaxe to Rook", {"item": "iron_pickaxe", "given": 1}) if c["verb"] == "give" else ("done", "said", None))
-        await self.body.event("task_from_chat", {"from": "Rook", "text": "get me an iron pickaxe"})
-        await until(lambda: self.mind.tasks.get("t1") and self.mind.tasks.get("t1").state == "done")
-        verbs = [(c["verb"], c["args"].get("text") or c["args"].get("item")) for c in self.body.calls()]
-        self.assertEqual(verbs, [("say", "On it: an iron pickaxe."), ("craft", "iron_pickaxe"), ("give", "iron_pickaxe"),
-                                 ("say", "Here's your iron pickaxe.")], "the early close was refused, never said")
-        retry = next(m[-1]["content"] for m in self.llm.prompts if m[-1]["content"].startswith("That reply was not usable"))
-        self.assertIn("the player doesn't have it yet — give it to them first", retry)
+class NoGuardsTest(MindHarness, unittest.IsolatedAsyncioTestCase):
+    """5l: nothing is refused for repeating a failure or for asking; FAILED RECENTLY is a plain context line; the fuse."""
 
-    async def test_saying_it_cant_be_done_may_close(self):
+    def running_task(self, text="get iron"):
+        t = self.mind.tasks.add("ACTS_HORIZON", text)
+        t.state = "running"
+        return t
+
+    async def test_a_failed_call_may_be_sent_again_and_is_listed_plainly(self):
+        stuck = STUCK
+        await self.start([
+            {"thinking": "Go.", "action": "call", "verb": "goto", "args": {"pos": [9, 64, 9]}},
+            {"thinking": "Again.", "action": "call", "verb": "goto", "args": {"pos": [9, 64, 9]}},
+            {"thinking": "Plan with it first.", "action": "plan", "steps": [{"verb": "goto", "args": {"pos": [9, 64, 9]}}]},
+            {"thinking": "w", "action": "wait"},
+        ], respond=lambda c: ("partial", stuck, None) if c["verb"] == "goto" else ("done", "ok", None))
+        self.running_task()
+        self.mind.wake("go")
+        await until(lambda: len(self.body.calls()) >= 3)
+        self.assertEqual([c["verb"] for c in self.body.calls()[:3]], ["goto", "goto", "goto"], "not refused, as a call or a plan's first step")
+        p = self.prompt_text(1)
+        self.assertIn('FAILED RECENTLY (don\'t repeat): goto {"pos":[9,64,9]} -> gave up 13.3 blocks short of [9, 64, 9] (stuck', p)
+        self.assertNotIn("not usable", "\n".join(m[-1]["content"] for m in self.llm.prompts))
+        self.assertNotIn("[", p.split("FAILED RECENTLY")[1].split("-> ")[1][:40].replace("[9, 64, 9]", ""), "no hint appended")
+
+    async def test_ask_player_is_always_allowed(self):
         await self.start([
             {"thinking": "Confirm.", "action": "say", "text": "On it.", "about": "t1"},
-            {"thinking": "No diamonds anywhere near; give up honestly.", "action": "say", "text": "Sorry, I can't find any diamonds.", "closes": "t1"},
+            {"thinking": "Mine.", "action": "call", "verb": "mine", "args": {"block": "iron_ore"}, "about": "t1"},
+            {"thinking": "Ask.", "action": "ask_player", "player": "ACTS_HORIZON", "text": "Where is iron around here?", "about": "t1"},
+        ], respond=lambda c: ("failed", "mine: no iron_ore in view", None) if c["verb"] == "mine" else ("done", "ok", None))
+        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "get iron"})
+        await until(lambda: len(self.body.calls()) >= 3)
+        self.assertEqual(self.body.calls()[2]["args"], {"text": "Where is iron around here?"}, "asked after one failure")
+
+    async def test_a_bring_task_may_close_without_a_give(self):
+        await self.start([
+            {"thinking": "Confirm.", "action": "say", "text": "On it.", "about": "t1"},
+            {"thinking": "Crafted; done.", "action": "say", "text": "I crafted it.", "closes": "t1"},
         ])
-        await self.body.event("task_from_chat", {"from": "Rook", "text": "bring me a diamond"})
+        await self.body.event("task_from_chat", {"from": "Rook", "text": "get me an iron pickaxe"})
         await until(lambda: self.mind.tasks.get("t1") and self.mind.tasks.get("t1").state == "done")
 
-    async def test_the_retry_shows_failed_recently_last(self):
-        fail = "craft: missing 2 planks (any kind) for 4 stick"
+    async def test_holding_the_item_adds_no_line_and_refuses_nothing(self):
+        held = make_obs(t=500, inventory={"iron_pickaxe": 1})
         await self.start([
-            {"thinking": "Sticks.", "action": "call", "verb": "craft", "args": {"item": "stick", "count": 4}},
-            {"thinking": "Again.", "action": "call", "verb": "craft", "args": {"item": "stick", "count": 4}},
-            {"thinking": "Planks first.", "action": "call", "verb": "craft", "args": {"item": "oak_planks"}},
-        ], respond=lambda c: ("failed", fail, None) if c["args"].get("item") == "stick" else ("done", "crafted 4 oak_planks", None))
-        t = self.mind.tasks.add("Rook", "make sticks")
-        t.state = "running"
-        self.mind.wake("go")
-        await until(lambda: len(self.body.calls()) >= 2)
-        retry = self.llm.prompts[2][-1]["content"]
-        lines = retry.splitlines()
-        self.assertIn(f"failed recently: {fail}", lines[0], "the exact detail")
-        self.assertEqual(lines[1], 'FAILED RECENTLY (don\'t repeat): craft {"count":4,"item":"stick"} -> ' + fail)
-        self.assertEqual(lines[2], "Reply again with exactly one valid JSON object, one of:")
-        self.assertTrue(lines[-1].startswith('{"thinking": "...", "action": '), "the action format is the last thing it reads")
-
-
-class DeliveryPhrasingTest(unittest.TestCase):
-    def test_delivery_phrasing(self):
-        from atlas_mind.loop import is_delivery
-        for t in ("get me an iron pickaxe", "bring me 8 logs", "fetch me some coal", "give me a bucket", "I need 3 torches", "can I have a bed"):
-            self.assertTrue(is_delivery(t), t)
-        for t in ("mine 3 oak logs", "come here", "how are you?", "build a wall"):
-            self.assertFalse(is_delivery(t), t)
-
-
-class AlreadyHaveTest(MindHarness, unittest.IsolatedAsyncioTestCase):
-    async def test_holding_the_item_first_action_is_give_not_craft(self):
-        held = make_obs(t=500, inventory={"iron_pickaxe": 1, "stick": 2})
-        await self.start([
-            {"thinking": "Confirm.", "action": "say", "text": "On it: an iron pickaxe.", "about": "t1"},
+            {"thinking": "Confirm.", "action": "say", "text": "On it.", "about": "t1"},
             {"thinking": "Craft one.", "action": "call", "verb": "craft", "args": {"item": "iron_pickaxe"}, "about": "t1"},
-            {"thinking": "I have one: give it.", "action": "call", "verb": "give", "args": {"item": "iron_pickaxe", "player": "Rook"}, "about": "t1"},
             {"thinking": "w", "action": "wait"},
         ], first_obs=held)
         self.body.current_obs = held
         await self.body.event("task_from_chat", {"from": "Rook", "text": "get me an iron pickaxe"}, obs=held)
-        await until(lambda: len([c for c in self.body.calls() if c["verb"] != "say"]) >= 1)
-        work = [c for c in self.body.calls() if c["verb"] != "say"]
-        self.assertEqual(work[0]["verb"], "give", "the first action after confirming is give, not craft")
-        self.assertIn("YOU ALREADY HAVE iron_pickaxe ×1 (t1 asks for 1) — give it, don't craft", self.prompt_text(0).split("TASKS")[0])
-        retry = next(m[-1]["content"] for m in self.llm.prompts if m[-1]["content"].startswith("That reply was not usable"))
-        self.assertIn("you already have iron_pickaxe ×1 (t1 asks for 1): give it to Rook", retry)
+        await until(lambda: any(c["verb"] == "craft" for c in self.body.calls()))
+        self.assertNotIn("ALREADY HAVE", "\n".join(m[-1]["content"] for m in self.llm.prompts))
 
-    async def test_failed_recently_says_go_up_when_the_player_is_above(self):
-        detail = "give: could not reach Rook: Rook is above you, not ahead: bearing flips each leg (horizontal distance ~0)"
+    async def test_the_retry_ends_with_failed_recently_and_the_format(self):
+        fail = "craft: missing 2 planks (any kind) for 4 stick"
         await self.start([
-            {"thinking": "Give.", "action": "call", "verb": "give", "args": {"item": "iron_pickaxe", "player": "Rook"}},
+            {"thinking": "Sticks.", "action": "call", "verb": "craft", "args": {"item": "stick", "count": 4}},
+            "not json",
             {"thinking": "w", "action": "wait"},
-        ], respond=lambda c: ("failed", detail, None) if c["verb"] == "give" else ("done", "ok", None))
-        t = self.mind.tasks.add("Rook", "get me an iron pickaxe")
-        t.state = "running"
+        ], respond=lambda c: ("failed", fail, None))
+        self.running_task("make sticks")
         self.mind.wake("go")
-        await until(lambda: len(self.llm.prompts) >= 2)
-        self.assertIn("[Rook is ABOVE you: go up to the surface (goto a pos above you, scaffold on), not another bearing follow]",
-                      self.prompt_text(1))
+        await until(lambda: len(self.llm.prompts) >= 3)
+        lines = self.llm.prompts[2][-1]["content"].splitlines()
+        self.assertTrue(lines[0].startswith("That reply was not usable"))
+        self.assertEqual(lines[1], 'FAILED RECENTLY (don\'t repeat): craft {"count":4,"item":"stick"} -> ' + fail)
+        self.assertEqual(lines[2], "Reply again with exactly one valid JSON object, one of:")
+        self.assertTrue(lines[-1].startswith('{"thinking": "...", "action": '))
 
-
-class RequestedTest(unittest.TestCase):
-    def test_requested_from_inventory(self):
-        from atlas_mind.loop import requested_from_inventory as r
-        self.assertEqual(r("get me an iron pickaxe", {"iron_pickaxe": 1}), [("iron_pickaxe", 1, 1)])
-        self.assertEqual(r("bring me 8 logs", {"oak_log": 9}), [("oak_log", 9, 8)])
-        self.assertEqual(r("bring me 8 logs", {"oak_log": 3}), [], "not enough yet")
-        self.assertEqual(r("I need 3 torches", {"torch": 5}), [("torch", 5, 3)])
-        self.assertEqual(r("get me an iron pickaxe", {"stone_pickaxe": 1}), [])
+    async def test_fuse_identical_failure_5_times_pauses_then_carries_on(self):
+        logs = []
+        call = {"thinking": "Mine.", "action": "call", "verb": "mine", "args": {"block": "stone"}}
+        await self.start([call] * 7, respond=lambda c: ("failed", "mine: stone needs one of: wooden_pickaxe; none in inventory", None),
+                         fuse_s=0.6)
+        self.running_task("get stone")
+        self.mind.log = logs.append
+        self.mind.wake("go")
+        await until(lambda: len(self.body.calls()) >= 5)
+        t5 = asyncio.get_running_loop().time()
+        await until(lambda: any("fuse:" in str(x) for x in logs))
+        self.assertIn('[mind] fuse: mine {"block":"stone"} ×5; pausing 0.6 s', logs)
+        await until(lambda: len(self.body.calls()) >= 6, timeout=5)
+        self.assertGreaterEqual(asyncio.get_running_loop().time() - t5, 0.5, "the 6th call came after the pause")

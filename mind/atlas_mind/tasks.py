@@ -13,47 +13,15 @@ Each task keeps what the bot already said about it, shown in the context.
 
 Each task also keeps a journal: every call made for it with its status and a
 one-line detail, and "ruled out" lines (a note with "about"). Open tasks show
-it in the context, at most JOURNAL_LINES lines (older calls summarised).
-
-Approaches: once a call for a task has failed, every call made for it counts
-toward the approaches tried. An approach is the verb, what it was after
-(block, item, player, "a position"), its method (dig/scaffold off, a target
-y, a fuel) and the place it was made from (32x16x32 cells): goto toward three
-spots from the same place is one approach; mining iron from two places is two."""
+it in the context, at most JOURNAL_LINES lines (older calls summarised)."""
 from __future__ import annotations
 
-import json
-import re
 from collections import Counter
 from dataclasses import dataclass, field
 
 OPEN = ("new", "confirmed", "running")
 JOURNAL_LINES = 15
-MIN_APPROACHES = 3
 TARGET_ARGS = ("block", "item", "player", "target", "type")
-IGNORED_ARGS = ("count", "range", "radius", "near", "text")  # not a different approach
-# failures that mean no verb can do it (or the player must decide): asking is fine at once
-NO_VERB_RE = re.compile(r"not implemented|no verb|unknown verb|protected|house rules|not allowed|not yours|not on the allowlist", re.I)
-
-
-def fine_key(verb: str, args: dict | None) -> str:
-    """A call, ignoring how many: the "same call" for the differ-after-failure rule."""
-    a = {k: v for k, v in (args or {}).items() if k != "count"}
-    return verb + " " + json.dumps(a, sort_keys=True, separators=(",", ":"))
-
-
-def approach_key(verb: str, args: dict | None, place) -> str:
-    a = args or {}
-    tgt = next((str(a[k]) for k in TARGET_ARGS if isinstance(a.get(k), str)), "a position" if "pos" in a else "")
-    method = []
-    for k, v in sorted(a.items()):
-        if k in TARGET_ARGS or k in IGNORED_ARGS or k == "pos":
-            continue
-        if k == "y" and isinstance(v, (int, float)):
-            v = int(v) // 16 * 16  # target levels 16 apart are different methods
-        method.append(f"{k}={v}")
-    cell = "" if place is None else " from " + ",".join(str(int(c)) for c in place)
-    return " ".join(x for x in (verb, tgt, " ".join(method)) if x) + cell
 
 
 def place_cell(pos) -> tuple | None:
@@ -86,10 +54,6 @@ class Task:
     standing: bool = False
     said: list[str] = field(default_factory=list)
     journal: list[dict] = field(default_factory=list)  # {"kind": "call"|"ruled_out", "text", "status"?}
-    failed_once: bool = False
-    approaches: set = field(default_factory=set)  # approach keys since the first failure
-    last_failed: str | None = None  # fine key of the failed call, until a different call is made
-    no_verb: bool = False  # a failure said no verb can do it (or a house rule): asking is fine
 
 
 class TaskList:
@@ -147,37 +111,14 @@ class TaskList:
         return stopped
 
     # ---- journal --------------------------------------------------------------
-    def sent(self, t: Task, verb: str, args: dict | None, place) -> None:
-        """A call for t went out: it is a new approach once the task has failed."""
-        if fine_key(verb, args) != t.last_failed:
-            t.last_failed = None
-        if t.failed_once:
-            t.approaches.add(approach_key(verb, args, place))
-
     def result(self, t: Task, verb: str, args: dict | None, place, status: str, detail: str, failed: bool) -> None:
         t.journal.append({"kind": "call", "status": status, "failed": failed,
                           "text": f"{short_call(verb, args)} -> {status}: {one_line(detail)}"})
-        if failed:
-            if not t.failed_once:
-                t.failed_once = True
-                t.approaches.add(approach_key(verb, args, place))
-            t.last_failed = fine_key(verb, args)
-            if NO_VERB_RE.search(detail or ""):
-                t.no_verb = True
         self._changed()
 
     def ruled_out(self, t: Task, text: str) -> None:
         t.journal.append({"kind": "ruled_out", "text": one_line(text)})
         self._changed()
-
-    def ask_blocked(self, t: Task) -> str | None:
-        """Why ask_player is not allowed yet for t, or None."""
-        if not t.failed_once or t.no_verb or len(t.approaches) >= MIN_APPROACHES:
-            return None
-        tried = "; ".join(sorted(t.approaches))
-        return (f"{t.id} is hard, not unclear: you have tried {len(t.approaches)} approach(es) ({tried}). "
-                f"Try at least {MIN_APPROACHES} different approaches (a different verb, place or method) before asking. "
-                "Ask only for real ambiguity, a player's preference, or when no verb can do it.")
 
     def render_journal(self, t: Task) -> list[str]:
         if not t.journal:
@@ -186,11 +127,7 @@ class TaskList:
         calls = [e for e in t.journal if e["kind"] == "call"]
         room = JOURNAL_LINES - 1 - len(ruled)
         out = []
-        if t.failed_once:
-            out.append(f"    approaches tried since the first failure: {len(t.approaches)}"
-                       + ("" if len(t.approaches) >= MIN_APPROACHES or t.no_verb else f" (ask_player needs {MIN_APPROACHES})"))
-        else:
-            out.append("    journal:")
+        out.append("    journal:")
         if len(calls) > room:
             old, calls = calls[: len(calls) - room + 1], calls[len(calls) - room + 1:]
             verbs = Counter(e["text"].split(" ", 1)[0] for e in old)

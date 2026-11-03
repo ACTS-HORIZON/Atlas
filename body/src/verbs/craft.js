@@ -14,7 +14,7 @@ const TABLE_RADIUS = 48
  * cobbled_deepslate". An ingredient any of several items fills (a tag:
  * planks, logs, wool…) is never named as one variant, and counts what a fresh
  * variant needs. hintFor(alternatives) may add what the inventory can make
- * them from: "2 planks (any kind) — you have spruce_log 3: craft spruce_planks".
+ * them from: "2 planks (any kind); you have spruce_log 3".
  */
 function describeMissing (options, hintFor = null, hints = null) {
   const best = options[0]
@@ -34,20 +34,20 @@ function describeMissing (options, hintFor = null, hints = null) {
     let text = suffix ? `${amount} ${suffix.replace(/^_/, '')} (any kind)` : `${amount} of ${names.slice(0, -1).join(', ')} or ${names.at(-1)}`
     const hint = hintFor && hintFor(names)
     if (hint && hints) hints.push(hint)
-    else if (hint) text += ` — ${hint}`
+    else if (hint) text += `; ${hint}`
     lines.push(text)
   })
   return lines.join(', ')
 }
 
-/** "you have spruce_log 3: craft spruce_planks" when the inventory makes one of the alternatives now. */
+/** "you have spruce_log 3" when the inventory holds what makes one of the alternatives now. */
 function inventoryHint (api, names) {
   const inv = api.inventory ? api.inventory() : {}
   for (const v of names) {
     const ready = (api.craftPlan(v, 1).options || []).filter(o => !Object.keys(o.missing).length && o.uses)
     ready.sort((a, b) => a.requiresTable - b.requiresTable)
     const src = ready.length && Object.keys(ready[0].uses).sort((a, b) => (inv[b] || 0) - (inv[a] || 0))[0]
-    if (src) return `you have ${src} ${inv[src] || 0}: craft ${v}`
+    if (src) return `you have ${src} ${inv[src] || 0}`
   }
   return null
 }
@@ -77,7 +77,7 @@ async function run (act, args) {
   if (!ready.length) {
     const hints = []
     const missing = describeMissing(plan.options, names => inventoryHint(api, names), hints)
-    return failed(`craft: missing ${missing} for ${count} ${item}${hints.length ? ` — ${hints.join('; ')}` : ''}`)
+    return failed(`craft: missing ${missing} for ${count} ${item}${hints.length ? `; ${hints.join('; ')}` : ''}`)
   }
   const noTable = ready.find(o => !o.requiresTable)
   let tablePos = null

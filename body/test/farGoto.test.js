@@ -189,3 +189,87 @@ test('a goal straight up never spins on legs that don\'t move it', { timeout: 30
     assert.ok(Date.now() - t0 < 5000)
   } finally { bot.stopSim() }
 })
+
+// ---- goto {target: "surface"} through the real planner, with the real filtered API and sight
+const { VerbApi } = require('../src/api')
+const { KnownPlaces } = require('../src/places')
+const { buildObs } = require('../src/fairplay/observe')
+const { classify } = require('../src/fairplay/blocks')
+const { makeView } = require('./fakeWorld')
+const { VERBS } = require('../src/verbs')
+
+function surfaceAct (w, bot) {
+  const motor = new Motor(bot)
+  const adapter = {
+    classAt: (x, y, z) => { const b = w.blockAt(new Vec3(x, y, z)); return b ? classify(b.name) : null },
+    scanNotable () {}
+  }
+  const view = () => makeView(adapter, { pos: [bot.entity.position.x, bot.entity.position.y, bot.entity.position.z], sightRadius: 96 })
+  const api = new VerbApi({
+    motor,
+    places: new KnownPlaces({ file: null }),
+    observe: () => buildObs(view(), {}).obs,
+    sight: () => { const v = view(); return { classAt: v.classAt, eye: v.self.eye, sightRadius: v.sightRadius } },
+    registry: { isBlock: () => true, isItem: () => true, mineHint: () => null, collectHint: () => null, dropsOf: () => [] }
+  })
+  const progress = []
+  return { act: { api, cfg: {}, signal: new AbortController().signal, progress: x => progress.push(x), connected: () => true, here: () => api.here() }, progress }
+}
+
+/** A 9x9 column of stone (bedrock walls) from y -10 to 68, grass on top, a 1-wide shaft from y -1 open to the sky. */
+function shaftWorld () {
+  const w = underground({ confined: true })
+  for (let x = -4; x <= 4; x++) for (let z = -4; z <= 4; z++) for (let y = -10; y <= 69; y++) w.set(x, y, z, Math.abs(x) === 4 || Math.abs(z) === 4 ? 'bedrock' : y === 69 ? 'grass_block' : 'stone')
+  for (let y = -1; y <= 75; y++) w.set(0, y, 0, 'air')
+  return w
+}
+const cobble = () => { const registry = require('prismarine-registry')('26.1'); const c = { name: 'cobblestone', count: 64, type: registry.itemsByName.cobblestone.id }; return [c, { ...c }] }
+
+test('goto surface from the bottom of a shaft: pillars up until open sky, done with the y reached', { timeout: 60000 }, async () => {
+  const w = shaftWorld()
+  const bot = simBot(w, { pos: [0.5, -1, 0.5], items: cobble() })
+  try {
+    const { act } = surfaceAct(w, bot)
+    const r = await VERBS.goto.run(act, { target: 'surface' })
+    assert.equal(r.status, 'done', r.detail)
+    assert.match(r.detail, /^reached open sky at y (6[0-9]|7[0-9]) \(climbed \d+\)$/)
+    assert.ok(r.data.y >= 60)
+  } finally { bot.stopSim() }
+  // capped: grass over the shaft (no sky until it digs through)
+  const c = shaftWorld()
+  c.set(0, 69, 0, 'grass_block')
+  const b2 = simBot(c, { pos: [0.5, -1, 0.5], items: cobble() })
+  try {
+    const r = await VERBS.goto.run(surfaceAct(c, b2).act, { target: 'surface' })
+    assert.equal(r.status, 'done', r.detail)
+    assert.ok(r.data.y >= 69, r.detail)
+  } finally { b2.stopSim() }
+})
+
+test('goto surface: lava above stops it, with the reason; so does a bedrock cap; no scaffold blocks and no stairs: partial', { timeout: 60000 }, async () => {
+  let w = shaftWorld()
+  w.set(0, 30, 0, 'lava')
+  let bot = simBot(w, { pos: [0.5, -1, 0.5], items: cobble() })
+  try {
+    const r = await VERBS.goto.run(surfaceAct(w, bot).act, { target: 'surface' })
+    assert.equal(r.status, 'partial')
+    assert.equal(r.detail, 'stopped at y -1 (climbed 0): lava above at y 30')
+  } finally { bot.stopSim() }
+
+  w = shaftWorld()
+  w.set(0, 40, 0, 'bedrock')
+  bot = simBot(w, { pos: [0.5, -1, 0.5], items: cobble() })
+  try {
+    const r = await VERBS.goto.run(surfaceAct(w, bot).act, { target: 'surface' })
+    assert.equal(r.detail, 'stopped at y -1 (climbed 0): bedrock above at y 40')
+  } finally { bot.stopSim() }
+
+  w = shaftWorld()
+  for (let x = -3; x <= 3; x++) for (let z = -3; z <= 3; z++) if (x || z) for (let y = -1; y <= 68; y++) w.set(x, y, z, 'bedrock') // walls it can't stair into
+  bot = simBot(w, { pos: [0.5, -1, 0.5], items: [] })
+  try {
+    const r = await VERBS.goto.run(surfaceAct(w, bot).act, { target: 'surface' })
+    assert.equal(r.status, 'partial')
+    assert.match(r.detail, /^stopped at y -1 \(climbed 0\): no way up \(no scaffold blocks to pillar with\)/)
+  } finally { bot.stopSim() }
+})

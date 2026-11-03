@@ -13,7 +13,7 @@ const SCHEMAS = {
     additionalProperties: false,
     properties: {
       pos: vec3,
-      target: { type: 'string', minLength: 1, description: 'a visible player name, a visible entity type, an observed block type, or a player on the Locator Bar' },
+      target: { type: 'string', minLength: 1, description: 'a visible player name, a visible entity type, an observed block type, a player on the Locator Bar, or "surface"' },
       range: { type: 'number', minimum: 0, maximum: 32 },
       dig: { type: 'boolean', default: true },
       scaffold: { type: 'boolean', default: true }

@@ -46,12 +46,13 @@ The nearest known place of `type` in this dimension. `near` defaults to the bot'
 ### goto {pos | target, range?, dig = true, scaffold = true}
 - **`pos`:** `[x, y, z]`.
 - **`target`:** a visible player's name; a visible entity type (nearest); a block type in `blocks_seen` or known places (nearest); or a player shown on the Locator Bar.
+- **`target: "surface"`:** climbs until there is open sky overhead and a side open at head height (the bottom of an open shaft doesn't count): straight up in 16-block legs, pillaring with scaffold blocks and digging what is above, else a staircase dug into the wall. `done`: `reached open sky at y <n> (climbed <k>)`, `data: {pos, y, climbed}`. `partial`: `stopped at y <n> (climbed <k>): lava above at y <m>` (or water), `bedrock above at y <m>`, or `no way up` (` (no scaffold blocks to pillar with)` when it had none).
 - **`range`:** 0–32; default 1, or 2 with a target.
 - **`dig`:** may tunnel through blocks in the way.
 - **`scaffold`:** may place blocks to pillar or bridge, from dirt, cobblestone, cobbled_deepslate, netherrack, andesite, diorite, granite or tuff in the inventory.
 - **Following a bearing:** for a target on the Locator Bar, it walks along the bearing in 16-block legs, re-reading the bearing each leg, until the player is in sight, then goes to within `range`.
   - **Gives up** (partial) after 512 blocks walked in total (the path, not the straight line), 48 legs, or the time cap `ATLAS_FOLLOW_MAX_S` (180 s): `followed <name>'s bearing for <n> blocks in <k> legs without seeing them` / `… for <s> s (the time cap): …`.
-  - **A bearing that reverses (~180°) on two legs in a row** means the player is not ahead: `<name> is above|below you, not ahead: bearing flips each leg (horizontal distance ~0)` (from the bar's up/down indicator; `close by but not in sight` when it says level). `data.vertical` has it. Go up (a `goto` to a position above, scaffold on) or down instead of following again.
+  - **A bearing that reverses (~180°) on two legs in a row** means the player is not ahead: `<name> is above|below you, not ahead: bearing flips each leg (horizontal distance ~0)` (from the bar's up/down indicator; `close by but not in sight` when it says level). `data.vertical` has it.
   - **Up/down:** a bearing-only player in the obs carries `vertical: above|below|level` when the bar shows an indicator: only for a nearby player (the server sends a block position); a far one (chunk or bare direction) has none.
 - **Progress:** `to <what>: <n> blocks left`, or `following <name>'s bearing (<deg>°), <n> blocks so far`.
 - **Results:**
@@ -60,7 +61,7 @@ The nearest known place of `type` in this dimension. `near` defaults to the bot'
   - `<why>` says what is around: `feet <block>, head <block>, below <block>; in front: <block> (would dig|won't dig|dig off) at [x, y, z]; dig on|off, scaffold on|off; last plan: <status>, next step […]`. `data.why` has the same as fields.
 - **Far goals:** more than 48 blocks away, it walks in 16-block legs along the straight line, each leg planned on its own, then the real goal for the last stretch. Mostly up or down (a shaft to the surface), the legs are 16 blocks up or down (with `scaffold` it pillars, with `dig` it breaks through the top); a leg that gets no closer ends the legs. One long search through solid rock runs out of planning time (5 s) and leaves the bot standing still; a 16-block leg plans in a few seconds.
 - **No progress:** if it hasn't taken a step (entered another block, or actually broken one) within 15 s of the call or of the last step, it gives up: `partial`, `gave up <n> blocks short of <what> (no path found yet: planner <status> after <ms> ms, <n> nodes visited, its best plan ends at [x, y, z]; nearest point reached [x, y, z], <d> blocks from the goal: <why>)`, `data.planner: {status, visited, ms, plan_end, nearest, nearest_dist}`. "Not moving" is the bot's own position: the pathfinder saying it is digging doesn't count unless a block really breaks.
-- **Getting unstuck:** when it hasn't moved for about 3 s (12 s while the pathfinder says it is digging), it jumps, digs the blocks in front and above (with `dig`, leaves and logs included), and re-plans, at most 3 times per goto. A stuck or gave-up `partial` counts as a failure: don't repeat the same call; dig down or around, try another direction, or ask the player to come closer.
+- **Getting unstuck:** when it hasn't moved for about 3 s (12 s while the pathfinder says it is digging), it jumps, digs the blocks in front and above (with `dig`, leaves and logs included), and re-plans, at most 3 times per goto.
   - `failed`: `no path to <what>`
   - `refused`: `fair play: <target> has not been observed …`
 - **Who is on the Locator Bar:** whoever the server sends a waypoint for (the 26.1 `tracked_waypoint` packet); the game decides, and the body adds no rules of its own. These rules were not checked against minecraft.wiki: the site was unreachable from the build environment.
@@ -78,9 +79,7 @@ The nearest known place of `type` in this dimension. `near` defaults to the bot'
   - Both carry `data: {direction, walked, seen: {type: count}, new_places}`.
 
 ### mine {block, count = 1, radius = 32, y?}
-- **Blocks, not items:** mine takes block names; items come from blocks (cobblestone ← stone, raw_iron ← iron_ore, coal ← coal_ore, dirt ← grass_block). Asking for an item fails with the block to mine instead.
-- **Cobblestone needs no furnace:** mining stone gives cobblestone; smelting cobblestone gives stone (the reverse).
-- **Finding stone:** stone is usually under 1–4 blocks of dirt/grass, or exposed on hillsides and in caves. If none is in view, dig down a few blocks (`mine dirt`, `dig`) or into a slope rather than exploring the surface.
+- **Blocks, not items:** mine takes block names. Asking for an item fails, naming the blocks that drop it.
 - **Limits:** `count` 1–512, `radius` 1–128, `y` −64–320.
 - **Targets:** notable types (ores, logs, …) come from `blocks_seen` and known places within `radius`. Any type, stone included, also counts when visible in the terrain around the bot, looked for up to 24 blocks out.
 - **For each target, nearest first:** walk until a face is in reach (the path may dig and pillar), dig it with the best tool, then pick up drops within 4 blocks.
@@ -95,29 +94,13 @@ The nearest known place of `type` in this dimension. `near` defaults to the bot'
   - **Each step:** clear the three blocks in front (head+1, head, feet−1), check the floor which opened up, then step down. It never digs the block under its own feet and never steps onto water or lava. A hole under the step is bridged or dropped into as in the tunnel (3 at most, the step included).
   - **Stops with the reason:** water or lava in front, lava one block further on, a deeper drop it can't bridge, or the bottom of the world: `staircase at y <n> stopped: <reason>`.
   - **Down only:** at or below `y` already, it tunnels where it is.
-  - **Picking `y`:** see the ore table below; e.g. `mine {block: "iron_ore", count: 3, y: 16}`.
 - **Progress:** `<mined>/<count> <block>[, tunnel <n>]: going to|digging [x, y, z]|tunnelling <dir>`.
 - **Results:**
   - `done`: `mined <n> <block>`
   - `partial`: `mined <n> of <count> <block>; none left in view within <r> blocks`, `…; strip-mining stopped: <reason>` or `…; staircase at y <n> stopped: <reason>`. When targets in protected regions were skipped, it adds `; <k> inside protected regions left alone`.
-  - `failed`: `mine: <block> needs one of: <tools>; none in inventory` (checked before moving); `mine: no <block> in view within <r> blocks` (a type other than ore), plus `; <block> the item drops from <blocks>. Use mine <block>` when other blocks drop it; `mine: <item> is an item, not a block; it drops from <blocks>. Use mine <block>`; for crafted things (stick, planks, crafting_table) `… is crafted from <ingredients>. Use craft <item>`; `mine: unknown block <x>`; `mine: box is not supported yet`; `mine: cannot dig in adventure mode`.
+  - `failed`: `mine: <block> needs one of: <tools>; none in inventory` (checked before moving); `mine: no <block> in view within <r> blocks` (a type other than ore), plus `; blocks that drop <block>: <blocks>` when other blocks drop it; `mine: <item> is an item; blocks that drop it: <blocks>` (or `; no block drops it`); for crafted things (stick, planks, crafting_table) `… is crafted from <ingredients>`; `mine: unknown block <x>`; `mine: box is not supported yet`; `mine: cannot dig in adventure mode`.
   - `refused`: every target in view is protected: `house rules: …; no other <block> in view`.
   - `done` and `partial` carry `data: {block, mined, requested, tunnel}`, plus `{y, stairs, at_y}` when `y` was given.
-
-**Where ores generate** (overworld; "peak" is the most common level). "wiki" rows are confirmed against the fetched minecraft.wiki pages; "unverified" rows are not yet: check them with `scripts/wiki_index.py --check-ores` on atlas.
-
-| Ore | Levels | Peak | Also | Source |
-|---|---|---|---|---|
-| iron_ore | −24 … 56 (range unverified) | around 16 | also common in mountains above ~80 | wiki (peak, mountains) |
-| diamond_ore | 16 … −63 | −58 / −59 | rarely exposed to air | wiki |
-| lapis_ore | −32 … 32 | 0 | also −64 … 64 where not exposed to air | wiki |
-| emerald_ore | −16 … 320 | around 90 in practice | mountain biomes only | wiki |
-| coal_ore | 0 … 192 | 96 | 136 … 320 on high terrain | unverified |
-| copper_ore | −16 … 112 | 48 | more in dripstone caves | unverified |
-| gold_ore | −64 … 32 | −16 | badlands 32 … 256 | unverified |
-| redstone_ore | −64 … 15 | lowest levels | | unverified |
-
-Below y 0 ores are the `deepslate_*` variant (same drops, slower to mine). Strip-mine where the peak is: iron at y 16, diamonds near y −59 (watch for lava below y −54).
 
 ### dig {pos}
 Digs one observed block: one visible now, or a known place. It walks within reach first (the path may dig and pillar) and digs with the best tool, or by hand if it has none.
@@ -131,7 +114,7 @@ Digs one observed block: one visible now, or a known place. It walks within reac
 Walks onto visible drops of `item` until none are left in sight. This is how it receives tossed items.
 - **Progress:** `<n> <item> so far; <k> in sight, going to [x, y, z]`.
 - **Results:**
-  - `done`: `collected <n> <item>; none left in sight`, or `no <item> drops in sight`, plus ` (mining <block> drops <item>, not <block>; collect <item>)` when it named a block that drops something else
+  - `done`: `collected <n> <item>; none left in sight`, or `no <item> drops in sight`, plus ` (mining <block> drops <item>, not <block>)` when it named a block that drops something else
   - `partial`: `collected <n> <item>; <k> drop(s) in sight could not be reached`
   - Both carry `data: {item, collected, unreachable}`.
 
@@ -141,7 +124,7 @@ Walks onto visible drops of `item` until none are left in sight. This is how it 
 - **Results:**
   - `done`: `crafted <n> <item>[ at the crafting_table at [x, y, z]]`, `data: {item, crafted, table}`. `<n>` is how many arrived in the inventory (before/after, read once the window has settled, up to 1.5 s), not what the recipe call returned.
   - `failed`:
-    - `craft: missing <what> for <count> <item>[ — <hint>]`. `<what>` lists what the cheapest recipe still needs, e.g. `1 oak_log`, `2 planks (any kind)`, or `3 of cobbled_deepslate, blackstone or cobblestone, 2 stick`. An ingredient any variant fills (planks, logs, wool…) is never named as one variant. The hint says what the inventory can make it from: `— you have spruce_log 3: craft spruce_planks`.
+    - `craft: missing <what> for <count> <item>[; you have <item> <n>]`. `<what>` lists what the cheapest recipe still needs, e.g. `1 oak_log`, `2 planks (any kind)`, or `3 of cobbled_deepslate, blackstone or cobblestone, 2 stick`. An ingredient any variant fills (planks, logs, wool…) is never named as one variant. When the inventory holds what makes one of the variants, it says so: `; you have spruce_log 3`.
     - `craft: <item> needs crafting_table nearby (none seen or known within 48 blocks)`
     - `craft: <item> has no crafting recipe` (smelting is not crafting)
     - `craft: could not reach the crafting_table at …`
@@ -150,7 +133,7 @@ Walks onto visible drops of `item` until none are left in sight. This is how it 
 
 ### place {block, pos?}
 Places an inventory block at `pos`, which must be an empty cell (air, water, grass, …) that the bot can see and reach from where it stands (4.5 blocks), with a solid neighbour to place against. It does not walk; `goto` first.
-- **Without `pos`:** it picks the spot itself: the nearest free, visible cell next to the bot, the four sides at feet level standing on solid ground first, then the others, then head level. Occupied or unseen sides are skipped without trying. Use this for a crafting table or furnace "here". If no side is free: `place: no free spot next to Atlas for <block> (…)`.
+- **Without `pos`:** it picks the spot itself: the nearest free, visible cell next to the bot, the four sides at feet level standing on solid ground first, then the others, then head level. Occupied or unseen sides are skipped without trying. If no side is free: `place: no free spot next to Atlas for <block> (…)`.
 - **Results:**
   - `done`: `placed <block> at [x, y, z]`, `data: {block, pos}`
   - `failed`: `place: no <block> in inventory`; `[x, y, z] is out of reach (<d> blocks, max 4.5); goto closer first`; `is not empty (<block>)`; `is where Atlas is standing`; `is not visible from here`; `nothing solid next to [x, y, z] to place against`; `cannot place blocks in adventure mode`
@@ -198,7 +181,7 @@ Takes from an observed chest, but only from one that has been given to Atlas (ho
   - Results carry `data: {item, withdrawn}`.
 
 ### smelt {item, count = 1, fuel?}
-Smelts in a furnace Atlas has seen: in view, or a known place within 32 blocks. It never places one: get one with `craft furnace` (8 cobblestone), then `place furnace …`.
+Smelts in a furnace Atlas has seen: in view, or a known place within 32 blocks. It never places one.
 - **`item`:** what to make (`iron_ingot`, `stone`, `glass`, `cooked_beef`, `charcoal`) or what to put in (`raw_iron`). For an output, the input is whatever in the inventory smelts into it (raw_iron or iron_ore for iron_ingot). `count` is how many come out (1–576).
 - **Which furnace:** ores and raw metals go in a furnace or a blast_furnace; food in a furnace or a smoker; anything else only in a furnace. The nearest one that takes it is used.
 - **Fuel:** the `fuel` item if given, else the best in the inventory: coal, charcoal, coal_block, then planks, then logs. It is never the input itself, and only as much as the count needs. Per item: coal and charcoal smelt 8, planks and logs 1.5, a stick 0.5.
@@ -213,15 +196,14 @@ Smelts in a furnace Atlas has seen: in view, or a known place within 32 blocks. 
     - `the furnace stopped: nothing came out for 25 s`
     - `the inventory is full`
   - `failed`, before moving:
-    - `smelt: needs a furnace or blast_furnace (none seen or known within 32 blocks); craft furnace (8 cobblestone), then place it`
+    - `smelt: needs a furnace or blast_furnace (none seen or known within 32 blocks)`
     - `smelt: no fuel in inventory (coal, charcoal, planks or logs)`
     - `smelt: nothing to smelt into <item>: no <inputs> in inventory`
-    - `smelt: <item> is not made in a furnace` (with `; it is crafted: use craft <item>` when it is crafted)
+    - `smelt: <item> is not made in a furnace` (with `; it is crafted` when it is crafted)
     - `smelt: <fuel> is not a fuel`
   - `failed`, at the furnace: `smelt: the furnace is in use: its <slot> slot holds <n> <item>`.
   - `refused`: the only furnace in reach is inside a protected region: `house rules: no furnace use inside protected region "<name>" (…)`.
   - Results carry `data: {item, input, smelted, requested, fuel, fuel_used, furnace}`.
-- **Example, iron to a pickaxe:** `mine {block: "iron_ore", count: 3, y: 16}` → `craft {item: "furnace"}` (8 cobblestone) → `place {block: "furnace", pos: […]}` → `smelt {item: "iron_ingot", count: 3}` → `craft {item: "iron_pickaxe"}` (3 iron_ingot, 2 sticks, at a crafting table).
 
 ## Not implemented yet
 `inspect`, `build`, `fight`, `flee` and the Later list in CONTRACT.md. Calling one gives `failed` with `verb not implemented yet: <verb>`.

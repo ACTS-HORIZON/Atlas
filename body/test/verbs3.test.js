@@ -151,8 +151,8 @@ test('craft plans against the real 26.1 recipes: precise "missing" reasons', () 
   m = craftMotor({ oak_planks: 1 })
   assert.equal(describeMissing(m.craftPlan('crafting_table', 1).options), '4 planks (any kind)', 'never one variant when any works')
   m = craftMotor({ spruce_log: 3 })
-  const hint = names => { for (const v of names) { const o = m.craftPlan(v, 1).options.find(o => !Object.keys(o.missing).length); if (o) return `you have ${Object.keys(o.uses)[0]} 3: craft ${v}` } return null }
-  assert.equal(describeMissing(m.craftPlan('stick', 4).options, hint), '2 planks (any kind) — you have spruce_log 3: craft spruce_planks')
+  const hint = names => { for (const v of names) { const o = m.craftPlan(v, 1).options.find(o => !Object.keys(o.missing).length); if (o) return `you have ${Object.keys(o.uses)[0]} 3` } return null }
+  assert.equal(describeMissing(m.craftPlan('stick', 4).options, hint), '2 planks (any kind); you have spruce_log 3')
   assert.equal(describeMissing(m.craftPlan('oak_planks', 4).options, hint), '1 oak_log', 'a named item stays named')
   m = craftMotor({ oak_planks: 3, stick: 2 })
   const p = m.craftPlan('wooden_pickaxe', 1)
@@ -245,7 +245,7 @@ test('craft: a missing tag ingredient is "any kind", with what the inventory mak
   }
   const s = setup(world(), { craftPlan, inv: { spruce_log: 3 } })
   const r = await run('craft', s.act, { item: 'stick', count: 4 })
-  assert.deepEqual(r, { status: 'failed', detail: 'craft: missing 2 planks (any kind) for 4 stick — you have spruce_log 3: craft spruce_planks' })
+  assert.deepEqual(r, { status: 'failed', detail: 'craft: missing 2 planks (any kind) for 4 stick; you have spruce_log 3' })
 })
 
 test('place without pos: the nearest free, visible spot next to the bot, skipping occupied sides', async () => {

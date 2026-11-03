@@ -42,7 +42,7 @@ async function run (act, args) {
   } else if (inputs.length) {
     return failed(`smelt: nothing to smelt into ${item}: no ${inputs.slice(0, 4).join(', ')}${inputs.length > 4 ? ', …' : ''} in inventory`)
   } else {
-    return failed(`smelt: ${item} is not made in a furnace${api.craftPlan(item, 1).options?.length ? `; it is crafted: use craft ${item}` : ''}`)
+    return failed(`smelt: ${item} is not made in a furnace${api.craftPlan(item, 1).options?.length ? '; it is crafted' : ''}`)
   }
   const have = inv[input] || 0
   if (!have) return failed(`smelt: no ${input} in inventory`)
@@ -72,7 +72,7 @@ async function run (act, args) {
   const found = types.flatMap(t => api.targetsOfType(t, RADIUS).map(b => ({ ...b, type: t }))).sort((a, b) => a.dist - b.dist)
   if (!found.length) {
     const kinds = types.join(' or ')
-    return failed(`smelt: needs a ${kinds} (none seen or known within ${RADIUS} blocks); craft furnace (8 cobblestone), then place it`)
+    return failed(`smelt: needs a ${kinds} (none seen or known within ${RADIUS} blocks)`)
   }
   const usable = found.filter(f => !api.houseCheck('furnace use', f.pos))
   if (!usable.length) return refused(api.houseCheck('furnace use', found[0].pos))

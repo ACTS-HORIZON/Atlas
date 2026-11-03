@@ -59,7 +59,7 @@ test('smelt: partial on an input or fuel shortage, naming it', async () => {
 test('smelt: failures before moving, and the furnace kinds', async () => {
   const s = setup(world(), { inv: { raw_iron: 2, coal: 1 } })
   assert.equal((await run('smelt', s.act, { item: 'iron_ingot', count: 2 })).detail,
-    'smelt: needs a furnace or blast_furnace (none seen or known within 32 blocks); craft furnace (8 cobblestone), then place it')
+    'smelt: needs a furnace or blast_furnace (none seen or known within 32 blocks)')
   const t = setup(withFurnace(), { inv: { raw_iron: 2 } })
   assert.equal((await run('smelt', t.act, { item: 'iron_ingot' })).detail, 'smelt: no fuel in inventory (coal, charcoal, planks or logs)')
   const u = setup(withFurnace(), { inv: { coal: 2 } })

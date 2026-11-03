@@ -93,26 +93,25 @@ function mineHint (registry, name, { inView = false } = {}) {
   const src = sourcesOf(registry, name).slice(0, 3)
   const crafted = (isItem && !inView) ? craftedFrom(registry, name) : null
   if (crafted) {
-    const what = isBlock ? `${name} is crafted from ${crafted}` : `${name} is an item, not a block; it is crafted from ${crafted}, not mined`
-    return `${what}. Use craft ${name}`
+    return isBlock ? `${name} is crafted from ${crafted}` : `${name} is an item; it is crafted from ${crafted}`
   }
   if (!isBlock && isItem) {
-    if (!src.length) return `${name} is an item, not a block, and no block drops it (it is crafted, smelted or found)`
-    return `${name} is an item, not a block; it drops from ${list(src)}. Use mine ${src[0]}`
+    if (!src.length) return `${name} is an item; no block drops it`
+    return `${name} is an item; blocks that drop it: ${list(src)}`
   }
   if (isBlock && !inView && src.length) {
     const self = dropsOf(registry, name).includes(name) ? ` (also ${name} drops from ${name} blocks)` : ''
-    return `${name} the item drops from ${list(src)}${self}. Use mine ${src[0]}`
+    return `blocks that drop ${name}: ${list(src)}${self}`
   }
   return null
 }
 
-/** For collect: mining this block drops something else; collect that instead. Or null. */
+/** For collect: mining this block drops something else (what). Or null. */
 function collectHint (registry, item) {
   if (!registry.blocksByName[item]) return null
   const d = dropsOf(registry, item)
   if (!d.length || d.includes(item)) return null
-  return `mining ${item} drops ${list(d)}, not ${item}; collect ${d[0]}`
+  return `mining ${item} drops ${list(d)}, not ${item}`
 }
 
 module.exports = { dropsOf, sourcesOf, craftedFrom, mineHint, collectHint }

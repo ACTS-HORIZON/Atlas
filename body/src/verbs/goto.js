@@ -9,6 +9,13 @@
 // bearing each leg, until the player is in sight, then goes to them).
 // done: arrived. partial: gave up (stuck, out of time, lost the bearing)
 // with the distance remaining. failed: no path at all.
+//
+// target "surface": climb until the surroundings report open sky with a side
+// open at head height (not the bottom of an open shaft): straight
+// up in 16-block legs (pillaring with scaffold blocks, digging what is
+// above), else a rising staircase dug into the wall; done with the y
+// reached; partial at lava or water above, bedrock above, or no way up (no
+// scaffold blocks and no staircase possible).
 const { checkArgs, failed, refused, cannotAct } = require('./common')
 
 const LEG = 16
@@ -27,6 +34,7 @@ async function run (act, args) {
   let pos = args.pos
   let what = pos ? `[${pos.join(', ')}]` : null
   let range = args.range
+  if (args.target === 'surface') return toSurface(act, api, move)
   if (args.target) {
     const t = api.resolveTarget(args.target)
     if (!t) return refused(`fair play: ${args.target} has not been observed (not a visible player or entity, not a seen or known block, not on the Locator Bar)`)
@@ -109,6 +117,59 @@ async function followBearing (act, api, name, move, range) {
       return { status: r.status === 'no_path' ? 'failed' : 'partial', detail: `blocked while following ${name}'s bearing after ${walked()} blocks (${r.status})`, data: data() }
     }
   }
+}
+
+const SCAFFOLD = ['dirt', 'cobblestone', 'cobbled_deepslate', 'netherrack', 'andesite', 'diorite', 'granite', 'tuff']
+const OPEN = /^(air|cave_air|void_air)$/
+const STAIRS = [[1, 0], [0, 1], [-1, 0], [0, -1]]
+
+/** The first block seen straight above the head: {name, y} or null (open, or not seen). */
+function overhead (api, x, y, z) {
+  for (let k = 2; k < 400; k++) {
+    const name = api.peek([x, y + k, z])
+    if (name === null) return null
+    if (!OPEN.test(name)) return { name, y: y + k }
+  }
+  return null
+}
+
+/** Open sky overhead and not walled in: some side open at head height (the bottom of an open shaft sees the sky too). */
+function atSurface (s) {
+  if (!s || !s.sky) return false
+  return Object.values(s.sides || {}).some(([, head]) => head === null || !/ 1$/.test(head))
+}
+
+async function toSurface (act, api, move) {
+  const y0 = Math.floor(api.here().pos[1])
+  const done = (y, p) => ({ status: 'done', detail: `reached open sky at y ${y} (climbed ${y - y0})`, data: { pos: p.map(r1), y, climbed: y - y0 } })
+  for (let round = 0; round < 64; round++) {
+    if (act.signal.aborted) return null
+    const p = api.here().pos
+    const f = p.map(Math.floor)
+    const o = api.observe()
+    if (atSurface(o && o.surroundings)) return done(f[1], p)
+    const top = overhead(api, f[0], f[1], f[2])
+    const stop = why => ({ status: 'partial', detail: `stopped at y ${f[1]} (climbed ${f[1] - y0}): ${why}`, data: { pos: p.map(r1), y: f[1], climbed: f[1] - y0 } })
+    if (top && /^(lava|water)$/.test(top.name)) return stop(`${top.name} above at y ${top.y}`)
+    if (top && top.name === 'bedrock') return stop(`bedrock above at y ${top.y}`)
+    const inv = api.inventory()
+    const blocks = SCAFFOLD.reduce((n, b) => n + (inv[b] || 0), 0)
+    act.progress(`to the surface: y ${f[1]}, ${blocks} scaffold blocks`)
+    // straight up: pillar with scaffold blocks, dig through what is above
+    let r = await api.goto([p[0], f[1] + 16, p[2]], { kind: 'near', range: 1, dig: move.dig !== false, scaffold: blocks > 0, signal: act.signal })
+    if (act.signal.aborted) return null
+    if (Math.floor(api.here().pos[1]) > f[1]) continue
+    // a rising staircase dug into the wall, each side in turn
+    let climbed = false
+    for (const [dx, dz] of STAIRS) {
+      r = await api.goto([p[0] + dx * 4, f[1] + 4, p[2] + dz * 4], { kind: 'near', range: 1, dig: move.dig !== false, scaffold: blocks > 0, signal: act.signal })
+      if (act.signal.aborted) return null
+      if (Math.floor(api.here().pos[1]) > f[1]) { climbed = true; break }
+    }
+    if (!climbed) return stop(`no way up${blocks ? '' : ' (no scaffold blocks to pillar with)'}${r && r.why ? `: ${r.why.text}` : ''}`)
+  }
+  const p = api.here().pos
+  return { status: 'partial', detail: `no open sky after 64 climbs (at y ${Math.floor(p[1])})`, data: { pos: p.map(r1), y: Math.floor(p[1]), climbed: Math.floor(p[1]) - y0 } }
 }
 
 /** "planner timeout after 5001 ms, 10020 nodes visited, its best plan ends at [25, 60, 0]; nearest point reached [x, y, z], 105.8 blocks from the goal" */

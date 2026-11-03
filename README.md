@@ -228,16 +228,7 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
 - **Truncation:** `max_tokens` defaults to 2000. In JSON mode, generation stops at the closing brace of the top-level object (stop sequence `"\n}"`, brace restored) instead of running on (`ATLAS_LLM_STOP=0` to turn that off).
 - **Task discipline:** a confirmed task is never confirmed again, and work on a new task starts with confirming it.
 - **Task journal:** each task keeps every call made for it, with its status and a one-line detail, plus "ruled out" lines (a `note` with `about`, kept in the journal instead of the notes file). Open tasks show it under TASKS, at most 15 lines; older calls are summarised as `(N earlier calls: mine x4, goto x3; 5 failed)`. A `partial` whose detail says stuck or gave up counts as failed.
-- **Difficulty is not ambiguity:**
-  - **Approaches:** once a call for a task has failed, every call for it counts toward the approaches tried. An approach is the verb, its target (block, item, player, or "a position"), its method (dig/scaffold off, a target `y`, a fuel) and the place it was made from, in 32×16×32 cells. So three gotos toward nearby spots from the same place are one approach; mining iron from two places is two.
-  - **When ask_player is refused:** for a task with a failure, until 3 approaches have been tried. The model is told how many it has tried and asked again.
-  - **When it may ask at once:** a task with no failures, where the ask is about ambiguity, a preference, or there is no verb for it. Also after a failure that says the verb isn't implemented or a house rule is in the way.
-  - **After a failure:** the task's next call must differ from the failed one in verb, target or method; a different `count` alone doesn't count.
-  - **Replaces the route hint:** this generalises the Session 4e `ROUTE` hint, which is gone.
-- **Already holding it:** for an open get/bring task whose item (and count) is already in the inventory, the context shows `YOU ALREADY HAVE iron_pickaxe ×1 (t1 asks for 1) — give it, don't craft` under INVENTORY, and a craft/smelt/mine/collect of that item for the task is refused with the same advice.
-- **Above or below:** a FAILED RECENTLY entry whose detail says a player is above or below adds `[Rook is ABOVE you: go up to the surface (goto a pos above you, scaffold on), not another bearing follow]`.
-- **Delivered means the player has it:** a task phrased "get/bring/fetch/give me X" or "I need X" can't be closed until a `give` (or a `deposit` into a chest) for it has succeeded, per its journal. A close before that is refused with "the player doesn't have it yet — give it to them first", and the turn re-runs. A close that says it can't be done ("Sorry, I can't …") is allowed.
-- **Retries end with the facts:** after an unusable reply the model reads the reason (with the failed call's exact detail), then the `FAILED RECENTLY (don't repeat): …` line, then the action format, last. To count repeats in a run: `grep -c 'failed recently' logs/mind.out`.
+- **Retries end with the facts:** after an unusable reply the model reads the reason, then the `FAILED RECENTLY (don't repeat): …` line, then the action format, last.
 - **Idle means idle:** with no open task, the only allowed actions are say, note, wait, lookup, eat (and stop), and goto when health is below `ATLAS_RETREAT_HEALTH`. Anything else (explore, mine, a plan of them) is refused with the reason, in code and in the prompt. A standing task is how a player keeps Atlas doing something.
 - **Delivered requests stay delivered:** a chat line that became a task is shown in the observation with its state, e.g. `chat <Rook> @Atlas get me an iron pickaxe (-> t1 running)`, and is dropped from the model's view once that task is done or stopped. It is never a new task: tasks come only from `task_from_chat` events.
 - **A verb name as the action:** `{"action": "craft", "args": {...}}` (or with the args inline) is taken as a call to that verb instead of being rejected.
@@ -247,7 +238,8 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
   - **Never invisible:** any `reasoning_content` that comes back is added to the decision trace's `data.reasoning` (first 800 characters).
   - **Warning:** if reasoning arrives while thinking is off, `mind.out` warns that the server ignored the setting.
   - **Through another proxy:** llama-swap passes the request body through unchanged. Through LiteLLM, check that it forwards `chat_template_kwargs` (the warning will say if not).
-- **No repeating a failure:** a call (same verb and args) that failed, was refused, or came back stuck/gave-up is not sent again while it is within the last 10 RECENT lines (and 5 turns), as a single call or as a plan's first step. Later plan steps are not checked: an earlier step may fix the cause (craft planks, then craft wooden_pickaxe); if not, the step simply fails. The model is told so and asked once more. The context shows them in one line, `FAILED RECENTLY (don't repeat): goto {"pos":[9,64,9]} -> gave up …; mine {"block":"iron_ore"} -> …`. A stuck goto's entry also ends when a later goto heads for a different target.
+- **Nothing is refused for repeating a failure, and ask_player is always allowed** (Session 5l removed those guards). Calls that failed, were refused, or came back stuck/gave-up within the last 10 RECENT lines (and 5 turns) are listed as a plain context line, `FAILED RECENTLY (don't repeat): goto {"pos":[9,64,9]} -> gave up …`. A stuck goto's entry also ends when a later goto heads for a different target.
+- **The fuse:** the identical call failing `ATLAS_FUSE_COUNT` (5) times in a row pauses the mind for `ATLAS_FUSE_S` (30 s), logged `[mind] fuse: mine {"block":"stone"} ×5; pausing 30 s`; then it carries on as before. Nothing is refused.
 - **Hints expire:** LOOKUP and the FAILED RECENTLY entries expire after 5 turns; the route-type ones (stuck/gave up) also when the target changes. The Session 4 `ROUTE` hint itself was folded into the task journal in 5b.
 - **Lookups:** at most 2 in a row, and never the same query twice in a row; the model is told to act on what it found.
 - **No fighting:** the prompt forbids it (there are no combat verbs). When health falls below `ATLAS_RETREAT_HEALTH` (6), the mind is woken with "health is low", and may retreat with `goto`.
@@ -388,7 +380,7 @@ cd /opt/atlas && python3 scripts/wiki_index.py --query "iron ore y level" --quer
 cd /opt/atlas && python3 scripts/wiki_index.py --check-ores
 ```
 
-- **`--check-ores`:** prints the top chunk for `<ore> ore y level` for each ore, to verify the ore table in `docs/verbs.md`.
+- **`--check-ores`:** prints the top chunk for `<ore> ore y level` for each ore.
 
 ```bash
 cd /opt/atlas && python3 scripts/wiki_index.py --eval
@@ -578,7 +570,7 @@ The craft loop seen after the stone pickaxe on atlas (HEAD 3b98bcd): waiting for
 3. Restart the mind. `mind.out` must not say `no wiki index`.
 
 1. **The index answers.** `python3 scripts/wiki_index.py --query "iron ore y level"` puts an ore-distribution chunk first (Iron Ore › Natural generation, or the Ore page's distribution table).
-2. **The ore table.** Run `python3 scripts/wiki_index.py --check-ores` and compare it with the ore table in `docs/verbs.md`. Send me any differences; the table is marked unverified until then.
+2. **Ore levels.** `python3 scripts/wiki_index.py --check-ores` prints what the wiki says for each ore (docs/verbs.md no longer carries an ore table; the wiki is the source).
 3. **The test: an iron pickaxe from the canopy spot, without help.** Put Atlas back at the spruce-canopy spot from Session 4, with cobblestone in its inventory and no iron. Say `@Atlas get me an iron pickaxe`, then don't help: no items, no answers beyond "yes/no" if it asks. What to expect:
    - **Knowledge:** the Trace feed shows `rag` traces whose titles include an iron-ore chunk. It may also make a `lookup` (`rag` with `lookup: true`). Its thinking mentions the level, about y 16.
    - **Iron:** `mine iron_ore` with `y` around 16. The Task panel shows `stairs n … staircase <dir>, y <now> -> 16`, then the tunnel, then ore mined. If the staircase stops (lava, water, a drop), the result names it and the next action is a different approach, not a question.
