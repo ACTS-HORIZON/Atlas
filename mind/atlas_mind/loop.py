@@ -20,6 +20,9 @@ Wake policy (no model call is wasted):
 - results of say, recall and stop, and of calls nothing is waiting on, don't
   wake a turn (a recall's or a failed say's result is still new input for
   the next turn);
+- with no open task (and health and food above their thresholds) an idle
+  tick never runs a turn: only task_from_chat, player_said, stop, death or
+  damage events, or health/food dropping below threshold wake it;
 - an idle tick runs a turn only if something changed since the last turn:
   a new event, a task change, new input, or a meaningful obs change
   (health, food, position, inventory, entities); otherwise no model call;
@@ -66,7 +69,10 @@ from .tasks import OPEN, TaskList, fine_key, one_line, place_cell
 V = CONTRACT_VERSION
 QUIET_VERBS = {"say", "recall", "stop"}  # their results don't wake a turn
 MAX_FOLLOW_UPS = 3
-IDLE_VERBS = {"eat", "say", "stop"}  # calls allowed with no open task (plus goto when health is low)
+IDLE_VERBS = {"eat", "say", "stop"}
+# with no open task, the events that still get a turn (besides task_from_chat, player_said and stop_requested,
+# which always do, and the low health / low food wakes)
+IDLE_WAKE_EVENTS = {"died", "damaged", "damaged_badly", "hurt"}  # calls allowed with no open task (plus goto when health is low)
 MAX_ERROR_RETRIES = 3
 MAX_LOOKUPS_IN_ROW = 2
 HINT_TURNS = 5  # LOOKUP and other hints expire after this many turns (stall hints also when the target changes)
@@ -155,6 +161,7 @@ class Mind:
         self.asking: dict | None = None
         self.failures: list[dict] = []  # {verb, args (canonical), detail, at (RECENT line number), turn, stall, target}
         self.low_health = False
+        self.hungry = False
         self.decisions: list[dict] = []
         self.turns = 0
         self.ws = None
@@ -250,7 +257,10 @@ class Mind:
                 self.asking = None
                 self.wake(f"stop requested by {d.get('from', 'someone')}" + (f"; {', '.join(t.id for t in stopped)} stopped" if stopped else ""))
             else:
-                self.wake(f"event {kind}")
+                if self.tasks.open() or kind in IDLE_WAKE_EVENTS:
+                    self.wake(f"event {kind}")
+                else:
+                    self.dirty = True  # e.g. player_joined with nothing to do: noted, no turn
 
     # ---- plans ----------------------------------------------------------------
     def plan_step_done(self, call: dict, m: dict) -> None:
@@ -300,6 +310,13 @@ class Mind:
                 self.wake(f"health is low ({h}/20)")
             elif h >= self.cfg.retreat_health:
                 self.low_health = False
+        f = o.get("self", {}).get("food")
+        if isinstance(f, (int, float)):
+            if f < self.cfg.hungry_food and not self.hungry:
+                self.hungry = True
+                self.wake(f"food is low ({f}/20)")
+            elif f >= self.cfg.hungry_food:
+                self.hungry = False
 
     def fresh_obs(self) -> dict | None:
         """The obs as the model sees it: chat from before the mind connected
@@ -744,6 +761,8 @@ class Mind:
                     self.asking = None
                 elif self.long_pending() or self.plan is not None:
                     continue  # a verb or a plan is running: its result will wake us
+                elif not self.tasks.open() and not self.low_health and not self.hungry:
+                    continue  # idle: world changes alone don't cost a model call (5i-2)
                 elif 0 < self.error_streak <= MAX_ERROR_RETRIES:
                     reason = f"retrying after an unusable decision ({self.error_streak}/{MAX_ERROR_RETRIES})"
                 elif not self.changed_since_turn():

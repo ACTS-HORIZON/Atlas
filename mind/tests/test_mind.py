@@ -206,12 +206,14 @@ class MindTest(MindHarness, unittest.IsolatedAsyncioTestCase):
             {"thinking": "Hungry.", "action": "call", "verb": "eat", "args": {}},
             {"thinking": "w", "action": "wait"},
         ])
-        await self.body.ws.send(json.dumps(make_obs(t=150, pos=[9.5, 64, 9.5])))  # the world changes
-        await until(lambda: len(self.llm.prompts) >= 3)
-        self.assertEqual(self.body.calls(), [], "no explore, no mine with no open task")
+        await self.body.event("player_said", {"from": "ACTS_HORIZON", "text": "anything going on?"})  # a wake with no task
+        await until(lambda: len(self.llm.prompts) >= 2)
         self.assertIn("no open task, so you are idle: explore is not allowed", self.llm.prompts[1][-1]["content"])
         self.assertIn("Idle means idle", self.llm.prompts[0][0]["content"])
-        await self.body.ws.send(json.dumps(make_obs(t=200, pos=[20.5, 64, 9.5])))
+        await self.body.event("player_said", {"from": "ACTS_HORIZON", "text": "ok"})
+        await until(lambda: len(self.llm.prompts) >= 3)
+        self.assertEqual(self.body.calls(), [], "no explore, no mine with no open task")
+        await self.body.event("player_said", {"from": "ACTS_HORIZON", "text": "you look hungry"})
         await until(lambda: len(self.body.calls()) >= 1)
         self.assertEqual(self.body.calls()[0]["verb"], "eat", "eating is allowed")
         m = self.mind  # goto only to get away, when hurt
@@ -232,7 +234,7 @@ class MindTest(MindHarness, unittest.IsolatedAsyncioTestCase):
         await until(lambda: len(self.llm.prompts) >= 1)
         self.assertIn("chat <Rook> @Atlas get me an iron pickaxe (-> t1 new)", self.prompt_text(0))
         await until(lambda: self.mind.tasks.get("t1").state == "done" and not self.mind.pending)
-        await self.body.ws.send(json.dumps(make_obs(t=400, chat=[line], pos=[9.5, 64, 9.5])))  # still in the buffer, world changed
+        await self.body.event("player_said", {"from": "Rook", "text": "thanks!"}, obs=make_obs(t=400, chat=[line]))  # still in the buffer
         await until(lambda: len(self.llm.prompts) >= 3)
         later = self.llm.prompts[-1][-1]["content"]
         self.assertNotIn("get me an iron pickaxe", later.split("TASKS")[1].split("RECENT")[0].replace("t1 [done] from Rook: get me an iron pickaxe", ""),
@@ -343,6 +345,8 @@ class MindTest(MindHarness, unittest.IsolatedAsyncioTestCase):
 
     async def test_idle_with_nothing_changed_makes_no_model_calls(self):
         await self.start([{"thinking": "Inventory changed; note it.", "action": "wait"}], idle_s=0.05)
+        self.running_task()  # with a task open, a meaningful change gets a turn
+        self.mind.turn_tasks = self.mind.tasks.version
         for _ in range(60):  # 60 idle ticks (10 minutes at the default 10 s), the same obs every few
             await self.body.ws.send(json.dumps(make_obs()))
             await asyncio.sleep(0.05)
@@ -352,6 +356,34 @@ class MindTest(MindHarness, unittest.IsolatedAsyncioTestCase):
         self.assertIn("WOKE BECAUSE: idle, something changed since your last turn", self.prompt_text(0))
         await asyncio.sleep(0.6)
         self.assertEqual(len(self.llm.prompts), 1, "one turn per change")
+
+    async def test_idle_with_no_task_world_changes_never_call_the_model(self):
+        await self.start([{"thinking": "w", "action": "wait"}] * 5, idle_s=0.05)
+        for i in range(60):  # 60 idle ticks, moving, with entities coming and going, no task
+            o = make_obs(t=200 + i, pos=[0.5 + i, 64, 0.5], inventory={"dirt": i + 1})
+            o["entities"] = [{"type": "zombie" if i % 2 else "cow", "rel": [i % 5, 0, 1], "dist": 3.0, "bearing": "front", "approaching": bool(i % 2), "hostile": bool(i % 2)}]
+            await self.body.ws.send(json.dumps(o))
+            await asyncio.sleep(0.05)
+        await self.body.event("player_joined", {"name": "Rook"})  # not a wake with nothing to do
+        await asyncio.sleep(0.3)
+        self.assertEqual(len(self.llm.prompts), 0, "zero model calls")
+        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "get me 3 logs"})
+        await until(lambda: len(self.llm.prompts) >= 1)
+        await asyncio.sleep(0.05)
+        self.assertEqual(len(self.llm.prompts), 1, "one turn for the task")
+        self.assertIn("WOKE BECAUSE: new task t1", self.prompt_text(0))
+
+    async def test_idle_wakes_on_low_food_health_chat_and_stop(self):
+        await self.start([{"thinking": "w", "action": "wait"}] * 6, idle_s=0.05)
+        await self.body.ws.send(json.dumps({**make_obs(t=300), "self": {**make_obs()["self"], "food": 4}}))
+        await until(lambda: len(self.llm.prompts) >= 1)
+        self.assertIn("food is low (4/20)", self.prompt_text(0))
+        await self.body.event("player_said", {"from": "ACTS_HORIZON", "text": "hi"})
+        await until(lambda: len(self.llm.prompts) >= 2)
+        await self.body.event("stop_requested", {"from": "ACTS_HORIZON"})
+        await until(lambda: len(self.llm.prompts) >= 3)
+        await self.body.event("died", {})
+        await until(lambda: len(self.llm.prompts) >= 4)
 
     async def test_truncated_reply_logs_raw_and_finish_reason(self):
         logs = []
@@ -918,9 +950,9 @@ class OldChatTest(MindHarness, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.mind.tasks.tasks, [], "no task from chat lines in the obs")
         self.assertEqual(self.llm.prompts, [], "nothing changed: no model call at all")
         self.assertEqual(self.body.calls(), [])
-        # the world changes (it moved): an idle turn runs, and the old lines are not in its context
+        # a player talks: a turn runs, and the old lines are not in its context
         later = make_obs(t=160, chat=OLD_CHAT + [{"from": "ACTS_HORIZON", "text": "nice weather", "t": 150}], pos=[9.5, 64, 9.5])
-        await self.body.ws.send(json.dumps(later))
+        await self.body.event("player_said", {"from": "ACTS_HORIZON", "text": "nice weather"}, obs=later)
         await until(lambda: len(self.llm.prompts) >= 1)
         p = self.prompt_text(0)
         self.assertNotIn("get me 8 iron ingots", p)

@@ -41,6 +41,7 @@ class Config:
     idle_s: float = 10.0
     ask_timeout_s: float = 120.0
     retreat_health: float = 6.0
+    hungry_food: float = 6.0
     history: int = 15
     notes_file: Path = field(default_factory=lambda: ROOT / "data" / "notes.md")
     notes_max_lines: int = 80
@@ -75,6 +76,7 @@ class Config:
             idle_s=float(g("ATLAS_IDLE_S", cls.idle_s)),
             ask_timeout_s=float(g("ATLAS_ASK_TIMEOUT_S", cls.ask_timeout_s)),
             retreat_health=float(g("ATLAS_RETREAT_HEALTH", cls.retreat_health)),
+            hungry_food=float(g("ATLAS_HUNGRY_FOOD", cls.hungry_food)),
             history=int(g("ATLAS_MIND_HISTORY", cls.history)),
             notes_file=path("ATLAS_NOTES_FILE", "data/notes.md"),
             notes_max_lines=int(g("ATLAS_NOTES_MAX_LINES", cls.notes_max_lines)),

@@ -192,7 +192,8 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
 **What it does each turn:**
 - **Wakes** on a long verb's result, an event (`task_from_chat`, `player_said`, `stop_requested`, …), or the idle timer (`ATLAS_IDLE_S`, 10 s).
   - **Quiet results:** results of `say`, `recall` and `stop` don't wake a turn. A recall's result, or a failed say, is new input for the next turn.
-  - **Idle ticks** call the model only if something changed since the last turn: an event, a task change, new input, or a meaningful obs change (health, food, a 2-block move, inventory, the set of entities or players). Otherwise there is no model call at all.
+  - **With no open task** (and health and food above `ATLAS_RETREAT_HEALTH` / `ATLAS_HUNGRY_FOOD`), world changes never call the model. Only `task_from_chat`, `player_said`, `stop_requested`, death or damage events, or health or food dropping below its threshold wake it. Other events (`player_joined`, …) are noted for the next turn without one.
+  - **Idle ticks** (with a task open) call the model only if something changed since the last turn: an event, a task change, new input, or a meaningful obs change (health, food, a 2-block move, inventory, the set of entities or players). Otherwise there is no model call at all.
   - **Skipped:** idle ticks while a verb runs, or while an `ask_player` question is open.
   - **Follow-up turns:** a turn that only talked (say, note, done) while a task is open gets one follow-up turn to carry on, at most 3 in a row without new input.
 - **Builds the context:**
@@ -263,6 +264,7 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
 | `ATLAS_IDLE_S` | `10` | idle wake |
 | `ATLAS_ASK_TIMEOUT_S` | `120` | how long `ask_player` waits for an answer |
 | `ATLAS_RETREAT_HEALTH` | `6` | |
+| `ATLAS_HUNGRY_FOOD` | `6` | food below this wakes the mind (to eat), even with no task |
 | `ATLAS_NOTES_FILE` | `data/notes.md` | |
 | `ATLAS_NOTES_MAX_LINES` | `80` | the oldest notes are dropped (and counted) past this |
 | `ATLAS_WIKI_INDEX` | `data/wiki/index.json` | built by `scripts/wiki_index.py`; missing = no KNOWLEDGE, lookups say so |
