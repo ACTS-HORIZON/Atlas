@@ -29,7 +29,13 @@ Wake policy (no model call is wasted):
 Guards that don't rely on the model:
 - an unusable reply is logged (raw text, finish_reason) and retried once
   with the error shown, then the mind waits;
-- the exact call that just failed or was refused is not sent again;
+- the exact call that just failed or was refused is not sent again, and
+  after a task's call fails its next call must differ in verb, target or
+  method (the count doesn't count);
+- each task keeps a journal (calls with status and detail, "ruled out"
+  notes) shown in the context; once a task has a failure, ask_player for it
+  is refused until 3 different approaches were tried (tasks.py), unless a
+  failure said no verb can do it or a house rule is in the way;
 - a task that is already confirmed is not confirmed again, and work on a
   new task starts with confirming it;
 - after a turn that only talked while a task is open, one follow-up turn
@@ -54,7 +60,7 @@ from .llm import LLMError
 from .notes import Notes
 from .prompt import context, load_verb_reference, system_prompt
 from .render import history_line, render_obs
-from .tasks import TaskList
+from .tasks import OPEN, TaskList, fine_key, place_cell
 
 V = CONTRACT_VERSION
 QUIET_VERBS = {"say", "recall", "stop"}  # their results don't wake a turn
@@ -64,26 +70,13 @@ MAX_LOOKUPS_IN_ROW = 2
 LOOKUP_TURNS = 3  # a lookup's answer stays in the context this many turns
 NOISE_RE = re.compile(r"\[[^\]]*\]|-?\b\d+(\.\d+)?\b|\bm\d+\b")  # coordinates, numbers, call ids
 SAY_REPEAT_WINDOW_S = 60  # a say matching one of the last 3 says within this window is dropped
-STUCK_RE = re.compile(r"\b(stuck|gave up)\b")
+STUCK_RE = re.compile(r"\b(stuck|gave up)\b")  # a partial with this in its detail counts as failed
 
 
 def norm_say(text: str) -> str:
     return " ".join(re.sub(r"[^\w\s]", " ", text.lower()).split())
 
 
-def target_key(call: dict) -> str | None:
-    """What a movement-ish call was trying to reach, to count repeated stalls."""
-    a = call.get("args") or {}
-    if call["verb"] == "goto":
-        if a.get("target"):
-            return f"target {a['target']}"
-        if isinstance(a.get("pos"), list):
-            return "pos [" + ", ".join(str(round(v)) for v in a["pos"]) + "]"
-    if call["verb"] == "give" and a.get("player"):
-        return f"target {a['player']}"
-    if call["verb"] in ("deposit", "withdraw") and isinstance(a.get("chest"), list):
-        return "chest [" + ", ".join(str(v) for v in a["chest"]) + "]"
-    return None
 PLAN_NEXT = "\x00plan-next"  # internal wake: run the next plan step, no model call
 
 
@@ -145,7 +138,7 @@ class Mind:
         self.token_total = 0
         self.reasoning_turns = 0
         self.says: deque = deque(maxlen=3)  # (normalised text, time) of the last says sent
-        self.stalls: dict[str, int] = {}  # target -> stuck / gave-up results toward it
+        self.call_meta: dict[str, tuple] = {}  # call id -> (task id, place cell when sent)
         self.retriever = retriever if retriever is not None else wiki.load_retriever(cfg.wiki_index)
         if self.retriever is None:
             self.log(f"[mind] no wiki index at {cfg.wiki_index}: no KNOWLEDGE (see README, Wiki knowledge)")
@@ -184,12 +177,10 @@ class Mind:
                 return  # nothing was waiting on it
             stalled = m["status"] == "partial" and bool(STUCK_RE.search(m.get("detail") or ""))
             failed = m["status"] in ("failed", "refused") or stalled  # a stuck/gave-up partial is a failure for the repeat guard
-            key = target_key(call)
-            if key:
-                if stalled or (m["status"] == "failed" and STUCK_RE.search(m.get("detail") or "")):
-                    self.stalls[key] = self.stalls.get(key, 0) + 1
-                elif m["status"] == "done":
-                    self.stalls.pop(key, None)
+            tid, place = self.call_meta.pop(m["id"], (None, None))
+            task = self.tasks.get(tid)
+            if task and call["verb"] not in QUIET_VERBS and m["detail"] != "busy":
+                self.tasks.result(task, call["verb"], call.get("args"), place, m["status"], m.get("detail") or "", failed)
             if failed and m["detail"] != "busy":
                 self.last_failed = (call["verb"], canon(call.get("args")), m["detail"])
                 self.last_failure = m["detail"]
@@ -253,7 +244,7 @@ class Mind:
         if task and st["verb"] not in QUIET_VERBS:
             self.tasks.started(task)
         self.log(f"[mind] plan step {p['i']}/{p['n']}: {st['verb']} {canon(st['args'])}")
-        p["cid"] = await self.call(st["verb"], st["args"])
+        p["cid"] = await self.call(st["verb"], st["args"], task)
         if p["cid"] is None:  # a dropped (repeated) say: carry on
             self.wakes.put_nowait(PLAN_NEXT) if p["steps"] else self.plan_step_done(st, {"status": "done", "detail": "skipped"})
 
@@ -327,10 +318,6 @@ class Mind:
             extra = f"\nWAITING for {self.asking['player']} to answer: {self.asking['text']}\n"
         if self.last_failed:
             extra += f"\nLAST FAILED CALL: {self.last_failed[0]} {self.last_failed[1]} -> {self.last_failed[2]}\n"
-        for key, n in self.stalls.items():
-            if n >= 2:
-                extra += (f"\nROUTE: the direct route to {key} is blocked ({n} stuck attempts); try digging down/around, "
-                          "explore in another direction, or ask the player to come closer\n")
         user = context(self.tasks.render(), render_obs(self.obs), list(self.recent), self.notes.render(), wake, extra, knowledge)
         return [{"role": "system", "content": self.system}, {"role": "user", "content": user}]
 
@@ -383,7 +370,7 @@ class Mind:
         if tid:
             return self.tasks.get(tid)
         working = self.tasks.working()
-        return working[0] if len(working) == 1 and a["action"] in ("call", "plan") else None
+        return working[0] if len(working) == 1 and a["action"] in ("call", "plan", "ask_player") else None
 
     def check(self, raw: str) -> dict:
         a = parse(raw, self.verbs)
@@ -392,6 +379,13 @@ class Mind:
             raise ActionError(f"that exact call ({a['verb']} {canon(a['args'])}) just failed with: {self.last_failed[2]}. "
                               "Choose a different action that deals with the reason.")
         t = self.task_for(a)
+        if t and a["action"] == "call" and t.last_failed == fine_key(a["verb"], a["args"]):
+            raise ActionError(f"{a['verb']} {canon(a['args'])} just failed for {t.id} (see its journal). After a failure the next "
+                              "action must differ in verb, target or method.")
+        if t and a["action"] == "ask_player" and t.state in OPEN:
+            why = self.tasks.ask_blocked(t)
+            if why:
+                raise ActionError(why)
         if t and a["action"] in ("say", "ask_player", "call", "done") and t.state in ("done", "stopped"):
             raise ActionError(f"{t.id} is already {t.state}; leave it alone")
         if t and a["action"] == "say" and "closes" not in a and t.state == "confirmed":
@@ -407,9 +401,11 @@ class Mind:
                 raise ActionError(f'you just looked up "{a["query"]}"; the answer is under LOOKUP. Act on it.')
         if a["action"] == "plan":
             first = a["steps"][0]
-            if self.last_failed and (first["verb"], canon(first["args"])) == self.last_failed[:2]:
-                raise ActionError(f"the plan starts with the exact call that just failed ({first['verb']}): {self.last_failed[2]}. "
-                                  "Plan around the reason instead.")
+            if (self.last_failed and (first["verb"], canon(first["args"])) == self.last_failed[:2]) or \
+                    (t and t.last_failed == fine_key(first["verb"], first["args"])):
+                why = f": {self.last_failed[2]}" if self.last_failed else ""
+                raise ActionError(f"the plan starts with the call that just failed ({first['verb']}){why}. "
+                                  "Plan around the reason instead: a different verb, target or method.")
             if t and t.state == "new" and any(st["verb"] not in QUIET_VERBS for st in a["steps"]):
                 raise ActionError(f"{t.id} is new: confirm it in chat first (a say with \"about\": \"{t.id}\"), then plan the work.")
         return a
@@ -466,7 +462,7 @@ class Mind:
         elif kind == "call":
             if task and a["verb"] not in QUIET_VERBS:
                 self.tasks.started(task)
-            await self.call(a["verb"], a["args"])
+            await self.call(a["verb"], a["args"], task)
         elif kind == "say":
             if task:
                 self.tasks.said(task, a["text"])
@@ -485,6 +481,10 @@ class Mind:
             self.recent.append(f"you closed {a['closes']}")
         elif kind == "lookup":
             await self.do_lookup(a)
+        elif kind == "note" and task and a.get("about"):  # a "ruled out" line in the task's journal
+            self.tasks.ruled_out(task, a["text"])
+            self.recent.append(f"you ruled out for {task.id}: {a['text']}")
+            await self.send({"type": "trace", "v": V, "t": t, "kind": "note", "text": f"ruled out ({task.id}): {a['text']}"})
         elif kind == "note":
             self.notes.append(a["text"])
             self.recent.append(f"you noted: {a['text']}")
@@ -502,7 +502,7 @@ class Mind:
     def now(self) -> float:
         return time.monotonic()
 
-    async def call(self, verb: str, args: dict) -> str | None:
+    async def call(self, verb: str, args: dict, task=None) -> str | None:
         if verb == "say" and isinstance(args.get("text"), str):
             if self.repeated_say(args["text"]):
                 self.log(f'[mind] warning: dropped a repeated say (said within {SAY_REPEAT_WINDOW_S} s): "{args["text"]}"')
@@ -515,6 +515,10 @@ class Mind:
             self.last_target = f"{verb} {tgt}".replace("_", " ") if isinstance(tgt, str) else verb
         self._n += 1
         cid = f"m{self._n}"
+        if task is not None and verb not in QUIET_VERBS:
+            place = place_cell(((self.obs or {}).get("self") or {}).get("pos"))
+            self.call_meta[cid] = (task.id, place)
+            self.tasks.sent(task, verb, args, place)
         msg = {"type": "call", "v": V, "id": cid, "verb": verb, "args": args}
         self.pending[cid] = msg
         if (verb, canon(args)) != (self.last_failed or (None, None))[:2]:
@@ -631,5 +635,6 @@ class Mind:
                 self.log(f"[mind] link down ({e.__class__.__name__}); retrying in 3 s")
             self.ws = None
             self.pending.clear()
+            self.call_meta.clear()
             self.plan = None
             await asyncio.sleep(3)

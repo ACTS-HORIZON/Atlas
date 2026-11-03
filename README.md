@@ -223,7 +223,13 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
 - **Invalid replies:** a reply with no complete JSON object (or an unknown verb or task) is retried once, with the error shown to the model; after that it waits. Every unusable reply is logged with the server's `finish_reason` and the raw text (first 500 characters), e.g. `[llm] unusable reply (first try, finish_reason=length): the reply was cut off …`.
 - **Truncation:** `max_tokens` defaults to 2000. In JSON mode, generation stops at the closing brace of the top-level object (stop sequence `"\n}"`, brace restored) instead of running on (`ATLAS_LLM_STOP=0` to turn that off).
 - **Task discipline:** a confirmed task is never confirmed again, and work on a new task starts with confirming it.
-- **No loops on a blocked route:** a `partial` whose detail says stuck or gave up counts as failed for the repeat guard. After two stuck results toward the same target, the next turns' context carries `ROUTE: the direct route to <target> is blocked …` until a call toward it succeeds.
+- **Task journal:** each task keeps every call made for it, with its status and a one-line detail, plus "ruled out" lines (a `note` with `about`, kept in the journal instead of the notes file). Open tasks show it under TASKS, at most 15 lines; older calls are summarised as `(N earlier calls: mine x4, goto x3; 5 failed)`. A `partial` whose detail says stuck or gave up counts as failed.
+- **Difficulty is not ambiguity:**
+  - **Approaches:** once a call for a task has failed, every call for it counts toward the approaches tried. An approach is the verb, its target (block, item, player, or "a position"), its method (dig/scaffold off, a target `y`, a fuel) and the place it was made from, in 32×16×32 cells. So three gotos toward nearby spots from the same place are one approach; mining iron from two places is two.
+  - **When ask_player is refused:** for a task with a failure, until 3 approaches have been tried. The model is told how many it has tried and asked again.
+  - **When it may ask at once:** a task with no failures, where the ask is about ambiguity, a preference, or there is no verb for it. Also after a failure that says the verb isn't implemented or a house rule is in the way.
+  - **After a failure:** the task's next call must differ from the failed one in verb, target or method; a different `count` alone doesn't count.
+  - **Replaces the route hint:** this generalises the Session 4e `ROUTE` hint, which is gone.
 - **No repeated chat:** a say matching one of the last 3 says within 60 s (case and punctuation ignored) is dropped, with a warning in `mind.out`.
 - **No stall after a bad reply:** after an unusable decision, the next idle tick runs a turn even if nothing changed in the world. That's up to 3 retries; after that it logs `[mind] 3 retries after unusable decisions failed; waiting for something to change` and waits for a change.
 - **Native thinking off:** every request carries `chat_template_kwargs: {"enable_thinking": false}` and `reasoning_effort: "none"`. llama.cpp reads both: either one sets the chat template's `enable_thinking` to false, Gemma 4's template included. `ATLAS_LLM_THINKING=1` turns thinking back on.
@@ -321,7 +327,8 @@ It decides on every recorded result and event, plus every 15th obs.
 - stop clearing the task;
 - the invalid-reply retry;
 - the low-health wake;
-- replay.
+- replay;
+- the task journal: three failures of one kind lead to a different approach, not `ask_player`; a task no verb can do may ask at once; the next call after a failure differs.
 
 `mind/tests/test_wiki.py` covers the wiki pipeline on two pages in the wiki's HTML (`mind/tests/fixtures/`): parsing (noise stripped, tables as rows), chunking, the BM25 index (`"iron ore y level"` finds the ore distribution chunk), the fetch and index scripts, and the mind's KNOWLEDGE block, `rag` traces and `lookup`.
 

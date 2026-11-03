@@ -201,7 +201,7 @@ class ScriptsTest(unittest.TestCase):
             self.assertIn(must, titles)
 
 
-class MindKnowledgeTest(test_mind.MindTest):
+class MindKnowledgeTest(test_mind.MindHarness, unittest.IsolatedAsyncioTestCase):
     def traces(self, kind):
         return [m for m in self.body.received if m["type"] == "trace" and m["kind"] == kind]
 
