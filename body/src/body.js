@@ -123,7 +123,10 @@ class Body {
     // Health and food arrive in their own packet, often just after spawn. No
     // obs is built or sent until both are known (a null-vitals obs is not a
     // valid contract message).
-    bot.on('health', () => this.announceIfReady())
+    bot.on('health', () => {
+      this.announceIfReady()
+      this.checkDamage()
+    })
     bot.on('spawn', () => {
       if (this.dead) {
         this.dead = false
@@ -224,6 +227,22 @@ class Body {
     } catch (err) {
       console.warn(`[obs] build failed: ${err.stack || err}`)
       return null
+    }
+  }
+
+  /**
+   * damaged_badly (CONTRACT.md events): health dropped by 4 or more in one
+   * update, or any drop while health is below 10. Detail {health, lost, food}.
+   * Not on death (that's died) and not for the first reading after spawn.
+   */
+  checkDamage () {
+    const h = this.bot.health
+    const prev = this.lastHealth
+    this.lastHealth = h
+    if (typeof h !== 'number' || typeof prev !== 'number' || this.dead || h <= 0) return
+    const lost = prev - h
+    if (lost >= 4 || (lost > 0 && h < 10)) {
+      this.event('damaged_badly', { health: h, lost: Math.round(lost * 10) / 10, food: this.bot.food ?? null })
     }
   }
 

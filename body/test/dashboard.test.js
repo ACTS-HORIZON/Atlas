@@ -160,3 +160,23 @@ test('helpers: bind parsing and secret masking', () => {
   assert.throws(() => parseBind('x:http'))
   assert.deepEqual(maskSecrets({ a: { token: 't', password: '', n: 1 }, f () {} }), { a: { token: '***', password: '', n: 1 } })
 })
+
+test('damaged_badly: a drop of 4+ in one update, or any drop below 10 health; not small hits when healthy', async (t) => {
+  const { bot, linkUrl } = await startBody(t)
+  const mind = client(linkUrl)
+  await mind.opened
+  await mind.wait(m => m.type === 'obs')
+  const hit = h => { bot.health = h; bot.emit('health') }
+  hit(20); hit(18) // 2 at full health: nothing
+  hit(13) // 5 at once
+  const e = await mind.wait(m => m.type === 'event' && m.kind === 'damaged_badly')
+  assert.deepEqual(e.detail, { health: 13, lost: 5, food: 20 })
+  assert.equal(check('event', e), null)
+  hit(9) // below 10: any drop
+  await mind.wait(m => m.type === 'event' && m.kind === 'damaged_badly' && m.detail.health === 9)
+  hit(10) // healing: nothing
+  hit(8.5)
+  await mind.wait(m => m.type === 'event' && m.kind === 'damaged_badly' && m.detail.health === 8.5)
+  assert.equal(mind.got.filter(m => m.kind === 'damaged_badly').length, 3)
+  mind.ws.close()
+})

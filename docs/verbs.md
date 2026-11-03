@@ -221,6 +221,24 @@ Smelts in a furnace Atlas has seen: in view, or a known place within 32 blocks. 
 ## Not implemented yet
 `inspect`, `build`, `fight`, `flee` and the Later list in CONTRACT.md. Calling one gives `failed` with `verb not implemented yet: <verb>`.
 
+## Events
+
+The event kinds the body emits (body → mind, `{"type": "event", "kind", "detail", "obs"}`). This is the complete list; the mind's wake rules use exactly these.
+
+| Kind | When | `detail` |
+|---|---|---|
+| `task_from_chat` | an allowlisted player's `@<bot> …` that isn't `stop`, `status` or the chest grant | `{from, text}` (text without the `@<bot>`) |
+| `player_said` | other chat from an allowlisted player | `{from, text}` |
+| `stop_requested` | `@<bot> stop`, or the dashboard's Stop button | `{from, detail}` |
+| `damaged_badly` | health dropped by 4 or more in one update, or any drop while health is below 10 (not on death) | `{health, lost, food}` |
+| `died` | the bot died | `{pos}` |
+| `respawned` | the bot spawned again after dying | `{pos}` |
+| `player_joined` / `player_left` | another player joined or left (not during the first seconds after the bot joins) | `{name}` |
+
+CONTRACT.md also names `item_received`, `verb_done`, `reflex_escalation`, `inventory_full` and `night_falling`; the body does not emit them (yet).
+
+**Which wake the mind with no open task:** `task_from_chat`, `player_said`, `stop_requested`, `damaged_badly`, `died` (and health or food dropping below its threshold, from the obs). The others are noted for the next turn without one. With a task open, every event wakes it.
+
 ## Chat the body handles itself
 From players on `ATLAS_PLAYERS` only:
 - `@<bot> stop` stops the running verb, replies in chat and sends event `stop_requested {from, detail}`.

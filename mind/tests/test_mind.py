@@ -374,7 +374,7 @@ class MindTest(MindHarness, unittest.IsolatedAsyncioTestCase):
         self.assertIn("WOKE BECAUSE: new task t1", self.prompt_text(0))
 
     async def test_idle_wakes_on_low_food_health_chat_and_stop(self):
-        await self.start([{"thinking": "w", "action": "wait"}] * 6, idle_s=0.05)
+        await self.start([{"thinking": "w", "action": "wait"}] * 8, idle_s=0.05)
         await self.body.ws.send(json.dumps({**make_obs(t=300), "self": {**make_obs()["self"], "food": 4}}))
         await until(lambda: len(self.llm.prompts) >= 1)
         self.assertIn("food is low (4/20)", self.prompt_text(0))
@@ -384,6 +384,13 @@ class MindTest(MindHarness, unittest.IsolatedAsyncioTestCase):
         await until(lambda: len(self.llm.prompts) >= 3)
         await self.body.event("died", {})
         await until(lambda: len(self.llm.prompts) >= 4)
+        await self.body.event("damaged_badly", {"health": 13, "lost": 5, "food": 20})
+        await until(lambda: len(self.llm.prompts) >= 5)
+        self.assertIn("event damaged_badly", self.prompt_text(4))
+        for kind in ("respawned", "player_joined", "player_left"):  # noted, no turn, with nothing to do
+            await self.body.event(kind, {"name": "Rook"})
+        await asyncio.sleep(0.3)
+        self.assertEqual(len(self.llm.prompts), 5)
 
     async def test_truncated_reply_logs_raw_and_finish_reason(self):
         logs = []

@@ -70,9 +70,11 @@ V = CONTRACT_VERSION
 QUIET_VERBS = {"say", "recall", "stop"}  # their results don't wake a turn
 MAX_FOLLOW_UPS = 3
 IDLE_VERBS = {"eat", "say", "stop"}
-# with no open task, the events that still get a turn (besides task_from_chat, player_said and stop_requested,
-# which always do, and the low health / low food wakes)
-IDLE_WAKE_EVENTS = {"died", "damaged", "damaged_badly", "hurt"}  # calls allowed with no open task (plus goto when health is low)
+# With no open task, the events that still get a turn (besides task_from_chat, player_said and
+# stop_requested, which always do, and the low health / low food wakes). The kinds the body actually
+# emits are listed in docs/verbs.md, "Events": task_from_chat, player_said, stop_requested,
+# damaged_badly, died, respawned, player_joined, player_left.
+IDLE_WAKE_EVENTS = {"died", "damaged_badly"}  # calls allowed with no open task (plus goto when health is low)
 MAX_ERROR_RETRIES = 3
 MAX_LOOKUPS_IN_ROW = 2
 HINT_TURNS = 5  # LOOKUP and other hints expire after this many turns (stall hints also when the target changes)
