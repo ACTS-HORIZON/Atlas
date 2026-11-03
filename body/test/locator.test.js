@@ -48,7 +48,7 @@ test('tracked_waypoint packets -> players on the bar with an azimuth', async () 
   const send = async p => bot._client.emit('tracked_waypoint', await wire(p))
 
   await send(wp('track', COLLIN, 'vec3i', { x: 120, y: 64, z: -30 }))
-  assert.deepEqual(loc.list(), [{ name: 'ACTS_HORIZON', azimuth: Math.round(yawTowards(0.5, 0.5, 120.5, -29.5) * 10) / 10 }])
+  assert.deepEqual(loc.list(), [{ name: 'ACTS_HORIZON', azimuth: Math.round(yawTowards(0.5, 0.5, 120.5, -29.5) * 10) / 10, vertical: 'level' }])
   assert.ok(loc.azimuthOf('ACTS_HORIZON') < -90 && loc.azimuthOf('ACTS_HORIZON') > -120, 'east, a little north')
 
   await send(wp('update', COLLIN, 'azimuth', 1.25)) // far away: only a direction
@@ -75,6 +75,28 @@ test('tracked_waypoint packets -> players on the bar with an azimuth', async () 
   delete bot.players.ACTS_HORIZON
   await send(wp('track', COLLIN, 'azimuth', 0))
   assert.deepEqual(loc.list(), [], 'left the game: unknown name, not listed')
+})
+
+test('the bar\'s up/down indicator: only block-position (vec3i) waypoints carry a height', async () => {
+  const bot = locatorBot() // at (0.5, 64, 0.5), eye 65.62, looking level
+  const loc = new Locator()
+  loc.attach(bot)
+  const send = async p => bot._client.emit('tracked_waypoint', await wire(p))
+  await send(wp('track', COLLIN, 'vec3i', { x: 0, y: 135, z: 1 })) // 71 up, nearly the same x/z
+  assert.equal(loc.verticalOf('ACTS_HORIZON'), 'above')
+  await send(wp('update', COLLIN, 'vec3i', { x: 2, y: -10, z: 3 })) // far below
+  assert.equal(loc.verticalOf('ACTS_HORIZON'), 'below')
+  await send(wp('update', COLLIN, 'vec3i', { x: 40, y: 70, z: 0 })) // a little higher, far off: on screen
+  assert.equal(loc.verticalOf('ACTS_HORIZON'), 'level')
+  bot.entity.pitch = -Math.PI / 3 // looking down at its feet: the same player is now off the top of the screen
+  await send(wp('update', COLLIN, 'vec3i', { x: 10, y: 66, z: 0 }))
+  assert.equal(loc.verticalOf('ACTS_HORIZON'), 'above')
+  bot.entity.pitch = 0
+  await send(wp('update', COLLIN, 'chunk', { chunkX: 0, chunkZ: 0 })) // chunk and azimuth waypoints: no height, no arrow
+  assert.equal(loc.verticalOf('ACTS_HORIZON'), null)
+  assert.deepEqual(Object.keys(loc.list()[0]).sort(), ['azimuth', 'name'])
+  await send(wp('update', COLLIN, 'azimuth', 0.5))
+  assert.equal(loc.verticalOf('ACTS_HORIZON'), null)
 })
 
 test('obs: a player on the bar but out of sight is bearing-only; in sight, the full entry only', async () => {

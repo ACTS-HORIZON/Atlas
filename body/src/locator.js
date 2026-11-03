@@ -15,7 +15,18 @@
 //               data: {x,y,z} | {chunkX, chunkZ} | <float radians> | undefined}}
 //
 // Only waypoints whose UUID belongs to a player in the tab list are used.
-// What leaves this file is a bearing (azimuth); positions never do.
+// What leaves this file is a bearing (azimuth) and, when the bar would show
+// one, an up/down indicator; positions never do.
+//
+// Up/down: the client draws an arrow above or below a waypoint's dot when
+// the waypoint is outside the screen vertically. Only a 'vec3i' waypoint
+// (the server sends a block position when the player is close) carries a
+// height; 'chunk' and 'azimuth' waypoints have none, so the bar shows no
+// arrow for them and this reports none. For vec3i: the elevation from the
+// bot's eye to the block, relative to the camera pitch, beyond half the
+// vertical field of view (70° by default) -> 'above' / 'below', else
+// 'level'. (minecraft.wiki was unreachable when this was written; the rule
+// follows the packet's data and the client's on-screen test.)
 //
 // Azimuth convention: Locator.list() returns F3 degrees, the yaw at which
 // the bot would face the player (0 = south, 90 = west). For 'azimuth'
@@ -30,7 +41,8 @@ const norm180 = d => { d = ((d % 360) + 360) % 360; return d > 180 ? d - 360 : d
 const yawTowards = (bx, bz, tx, tz) => norm180(Math.atan2(-(tx - bx), tz - bz) * RAD)
 
 class Locator {
-  constructor () {
+  constructor ({ fov = 70 } = {}) {
+    this.fov = fov
     this.available = true
     this.points = new Map() // waypoint id (uuid) -> {type, data}
     this.bot = null
@@ -75,7 +87,22 @@ class Locator {
     return null // 'empty': on the bar, no direction
   }
 
-  /** [{name, azimuth}] for players on the bar (never the bot itself). */
+  /** 'above' | 'below' | 'level' for a waypoint with a height (vec3i), else null (the bar shows no arrow). */
+  verticalFor (pt) {
+    const e = this.bot && this.bot.entity
+    if (pt.type !== 'vec3i' || !pt.data || !e || !e.position) return null
+    const me = e.position
+    const dy = pt.data.y + 0.5 - (me.y + (e.eyeHeight || 1.62))
+    const dh = Math.hypot(pt.data.x + 0.5 - me.x, pt.data.z + 0.5 - me.z)
+    const elev = Math.atan2(dy, dh) * RAD
+    const pitch = (e.pitch || 0) * RAD // Mineflayer: + looks up
+    const rel = elev - pitch
+    if (rel > this.fov / 2) return 'above'
+    if (rel < -this.fov / 2) return 'below'
+    return 'level'
+  }
+
+  /** [{name, azimuth, vertical?}] for players on the bar (never the bot itself). */
   list () {
     const out = []
     for (const [uuid, pt] of this.points) {
@@ -83,7 +110,8 @@ class Locator {
       if (!name || name === (this.bot && this.bot.username)) continue
       const azimuth = this.azimuthFor(pt)
       if (azimuth === null) continue
-      out.push({ name, azimuth: Math.round(azimuth * 10) / 10 })
+      const vertical = this.verticalFor(pt)
+      out.push({ name, azimuth: Math.round(azimuth * 10) / 10, ...(vertical ? { vertical } : {}) })
     }
     return out
   }
@@ -92,6 +120,11 @@ class Locator {
     const w = this.list().find(x => x.name === name)
     return w ? w.azimuth : null
   }
+
+  verticalOf (name) {
+    const w = this.list().find(x => x.name === name)
+    return (w && w.vertical) || null
+  }
 }
 
 /** A fixed set of waypoints, for tests: [{name, azimuth}]. */
@@ -99,6 +132,7 @@ class StaticLocator {
   constructor (waypoints = []) { this.available = true; this.waypoints = waypoints }
   list () { return this.waypoints.map(w => ({ ...w })) }
   azimuthOf (name) { const w = this.waypoints.find(x => x.name === name); return w ? w.azimuth : null }
+  verticalOf (name) { const w = this.waypoints.find(x => x.name === name); return (w && w.vertical) || null }
 }
 
 module.exports = { Locator, StaticLocator, yawTowards }

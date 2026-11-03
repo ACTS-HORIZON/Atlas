@@ -22,7 +22,7 @@ The bot's name is configuration (default `Atlas`); `@<botname>` below means what
 * Sounds as bearing + rough distance (near / mid / far), not exact coordinates.
 * Own coordinates, time, weather and boss bar are fine (a player has F3 and the HUD).
 * Other players: position, and the block they are looking at if it's visible (their look direction is visible).
-* Players out of line of sight: bearing only, exactly when the game's Locator Bar would show them — i.e. when the server sends a Locator Bar waypoint for that player — so a player the game hides from the bar (sneaking, invisible, …) stays hidden.
+* Players out of line of sight: bearing only (plus the bar's up/down indicator when it shows one), exactly when the game's Locator Bar would show them — i.e. when the server sends a Locator Bar waypoint for that player — so a player the game hides from the bar (sneaking, invisible, …) stays hidden.
 * No ores behind rock, no hidden entity state (health, AI target), no seed-derived knowledge.
 * Pathfinding may plan over loaded-chunk terrain geometry (a player sees the ground as they walk); verbs still only target observed things, or a player by bearing.
 * A verb may only target blocks or entities the bot has actually observed.

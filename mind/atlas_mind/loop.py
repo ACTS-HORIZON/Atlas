@@ -101,9 +101,43 @@ DELIVERY_RE = re.compile(r"\b(get|bring|fetch|give|grab|hand|find|make|craft)\s+
 GAVE_UP_RE = re.compile(r"\b(can't|cannot|can not|couldn't|could not|unable|won't be able|sorry)\b", re.I)
 
 
+def vertical_hint(detail: str) -> str:
+    """For a bearing-follow that found the player above or below: what to do instead."""
+    m = re.search(r"(\w+) is (above|below) you", detail or "")
+    if not m:
+        return ""
+    way = "up to the surface (goto a pos above you, scaffold on)" if m.group(2) == "above" else "down (goto a pos below you, dig on)"
+    return f" [{m.group(1)} is {m.group(2).upper()} you: go {way}, not another bearing follow]"
+
+
 def is_delivery(text: str) -> bool:
     """A request that is done only when the player has the thing: get/bring/fetch/give me X, I need X."""
     return bool(DELIVERY_RE.search(text or ""))
+
+
+FAMILIES = {"log", "planks", "wool", "wood", "stem", "leaves", "sapling", "slab", "stairs", "fence", "door", "bed", "boat"}
+WORD_NUM = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "eight": 8, "ten": 10, "a stack of": 64}
+
+
+def requested_from_inventory(text: str, inventory: dict) -> list[tuple[str, int, int]]:
+    """Items a request names that the inventory already holds in quantity: [(item, have, wanted)].
+    "get me an iron pickaxe" + {iron_pickaxe: 1} -> [("iron_pickaxe", 1, 1)]; "bring me 8 logs" matches any *_log."""
+    low = " " + " ".join(re.findall(r"[a-z0-9]+", (text or "").lower())) + " "
+    out = []
+    for item, have in (inventory or {}).items():
+        words = item.split("_")
+        phrase = " ".join(words)
+        forms = [phrase, phrase + "s", phrase + "es"]
+        if words[-1] in FAMILIES:
+            forms += [words[-1], words[-1] + "s"]
+        hit = next((f for f in forms if f" {f} " in low), None)
+        if not hit:
+            continue
+        m = re.search(r" (\d+|a stack of|a|an|one|two|three|four|five|six|eight|ten) (?:[a-z]+ ){0,2}?" + re.escape(hit) + " ", low)
+        wanted = (int(m.group(1)) if m.group(1).isdigit() else WORD_NUM.get(m.group(1), 1)) if m else 1
+        if have >= wanted:
+            out.append((item, have, wanted))
+    return out
 
 
 def delivered(task) -> bool:
@@ -445,9 +479,14 @@ class Mind:
         fails = self.recent_failures()
         if fails:
             extra += "\nFAILED RECENTLY (don't repeat): " + "; ".join(
-                f"{f['verb']} {f['args']} -> {one_line(f['detail'], 90)}" for f in fails[-4:]) + "\n"
+                f"{f['verb']} {f['args']} -> {one_line(f['detail'], 90)}{vertical_hint(f['detail'])}" for f in fails[-4:]) + "\n"
+        have_lines = []
+        for t in self.tasks.open():
+            if is_delivery(t.text) and not delivered(t):
+                for item, have, wanted in requested_from_inventory(t.text, (self.obs or {}).get("inventory")):
+                    have_lines.append(f"YOU ALREADY HAVE {item} ×{have} ({t.id} asks for {wanted}) — give it, don't craft")
         user = context(self.tasks.render(), render_obs(self.fresh_obs(), inventory=False), list(self.recent), self.notes.render(), wake, extra,
-                       knowledge, render_inventory(self.obs), render_surroundings(self.obs) if self.obs else "")
+                       knowledge, "\n".join([render_inventory(self.obs)] + have_lines), render_surroundings(self.obs) if self.obs else "")
         return [{"role": "system", "content": self.system}, {"role": "user", "content": user}]
 
     def resolve_task_ref(self, value: str):
@@ -531,6 +570,14 @@ class Mind:
         if t and a["action"] == "call" and t.last_failed == fine_key(a["verb"], a["args"]):
             raise ActionError(f"{a['verb']} {canon(a['args'])} just failed for {t.id} (see its journal). After a failure the next "
                               "action must differ in verb, target or method.")
+        if t and t.state in OPEN and is_delivery(t.text) and not delivered(t) and a["action"] in ("call", "plan"):
+            held = {item: (have, wanted) for item, have, wanted in requested_from_inventory(t.text, (self.obs or {}).get("inventory"))}
+            for st in ([a] if a["action"] == "call" else a["steps"]):
+                made = (st.get("args") or {}).get("item") or (st.get("args") or {}).get("block")
+                if st["verb"] in ("craft", "smelt", "mine", "collect") and made in held:
+                    have, wanted = held[made]
+                    raise ActionError(f"you already have {made} ×{have} ({t.id} asks for {wanted}): give it to {t.by} "
+                                      f"(give {{item: \"{made}\", count: {wanted}, player: \"{t.by}\"}}), don't {st['verb']} another.")
         if t and a["action"] == "ask_player" and t.state in OPEN:
             why = self.tasks.ask_blocked(t)
             if why:
@@ -573,7 +620,7 @@ class Mind:
         fails = self.recent_failures()
         lines = [f"That reply was not usable: {err}"]
         if fails:
-            lines.append("FAILED RECENTLY (don't repeat): " + "; ".join(f"{f['verb']} {f['args']} -> {f['detail']}" for f in fails[-4:]))
+            lines.append("FAILED RECENTLY (don't repeat): " + "; ".join(f"{f['verb']} {f['args']} -> {f['detail']}{vertical_hint(f['detail'])}" for f in fails[-4:]))
         lines.append("Reply again with exactly one valid JSON object, one of:")
         lines += [ln for ln in OUTPUT_FORMAT.splitlines() if ln.startswith("{")]
         return "\n".join(lines)

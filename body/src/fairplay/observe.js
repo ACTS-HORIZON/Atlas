@@ -12,7 +12,7 @@
 //                           with centre within ~R, in a fixed order
 //   entities  [{id, type, pos (feet), height, hostile}]  (no players, no self)
 //   players   [{name, pos (feet), height, eye, look (unit vector)}]
-//   waypoints [{name, azimuth}] Locator Bar waypoints (src/locator.js), optional
+//   waypoints [{name, azimuth, vertical?}] Locator Bar waypoints (src/locator.js), optional
 //   inventory, world {dayTime, raining, thundering, light, biome},
 //   bossBar, chat, task
 // The view may hold more than a player perceives; this module is the filter.
@@ -170,7 +170,7 @@ function buildObs (view, state, options = {}) {
   for (const w of view.waypoints || []) {
     if (seenNames.has(w.name) || players.length >= opts.maxPlayers) continue
     const a = w.azimuth * Math.PI / 180
-    players.push({ name: w.name, bearing: bearing(s.yaw, [-Math.sin(a) * 10, 0, Math.cos(a) * 10]) })
+    players.push({ name: w.name, bearing: bearing(s.yaw, [-Math.sin(a) * 10, 0, Math.cos(a) * 10]), ...(w.vertical ? { vertical: w.vertical } : {}) })
     seenNames.add(w.name)
   }
 

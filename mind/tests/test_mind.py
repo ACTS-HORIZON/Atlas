@@ -38,6 +38,7 @@ class FakeBody:
     def __init__(self, respond=None, first_obs=None):
         self.respond = respond or (lambda c: ("done", f"{c['verb']} ok", None))
         self.first_obs = first_obs
+        self.current_obs = None  # the obs results carry (default: make_obs())
         self.received: list[dict] = []
         self.ws = None
         self.held: list[dict] = []
@@ -62,7 +63,7 @@ class FakeBody:
                     await self.result(m["id"], *r)
 
     async def result(self, cid, status, detail, data=None):
-        msg = {"type": "result", "v": "0.1", "id": cid, "status": status, "detail": detail, "obs": make_obs()}
+        msg = {"type": "result", "v": "0.1", "id": cid, "status": status, "detail": detail, "obs": self.current_obs or make_obs()}
         if data:
             msg["data"] = data
         await self.ws.send(json.dumps(msg))
@@ -1030,3 +1031,45 @@ class DeliveryPhrasingTest(unittest.TestCase):
             self.assertTrue(is_delivery(t), t)
         for t in ("mine 3 oak logs", "come here", "how are you?", "build a wall"):
             self.assertFalse(is_delivery(t), t)
+
+
+class AlreadyHaveTest(MindHarness, unittest.IsolatedAsyncioTestCase):
+    async def test_holding_the_item_first_action_is_give_not_craft(self):
+        held = make_obs(t=500, inventory={"iron_pickaxe": 1, "stick": 2})
+        await self.start([
+            {"thinking": "Confirm.", "action": "say", "text": "On it: an iron pickaxe.", "about": "t1"},
+            {"thinking": "Craft one.", "action": "call", "verb": "craft", "args": {"item": "iron_pickaxe"}, "about": "t1"},
+            {"thinking": "I have one: give it.", "action": "call", "verb": "give", "args": {"item": "iron_pickaxe", "player": "Rook"}, "about": "t1"},
+            {"thinking": "w", "action": "wait"},
+        ], first_obs=held)
+        self.body.current_obs = held
+        await self.body.event("task_from_chat", {"from": "Rook", "text": "get me an iron pickaxe"}, obs=held)
+        await until(lambda: len([c for c in self.body.calls() if c["verb"] != "say"]) >= 1)
+        work = [c for c in self.body.calls() if c["verb"] != "say"]
+        self.assertEqual(work[0]["verb"], "give", "the first action after confirming is give, not craft")
+        self.assertIn("YOU ALREADY HAVE iron_pickaxe ×1 (t1 asks for 1) — give it, don't craft", self.prompt_text(0).split("TASKS")[0])
+        retry = next(m[-1]["content"] for m in self.llm.prompts if m[-1]["content"].startswith("That reply was not usable"))
+        self.assertIn("you already have iron_pickaxe ×1 (t1 asks for 1): give it to Rook", retry)
+
+    async def test_failed_recently_says_go_up_when_the_player_is_above(self):
+        detail = "give: could not reach Rook: Rook is above you, not ahead: bearing flips each leg (horizontal distance ~0)"
+        await self.start([
+            {"thinking": "Give.", "action": "call", "verb": "give", "args": {"item": "iron_pickaxe", "player": "Rook"}},
+            {"thinking": "w", "action": "wait"},
+        ], respond=lambda c: ("failed", detail, None) if c["verb"] == "give" else ("done", "ok", None))
+        t = self.mind.tasks.add("Rook", "get me an iron pickaxe")
+        t.state = "running"
+        self.mind.wake("go")
+        await until(lambda: len(self.llm.prompts) >= 2)
+        self.assertIn("[Rook is ABOVE you: go up to the surface (goto a pos above you, scaffold on), not another bearing follow]",
+                      self.prompt_text(1))
+
+
+class RequestedTest(unittest.TestCase):
+    def test_requested_from_inventory(self):
+        from atlas_mind.loop import requested_from_inventory as r
+        self.assertEqual(r("get me an iron pickaxe", {"iron_pickaxe": 1}), [("iron_pickaxe", 1, 1)])
+        self.assertEqual(r("bring me 8 logs", {"oak_log": 9}), [("oak_log", 9, 8)])
+        self.assertEqual(r("bring me 8 logs", {"oak_log": 3}), [], "not enough yet")
+        self.assertEqual(r("I need 3 torches", {"torch": 5}), [("torch", 5, 3)])
+        self.assertEqual(r("get me an iron pickaxe", {"stone_pickaxe": 1}), [])

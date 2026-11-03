@@ -58,6 +58,8 @@ module.exports = {
   // mine: strip-mining when no target is in view (straight length before a turn, total cap)
   stripLength: positive('ATLAS_STRIP_LENGTH', 24),
   stripMax: positive('ATLAS_STRIP_MAX', 256),
+  // goto/give by Locator Bar bearing: hard time cap for one bearing-follow (seconds)
+  followMaxS: positive('ATLAS_FOLLOW_MAX_S', 180),
   // House rules: protected regions, a JSON list of boxes (see src/house.js)
   protectedRegions: parseRegions(env('ATLAS_PROTECTED_REGIONS', '')),
   // House rules: chests the bot may take from (more are granted in chat); grants persist per server

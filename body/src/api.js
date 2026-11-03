@@ -179,7 +179,10 @@ class VerbApi {
     const b = this.seenBlocks(name)[0]
     if (b) return { kind: 'block', name, pos: b.pos }
     const az = this.playerAzimuth(name)
-    if (az !== null) return { kind: 'bearing', name, azimuth: az }
+    if (az !== null) {
+      const vertical = this.locator && this.locator.verticalOf ? this.locator.verticalOf(name) : null
+      return { kind: 'bearing', name, azimuth: az, ...(vertical ? { vertical } : {}) }
+    }
     return null
   }
 

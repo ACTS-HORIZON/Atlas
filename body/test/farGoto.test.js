@@ -40,14 +40,14 @@ function underground ({ confined = true } = {}) {
 }
 
 /** A bot whose pathfinder is the real A* behind a plugin-like loop. */
-function simBot (w, { neverPlans = false } = {}) {
+function simBot (w, { neverPlans = false, pos = [0.5, 60, 0.5], items = [] } = {}) {
   const bot = Object.assign(new EventEmitter(), {
     registry,
     version: '26.1',
     game: { dimension: 'overworld', minY: -64, height: 384, gameMode: 'survival' },
-    entity: { position: new Vec3(0.5, 60, 0.5), effects: {}, onGround: true, eyeHeight: 1.62 },
+    entity: { position: new Vec3(...pos), effects: {}, onGround: true, eyeHeight: 1.62 },
     entities: {},
-    inventory: { items: () => [], slots: [] },
+    inventory: { items: () => items, slots: [] },
     heldItem: null,
     blockAt: w.blockAt,
     canDigBlock: () => true,
@@ -73,11 +73,12 @@ function simBot (w, { neverPlans = false } = {}) {
       return
     }
     if (!path.length) {
-      if (!updated) { updated = true; astar = new AStar(new Move(feet.x, feet.y, feet.z, 0, 0), bot.movements, goal, 5000, 40, -1) }
+      if (!updated) { updated = true; astar = new AStar(new Move(feet.x, feet.y, feet.z, bot.movements.countScaffoldingItems(), 0), bot.movements, goal, 5000, 40, -1) }
       return // a timed-out path that ran out: the plugin idles here
     }
     const n = path.shift()
     for (const b of n.toBreak) { w.set(b.x, b.y, b.z, 'air'); bot.emit('diggingCompleted', w.blockAt(new Vec3(b.x, b.y, b.z))) }
+    for (const b of n.toPlace) if (!b.useOne) { w.set(b.x + b.dx, b.y + b.dy, b.z + b.dz, 'cobblestone'); bot.placed = (bot.placed || 0) + 1 }
     bot.entity.position = new Vec3(n.x + 0.5, n.y, n.z + 0.5)
   }, 2)
   bot.pathfinder = {
@@ -160,4 +161,31 @@ test('goto verb: no progress reads as a gave-up partial with the planner\'s stat
   assert.equal(r.status, 'partial')
   assert.equal(r.detail, 'gave up 105.8 blocks short of [6, 82, 7] (no path found yet: planner timeout after 5001 ms, 10020 nodes visited, its best plan ends at [25, 60, 0]; nearest point reached [-57.5, 63, -75.5], 105.8 blocks from the goal: feet air, head air, below stone); tried jump, re-planned')
   assert.deepEqual(r.data.planner, planner)
+})
+
+test('from the bottom of a 1-wide shaft (y -1) to the surface straight above (y 70), scaffold on: pillars up in vertical legs', { timeout: 60000 }, async () => {
+  const w = underground({ confined: true })
+  for (let x = -4; x <= 4; x++) for (let z = -4; z <= 4; z++) for (let y = -10; y <= 68; y++) w.set(x, y, z, Math.abs(x) === 4 || Math.abs(z) === 4 ? 'bedrock' : 'stone')
+  for (let y = -1; y <= 75; y++) w.set(0, y, 0, 'air') // the shaft, open to the sky
+  const registry = require('prismarine-registry')('26.1')
+  const cobble = { name: 'cobblestone', count: 64, type: registry.itemsByName.cobblestone.id }
+  const bot = simBot(w, { pos: [0.5, -1, 0.5], items: [cobble, { ...cobble }] })
+  try {
+    const r = await new Motor(bot).goto({ pos: [0.5, 70, 0.5], range: 1, dig: true, scaffold: true, stallMs: 8000 })
+    assert.equal(r.status, 'reached', JSON.stringify({ ...r, why: r.why && r.why.text }))
+    assert.ok(r.legs >= 4, `vertical legs: ${r.legs}`)
+    assert.ok(bot.entity.position.y >= 69)
+    assert.ok(bot.placed >= 69, `pillared: ${bot.placed} blocks placed`)
+  } finally { bot.stopSim() }
+})
+
+test('a goal straight up never spins on legs that don\'t move it', { timeout: 30000 }, async () => {
+  const w = underground({ confined: true })
+  const bot = simBot(w, { neverPlans: true, pos: [0.5, 60, 0.5] })
+  try {
+    const t0 = Date.now()
+    const r = await new Motor(bot).goto({ pos: [0.5, 130, 0.5], range: 1, dig: true, scaffold: true, planWatchMs: 800, stallMs: 300 })
+    assert.equal(r.status, 'no_progress')
+    assert.ok(Date.now() - t0 < 5000)
+  } finally { bot.stopSim() }
 })

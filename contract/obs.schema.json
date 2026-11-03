@@ -113,7 +113,8 @@
             "additionalProperties": false,
             "properties": {
               "name": {"type": "string"},
-              "bearing": {"$ref": "#/$defs/bearing"}
+              "bearing": {"$ref": "#/$defs/bearing"},
+              "vertical": {"enum": ["above", "below", "level"], "description": "the Locator Bar's up/down indicator, only when the bar has one (a nearby player's block-position waypoint)"}
             }
           }
         ]

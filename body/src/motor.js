@@ -144,17 +144,24 @@ class Motor {
     while (dist() > legLength) { // legs all the way in, so the last plan is a short one too
       if (opts.signal?.aborted) return { status: 'aborted', remaining: r1(dist()), moved: r1(bot.entity.position.distanceTo(start)), ...out }
       const p = bot.entity.position
-      const d = flat() || 1
-      const lx = p.x + (target.x - p.x) * Math.min(1, legLength / d)
-      const lz = p.z + (target.z - p.z) * Math.min(1, legLength / d)
+      const dy = target.y - p.y
+      // mostly up or down (a shaft to the surface): 3D legs of legLength along the line;
+      // else horizontal legs (GoalNearXZ), the terrain decides the height
+      const vertical = kind !== 'xz' && Math.abs(dy) > flat()
+      const f = Math.min(1, legLength / (vertical ? Math.abs(dy) : (flat() || 1)))
+      const leg = [p.x + (target.x - p.x) * f, p.y + dy * f, p.z + (target.z - p.z) * f]
       const left = opts.timeoutMs !== undefined ? Math.max(1000, opts.timeoutMs - (Date.now() - t0)) : undefined
-      const r = await this._leg({ ...opts, kind: 'nearxz', pos: [lx, p.y, lz], range: 3, timeoutMs: left, onProgress: progress })
+      const before = dist()
+      const r = vertical
+        ? await this._leg({ ...opts, kind: 'near', pos: leg, range: 2, timeoutMs: left, onProgress: progress })
+        : await this._leg({ ...opts, kind: 'nearxz', pos: [leg[0], p.y, leg[2]], range: 3, timeoutMs: left, onProgress: progress })
       out.legs++
       out.recoveries += r.recoveries || 0
       out.tried.push(...(r.tried || []))
       if (r.status !== 'reached') {
         return { ...r, ...out, remaining: r1(dist()), moved: r1(bot.entity.position.distanceTo(start)), leg: out.legs }
       }
+      if (dist() > before - 1) break // a leg that got no closer: plan the real goal from here
     }
     const left = opts.timeoutMs !== undefined ? Math.max(1000, opts.timeoutMs - (Date.now() - t0)) : undefined
     const r = await this._leg({ ...opts, timeoutMs: left })

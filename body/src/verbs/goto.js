@@ -12,7 +12,9 @@
 const { checkArgs, failed, refused, cannotAct } = require('./common')
 
 const LEG = 16
-const MAX_FOLLOW = 512
+const MAX_FOLLOW = 512 // blocks walked in total (the path, not the straight line)
+const MAX_LEGS = 48
+const FLIP = 150 // a bearing change of more than this between legs is a reversal
 const r1 = v => Math.round(v * 10) / 10
 
 async function run (act, args) {
@@ -53,26 +55,58 @@ async function walkTo (act, api, pos, what, range, move) {
   return { status: 'partial', detail: `gave up ${r.remaining} blocks short of ${what} (${why}${because})${tried}`, data }
 }
 
-/** Walk along a player's Locator Bar bearing until they are in sight. */
+/**
+ * Walk along a player's Locator Bar bearing until they are in sight. Gives
+ * up on: the total distance walked (MAX_FOLLOW, the path, not the straight
+ * line from the start), MAX_LEGS legs, the time cap (cfg.followMaxS, default
+ * 3 min), or a bearing that reverses (~180°) on two legs in a row: the player
+ * is above or below, not ahead (horizontal distance ~0), which the bar's
+ * up/down indicator says when it shows one.
+ */
 async function followBearing (act, api, name, move, range) {
-  const start = api.here().pos
-  const walked = () => { const p = api.here().pos; return r1(Math.hypot(p[0] - start[0], p[2] - start[2])) }
+  const maxMs = ((act.cfg && act.cfg.followMaxS) || 180) * 1000
+  const t0 = Date.now()
+  let path = 0; let legs = 0; let flips = 0; let prevAz = null; let vertical = null
+  let prev = api.here().pos
+  const walked = () => r1(path)
+  const data = extra => ({ pos: null, remaining: null, walked: walked(), legs, ...extra })
   for (;;) {
     if (act.signal.aborted) return null
     const t = api.resolveTarget(name)
     if (t && t.kind === 'player') return walkTo(act, api, t.pos, `player ${name}`, range, move)
     if (!t || t.kind !== 'bearing') {
-      return { status: 'partial', detail: `lost ${name}'s bearing after ${walked()} blocks (not in sight, not on the Locator Bar)`, data: { pos: null, remaining: null } }
+      return { status: 'partial', detail: `lost ${name}'s bearing after ${walked()} blocks (not in sight, not on the Locator Bar)`, data: data() }
     }
-    if (walked() >= MAX_FOLLOW) return { status: 'partial', detail: `followed ${name}'s bearing for ${walked()} blocks without seeing them`, data: { pos: null, remaining: null } }
+    if (t.vertical) vertical = t.vertical
+    if (prevAz !== null) {
+      const turn = Math.abs(((t.azimuth - prevAz) % 360 + 540) % 360 - 180)
+      flips = turn > FLIP ? flips + 1 : 0
+    }
+    if (flips >= 2) {
+      const where = vertical === 'above' || vertical === 'below' ? `is ${vertical} you, not ahead`
+        : vertical === 'level' ? 'is close by but not in sight (behind a wall, or in a cave?)' : 'is above or below you, not ahead'
+      return { status: 'partial', detail: `${name} ${where}: bearing flips each leg (horizontal distance ~0)`, data: data({ vertical: vertical || null }) }
+    }
+    if (path >= MAX_FOLLOW || legs >= MAX_LEGS) {
+      return { status: 'partial', detail: `followed ${name}'s bearing for ${walked()} blocks in ${legs} legs without seeing them`, data: data() }
+    }
+    const left = maxMs - (Date.now() - t0)
+    if (left <= 0) {
+      return { status: 'partial', detail: `followed ${name}'s bearing for ${Math.round((Date.now() - t0) / 1000)} s (the time cap): walked ${walked()} blocks in ${legs} legs without seeing them`, data: data() }
+    }
+    prevAz = t.azimuth
+    legs++
     const a = t.azimuth * Math.PI / 180
     const here = api.here().pos
     const next = [here[0] - Math.sin(a) * LEG, here[1], here[2] + Math.cos(a) * LEG]
-    act.progress(`following ${name}'s bearing (${Math.round(t.azimuth)}°), ${walked()} blocks so far`)
-    const r = await api.goto(next, { kind: 'xz', ...move, signal: act.signal })
+    act.progress(`following ${name}'s bearing (${Math.round(t.azimuth)}°${vertical && vertical !== 'level' ? `, ${vertical}` : ''}), ${walked()} blocks so far`)
+    const r = await api.goto(next, { kind: 'xz', ...move, signal: act.signal, timeoutMs: Math.max(1000, left) })
     if (act.signal.aborted) return null
+    const p = api.here().pos
+    path += Math.hypot(p[0] - prev[0], p[1] - prev[1], p[2] - prev[2])
+    prev = p
     if (r.status !== 'reached' && r.moved < 1) {
-      return { status: r.status === 'no_path' ? 'failed' : 'partial', detail: `blocked while following ${name}'s bearing after ${walked()} blocks (${r.status})`, data: { pos: null, remaining: null } }
+      return { status: r.status === 'no_path' ? 'failed' : 'partial', detail: `blocked while following ${name}'s bearing after ${walked()} blocks (${r.status})`, data: data() }
     }
   }
 }
