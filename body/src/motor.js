@@ -332,7 +332,19 @@ class Motor {
     const onAbort = () => { try { bot.stopDigging() } catch {} }
     signal?.addEventListener('abort', onAbort, { once: true })
     try {
-      await bot.dig(block, true, 'raycast')
+      try {
+        await bot.dig(block, true, 'raycast')
+      } catch (err) {
+        // Mineflayer's raycast found no face it can see (bot off-centre, or a
+        // corner in the way). The server only checks reach: dig the face that
+        // points at the eye instead.
+        if (!/not in view/i.test(err.message) || signal?.aborted) throw err
+        const eye = bot.entity.position.offset(0, bot.entity.eyeHeight ?? 1.62, 0)
+        const d = eye.minus(block.position.offset(0.5, 0.5, 0.5))
+        const ax = Math.abs(d.x) >= Math.abs(d.y) && Math.abs(d.x) >= Math.abs(d.z) ? 'x' : Math.abs(d.y) >= Math.abs(d.z) ? 'y' : 'z'
+        const face = new Vec3(ax === 'x' ? Math.sign(d.x) : 0, ax === 'y' ? Math.sign(d.y) : 0, ax === 'z' ? Math.sign(d.z) : 0)
+        await bot.dig(block, true, face)
+      }
       return { ok: true, name: block.name }
     } catch (err) {
       return { ok: false, reason: signal?.aborted ? 'aborted' : err.message }
@@ -387,13 +399,15 @@ class Motor {
     const options = recipes.map(r => {
       const times = Math.ceil(count / r.result.count)
       const missing = {}
+      const uses = {}
       for (const d of r.delta) {
         if (d.count >= 0) continue
         const name = reg.items[d.id]?.name
+        uses[name] = (uses[name] || 0) - d.count * times
         const need = -d.count * times - (inv[name] || 0)
         if (need > 0) missing[name] = need
       }
-      return { requiresTable: !!r.requiresTable, yields: r.result.count, times, missing }
+      return { requiresTable: !!r.requiresTable, yields: r.result.count, times, missing, uses }
     })
     const total = o => Object.values(o.missing).reduce((a, b) => a + b, 0)
     options.sort((a, b) => total(a) - total(b) || a.requiresTable - b.requiresTable)

@@ -18,6 +18,7 @@
 // The view may hold more than a player perceives; this module is the filter.
 //
 // Only what a player could perceive gets out:
+//   surroundings the cells around the bot and what its eyes reach N/E/S/W (surroundings.js)
 //   blocks_seen  notable types, within sight radius, with line of sight
 //   entities     line of sight, no health / AI target / other hidden state
 //   players      visible only; looking_at only if the bot sees that block too
@@ -25,6 +26,7 @@
 
 const { blockVisible, clearTo, lookTarget } = require('./raycast')
 const { bearing, timeOfDay } = require('./perception')
+const { buildSurroundings } = require('./surroundings')
 
 const CONTRACT_VERSION = '0.1'
 
@@ -201,6 +203,7 @@ function buildObs (view, state, options = {}) {
       light: w.light,
       biome: w.biome
     },
+    surroundings: buildSurroundings(view, w.light ?? null),
     blocks_seen,
     entities,
     players,

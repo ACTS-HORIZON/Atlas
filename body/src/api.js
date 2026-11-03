@@ -187,9 +187,12 @@ class VerbApi {
    * The block at pos, only if the bot can see it (same rule as blocks_seen):
    * a face of a solid block is visible, or for air and see-through cells,
    * a sight line from the eyes reaches the cell. Else null.
+   * lean: a direction (north…) to look from the edge of the bot's block, as a
+   * player steps up to a hole and looks down into it (eye moved 0.45 that way).
    */
-  peek (pos) {
-    const s = this.sight()
+  peek (pos, { lean } = {}) {
+    const s = { ...this.sight() }
+    if (lean && DIRS[lean]) s.eye = [s.eye[0] + DIRS[lean][0] * 0.45, s.eye[1], s.eye[2] + DIRS[lean][1] * 0.45]
     const view = { classAt: s.classAt }
     const [x, y, z] = pos
     const cls = s.classAt(x, y, z)
@@ -216,13 +219,19 @@ class VerbApi {
     return this.motor.goto({ pos: [p[0] + 0.5, p[1], p[2] + 0.5], range: 0, signal, stuckMs: 4000, timeoutMs: 8000 })
   }
 
-  /** One block forward and one down (cardinal dir): a staircase step. */
-  stepDown (dir, { signal } = {}) {
-    const p = this.ahead(dir, -1, 1)
+  /** One block forward and `depth` down (cardinal dir): a staircase step, or a short drop. */
+  stepDown (dir, { signal, depth = 1 } = {}) {
+    const p = this.ahead(dir, -depth, 1)
     return this.motor.goto({ pos: [p[0] + 0.5, p[1], p[2] + 0.5], range: 0, dig: false, scaffold: false, signal, stuckMs: 4000, timeoutMs: 8000 })
   }
 
   face (dir) { return this.motor.face(dir) }
+
+  /** Walk back to the centre of the block it stands on. */
+  recenter ({ signal } = {}) {
+    const p = this.motor.here().map(Math.floor)
+    return this.motor.goto({ pos: [p[0] + 0.5, p[1], p[2] + 0.5], range: 0, dig: false, scaffold: false, signal, stuckMs: 3000, timeoutMs: 5000 })
+  }
 
   /** Look left, right and back to the front (the explore pause). */
   async lookAround (signal) {

@@ -1,8 +1,10 @@
 'use strict'
-// explore {direction, distance}: walk that way in legs of 16 blocks, pausing
-// to look around after each, and report what it saw: counts of notable
-// blocks by type (unique positions, from the fair-play obs) and how many new
-// known places that added.
+// explore {direction, distance, dig = true}: walk that way in legs of 16
+// blocks, pausing to look around after each, and report what it saw: counts
+// of notable blocks by type (unique positions, from the fair-play obs) and
+// how many new known places that added. With dig (the default, like goto) the
+// path may tunnel through what is in the way (a hill, a tree); it never
+// places blocks. When it can't go on, the result says what was in front.
 const { checkArgs, failed, cannotAct } = require('./common')
 const { DIRS } = require('../api')
 
@@ -34,6 +36,8 @@ async function run (act, args) {
     const tx = start[0] + ux * goal; const tz = start[2] + uz * goal
     const r = await api.goto([tx, start[1], tz], {
       kind: 'xz',
+      dig: args.dig,
+      scaffold: false,
       signal: act.signal,
       onProgress: () => {
         act.progress(`${dirName}: ${Math.round(walked())}/${args.distance} blocks, ${seen.size} notable blocks seen`)
@@ -43,7 +47,11 @@ async function run (act, args) {
     if (act.signal.aborted) return null
     await api.lookAround(act.signal)
     record()
-    if (r.status !== 'reached') { stopped = r.status === 'no_path' ? 'no way on' : r.status === 'stuck' ? 'blocked' : 'took too long'; break }
+    if (r.status !== 'reached') {
+      const what = inFront(api, dirName, r)
+      stopped = (r.status === 'no_path' ? 'no way on' : r.status === 'stuck' ? 'blocked' : 'took too long') + (what ? ` (${what})` : '')
+      break
+    }
     if (goal >= args.distance) break
   }
   const counts = {}
@@ -56,6 +64,22 @@ async function run (act, args) {
   const data = { direction: dirName, walked: dist, seen: counts, new_places: fresh }
   if (stopped) return { status: 'partial', detail: `walked ${dist} of ${args.distance} blocks ${dirName}, then ${stopped}; saw ${list}; ${fresh} new known places`, data }
   return { status: 'done', detail: `walked ${dist} blocks ${dirName}; saw ${list}; ${fresh} new known places`, data }
+}
+
+/** What stands in front, at feet and head height: "ahead: stone at feet, oak_leaves at head" (only what is seen). */
+function inFront (api, dirName, r) {
+  const [ux, uz] = DIRS[dirName]
+  const card = Math.abs(ux) >= Math.abs(uz) ? (ux > 0 ? 'east' : 'west') : (uz > 0 ? 'south' : 'north')
+  const OPEN = /^(air|cave_air|void_air)$/
+  // the nearest step (1 to 3 blocks on) where something stands at feet or head height
+  for (let n = 1; n <= 3; n++) {
+    const feet = api.peek(api.ahead(card, 0, n)) ?? (n === 1 ? r.why?.front_feet?.name : null) ?? null
+    const head = api.peek(api.ahead(card, 1, n)) ?? (n === 1 ? r.why?.front_head?.name : null) ?? null
+    if ((feet && !OPEN.test(feet)) || (head && !OPEN.test(head))) {
+      return `ahead ${card}${n > 1 ? ` ${n} blocks` : ''}: ${feet || 'unseen'} at feet, ${head || 'unseen'} at head`
+    }
+  }
+  return r.why?.text || null
 }
 
 module.exports = { run, file: __filename }

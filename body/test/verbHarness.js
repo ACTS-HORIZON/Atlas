@@ -35,6 +35,8 @@ function fakeMotor (w, opt = {}) {
     toolFor (name) { return opt.tool ? opt.tool(name) : { ok: true, tool: 'iron_pickaxe' } },
     async dig (pos, o = {}) {
       this.calls.push(['dig', pos, !!o.allowHand])
+      const fail = opt.digFail && opt.digFail(pos, this)
+      if (fail) return { ok: false, reason: fail }
       w.set(pos[0], pos[1], pos[2], 'air')
       return { ok: true, name: 'x' }
     },

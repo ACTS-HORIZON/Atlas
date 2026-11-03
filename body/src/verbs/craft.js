@@ -9,24 +9,47 @@ const { checkArgs, failed, cannotAct } = require('./common')
 
 const TABLE_RADIUS = 48
 
-/** "3 oak_planks" or "2 planks (any kind)" / "3 of cobblestone, blackstone or cobbled_deepslate". */
-function describeMissing (options) {
-  const total = o => Object.values(o.missing).reduce((a, b) => a + b, 0)
-  const best = total(options[0])
-  const tied = options.filter(o => total(o) === best)
-  // group the tied options' missing ingredients by amount and position
+/**
+ * "3 oak_log", "2 planks (any kind)", "3 of cobblestone, blackstone or
+ * cobbled_deepslate". An ingredient any of several items fills (a tag:
+ * planks, logs, wool…) is never named as one variant, and counts what a fresh
+ * variant needs. hintFor(alternatives) may add what the inventory can make
+ * them from: "2 planks (any kind) — you have spruce_log 3: craft spruce_planks".
+ */
+function describeMissing (options, hintFor = null, hints = null) {
+  const best = options[0]
+  const shape = Object.keys(best.missing).length
+  const same = options.filter(o => Object.keys(o.missing).length === shape)
   const lines = []
-  const first = Object.entries(tied[0].missing)
-  for (let i = 0; i < first.length; i++) {
-    const [name, n] = first[i]
-    const alts = new Set(tied.map(o => Object.entries(o.missing)[i]?.[0]).filter(Boolean))
-    if (alts.size <= 1) { lines.push(`${n} ${name}`); continue }
-    const names = [...alts]
+  Object.entries(best.missing).forEach(([name, n], i) => {
+    const at = o => Object.entries(o.missing)[i]
+    let names = [...new Set(same.map(o => at(o)?.[0]).filter(Boolean))]
+    // a family (…_planks) beats odd ones out (bamboo also makes sticks): keep the family with this one
+    const tail = name.split('_').at(-1)
+    const family = names.filter(x => x.split('_').at(-1) === tail)
+    if (family.length > 1) names = family
+    if (names.length <= 1) { lines.push(`${n} ${name}`); return }
+    const amount = Math.max(...same.filter(o => names.includes(at(o)?.[0])).map(o => at(o)[1]))
     const suffix = commonSuffix(names)
-    if (suffix) lines.push(`${n} ${suffix.replace(/^_/, '')} (any kind)`)
-    else lines.push(`${n} of ${names.slice(0, -1).join(', ')} or ${names.at(-1)}`)
-  }
+    let text = suffix ? `${amount} ${suffix.replace(/^_/, '')} (any kind)` : `${amount} of ${names.slice(0, -1).join(', ')} or ${names.at(-1)}`
+    const hint = hintFor && hintFor(names)
+    if (hint && hints) hints.push(hint)
+    else if (hint) text += ` — ${hint}`
+    lines.push(text)
+  })
   return lines.join(', ')
+}
+
+/** "you have spruce_log 3: craft spruce_planks" when the inventory makes one of the alternatives now. */
+function inventoryHint (api, names) {
+  const inv = api.inventory ? api.inventory() : {}
+  for (const v of names) {
+    const ready = (api.craftPlan(v, 1).options || []).filter(o => !Object.keys(o.missing).length && o.uses)
+    ready.sort((a, b) => a.requiresTable - b.requiresTable)
+    const src = ready.length && Object.keys(ready[0].uses).sort((a, b) => (inv[b] || 0) - (inv[a] || 0))[0]
+    if (src) return `you have ${src} ${inv[src] || 0}: craft ${v}`
+  }
+  return null
 }
 
 function commonSuffix (names) {
@@ -51,7 +74,11 @@ async function run (act, args) {
   const plan = api.craftPlan(item, count)
   if (!plan.options.length) return failed(`craft: ${item} has no crafting recipe`)
   const ready = plan.options.filter(o => !Object.keys(o.missing).length)
-  if (!ready.length) return failed(`craft: missing ${describeMissing(plan.options)} for ${count} ${item}`)
+  if (!ready.length) {
+    const hints = []
+    const missing = describeMissing(plan.options, names => inventoryHint(api, names), hints)
+    return failed(`craft: missing ${missing} for ${count} ${item}${hints.length ? ` — ${hints.join('; ')}` : ''}`)
+  }
   const noTable = ready.find(o => !o.requiresTable)
   let tablePos = null
   if (!noTable) {

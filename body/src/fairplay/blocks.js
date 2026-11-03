@@ -58,8 +58,9 @@ const NON_COLLIDING_FALLBACK = [
 /**
  * @param {string} name block name without namespace
  * @param {string} [boundingBox] 'block' | 'empty' if the backend knows it
- * @returns {{name:string, opaque:boolean, fluid:boolean, notable:boolean}}
- *   opaque = blocks a sight line.
+ * @returns {{name:string, opaque:boolean, fluid:boolean, solid:boolean, notable:boolean}}
+ *   opaque = blocks a sight line; solid = has a collision box (you stand on it,
+ *   it walls you in; glass and leaves are solid, grass and water are not).
  */
 function classify (name, boundingBox) {
   const fluid = FLUIDS.has(name)
@@ -71,7 +72,13 @@ function classify (name, boundingBox) {
   else if (boundingBox === 'empty') opaque = false
   else if (boundingBox === 'block') opaque = true
   else opaque = !NON_COLLIDING_FALLBACK.some(re => re.test(name))
-  return { name, opaque, fluid, notable: isNotable(name) }
+  let solid
+  if (AIR.has(name) || fluid) solid = false
+  else if (SEE_THROUGH_PATTERNS.some(re => re.test(name))) solid = true
+  else if (boundingBox === 'empty') solid = false
+  else if (boundingBox === 'block') solid = true
+  else solid = !NON_COLLIDING_FALLBACK.some(re => re.test(name))
+  return { name, opaque, fluid, solid, notable: isNotable(name) }
 }
 
 module.exports = { classify, isNotable, AIR }

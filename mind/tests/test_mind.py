@@ -13,7 +13,7 @@ from atlas_mind.config import ROOT, Config
 from atlas_mind.llm import FakeLLM
 from atlas_mind.loop import Mind
 from atlas_mind.notes import Notes
-from atlas_mind.render import render_obs
+from atlas_mind.render import render_obs, render_surroundings
 from atlas_mind.replay import replay
 
 
@@ -150,8 +150,49 @@ class MindTest(MindHarness, unittest.IsolatedAsyncioTestCase):
         await until(lambda: len(self.body.calls()) >= 3)
         self.assertEqual([c["verb"] for c in self.body.calls()[:3]], ["say", "mine", "craft"], "the failed mine was not sent again")
         retry = self.llm.prompts[3][-1]["content"]
-        self.assertIn("just failed with: " + fail, retry)
-        self.assertIn("LAST FAILED CALL: mine", self.prompt_text(2))
+        self.assertIn("failed recently: " + fail, retry)
+        self.assertIn("FAILED RECENTLY (don't repeat): ", self.prompt_text(2))
+        self.assertIn('mine {"block":"iron_ore","count":3} -> mine: iron_ore needs one of', self.prompt_text(2))
+
+    async def test_a_failed_call_is_refused_for_the_next_10_recent_lines_not_only_right_after(self):
+        await self.start([
+            {"thinking": "Go.", "action": "call", "verb": "goto", "args": {"pos": [9, 64, 9]}},
+            {"thinking": "Look elsewhere.", "action": "call", "verb": "recall", "args": {"type": "iron_ore"}},
+            {"thinking": "Walk a bit.", "action": "call", "verb": "explore", "args": {"direction": "north", "distance": 16}},
+            {"thinking": "Plan it.", "action": "plan", "steps": [{"verb": "craft", "args": {"item": "stick"}}, {"verb": "goto", "args": {"pos": [9, 64, 9]}}]},
+            {"thinking": "Back to the spot.", "action": "call", "verb": "goto", "args": {"pos": [9, 64, 9]}},
+            {"thinking": "Mine instead.", "action": "call", "verb": "mine", "args": {"block": "stone"}},
+        ], respond=lambda c: ("partial", STUCK, None) if c["verb"] == "goto" else ("done", "ok", None))
+        logs = []
+        self.mind.log = logs.append
+        self.mind.wake("go")
+        await until(lambda: len(self.body.calls()) >= 4)
+        self.assertEqual([c["verb"] for c in self.body.calls()[:4]], ["goto", "recall", "explore", "mine"],
+                         "the stuck goto was refused two calls later, and as a later plan step")
+        self.assertIn('plan step 2 (goto {"pos":[9,64,9]}) failed recently', self.llm.prompts[4][-1]["content"])
+        self.assertTrue(any('that exact call (goto {"pos":[9,64,9]}) failed recently' in str(x) for x in logs))
+        # 10 RECENT lines later it may be tried again
+        f = self.mind.failures[0]
+        self.mind.recent.n = f["at"] + 10
+        self.assertIsNone(self.mind.failed_recently("goto", {"pos": [9, 64, 9]}))
+
+    async def test_hints_expire_after_5_turns_or_when_the_target_changes(self):
+        await self.start([{"thinking": "w", "action": "wait"}])
+        m = self.mind
+        m.failures = [{"verb": "goto", "args": '{"target":"ACTS_HORIZON"}', "detail": "stuck", "at": m.recent.n, "turn": m.turns,
+                       "stall": True, "target": "goto ACTS_HORIZON"},
+                      {"verb": "mine", "args": '{"block":"iron_ore"}', "detail": "no iron_ore in view", "at": m.recent.n, "turn": m.turns,
+                       "stall": False, "target": "mine iron_ore"}]
+        self.assertEqual(len(m.recent_failures()), 2)
+        m.last_call_target["goto"] = "goto [40, 64, 0]"  # a goto elsewhere: the route hint toward the player is gone
+        self.assertEqual([f["verb"] for f in m.recent_failures()], ["mine"])
+        m.turns += 5
+        self.assertEqual(m.recent_failures(), [], "5 turns later")
+        m.lookup = {"query": "q", "text": "x", "titles": [], "ids": [], "turn": m.turns}
+        m.turns += 5
+        self.assertTrue(m.hint_alive(m.lookup))
+        m.turns += 1
+        self.assertFalse(m.hint_alive(m.lookup))
 
     async def test_ask_player_round_trip(self):
         await self.start([
@@ -369,7 +410,7 @@ class MindTest(MindHarness, unittest.IsolatedAsyncioTestCase):
         await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "come here"})
         await until(lambda: len(self.body.calls()) >= 3)
         self.assertEqual([c["verb"] for c in self.body.calls()[:3]], ["say", "goto", "dig"], "the stuck goto was not sent again")
-        self.assertIn("just failed with: gave up 13.3 blocks short", self.llm.prompts[3][-1]["content"])
+        self.assertIn("failed recently: gave up 13.3 blocks short", self.llm.prompts[3][-1]["content"])
 
     async def test_repeated_say_is_dropped(self):
         logs = []
@@ -755,3 +796,48 @@ class JournalTest(unittest.TestCase):
         self.assertNotEqual(approach_key("mine", {"block": "iron_ore"}, here), approach_key("mine", {"block": "iron_ore", "y": 16}, here))
         self.assertNotEqual(approach_key("goto", {"pos": [9, 64, 9]}, here), approach_key("goto", {"pos": [9, 64, 9], "dig": False}, here))
         self.assertEqual(fine_key("mine", {"block": "x", "count": 3}), fine_key("mine", {"block": "x", "count": 9}))
+
+
+SHAFT = {"summary": "in a 1-wide shaft 5 deep, stone all sides, open above", "feet": "air", "head": "air",
+         "below": "stone", "above": "air", "sides": {"north": ["stone 1", "stone 1"], "east": ["stone 1", "stone 1"],
+                                                     "south": ["stone 1", "dirt 1"], "west": [None, None]},
+         "drops": {"north": None, "east": None, "south": None, "west": 2}, "sky": True, "roof": None, "light": 15}
+
+
+class EyesTest(unittest.TestCase):
+    def test_inventory_and_surroundings_near_the_top(self):
+        with tempfile.TemporaryDirectory() as d:
+            m = Mind(Config(notes_file=Path(d) / "n.md", verb_reference=ROOT / "docs" / "verbs.md", wiki_index=Path(d) / "none.json"),
+                     FakeLLM([]), log=lambda *_: None)
+            o = make_obs(inventory={"spruce_log": 3, "cobblestone": 9})
+            o["surroundings"] = SHAFT
+            m.set_obs(o)
+            p = m.messages("look around")[1]["content"]
+        top = p.split("TASKS")[0]
+        self.assertTrue(top.startswith("WOKE BECAUSE: look around\n\nINVENTORY: cobblestone 9, spruce_log 3\nSURROUNDINGS: "))
+        self.assertIn("SURROUNDINGS: in a 1-wide shaft 5 deep, stone all sides, open above\n"
+                      "  feet air, head air, below stone, above air; N stone 1 (feet+head); E stone 1 (feet+head); S stone 1/dirt 1; W open; "
+                      "drops W 2; open sky, light 15", top)
+        self.assertNotIn("inventory:", p, "inventory is shown once, at the top")
+        self.assertLess(p.index("SURROUNDINGS"), p.index("blocks seen"))
+        self.assertLess(len(render_surroundings(o)) / 4, 120)
+        self.assertIn("Before crafting or asking, check INVENTORY and SURROUNDINGS; you often already have the item.", m.system)
+
+
+class DumpTest(MindHarness, unittest.IsolatedAsyncioTestCase):
+    async def test_context_dump_writes_what_the_model_saw(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        await self.start(["not json", {"thinking": "ok", "action": "wait"}, {"thinking": "ok", "action": "wait"}],
+                         dump_context=True, dump_dir=Path(d.name) / "context")
+        self.mind.wake("look around")
+        await until(lambda: len(self.llm.prompts) >= 2)
+        await asyncio.sleep(0.05)
+        f = Path(d.name) / "context" / "100.txt"
+        text = f.read_text()
+        self.assertTrue(text.startswith("===== SYSTEM =====\nYou are Atlas"))
+        self.assertIn("===== USER =====\nWOKE BECAUSE: look around\n\nINVENTORY: empty", text)
+        self.assertIn("===== ASSISTANT =====\nnot json", text)
+        self.assertIn("That reply was not usable", text, "a retry is appended to its turn's file")
+        self.assertEqual(text.split("===== USER =====\n", 1)[1].split("\n\n===== ASSISTANT", 1)[0], self.llm.prompts[0][1]["content"],
+                         "the exact user text")

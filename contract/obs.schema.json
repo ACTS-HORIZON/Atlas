@@ -8,6 +8,7 @@
   "additionalProperties": false,
   "$defs": {
     "vec3": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+    "side": {"type": "array", "items": {"type": ["string", "null"]}, "minItems": 2, "maxItems": 2, "description": "[feet level, head level]: first solid block (or fluid) and its distance, e.g. \"stone 1\"; null = open within 8 or not seen"},
     "ivec3": {"type": "array", "items": {"type": "integer"}, "minItems": 3, "maxItems": 3},
     "bearing": {"enum": ["front", "front-right", "right", "behind-right", "behind", "behind-left", "left", "front-left", "above", "below"]}
   },
@@ -45,6 +46,23 @@
         "weather": {"enum": ["clear", "rain", "thunder"]},
         "light": {"type": ["integer", "null"], "minimum": 0, "maximum": 15},
         "biome": {"type": ["string", "null"]}
+      }
+    },
+    "surroundings": {
+      "type": "object",
+      "description": "The cells around the bot and what its eyes reach along N/E/S/W (line of sight only), with one derived sentence.",
+      "required": ["summary", "feet", "head", "below", "above", "sides", "drops", "sky", "roof", "light"],
+      "additionalProperties": false,
+      "properties": {
+        "summary": {"type": "string"},
+        "feet": {"type": ["string", "null"]}, "head": {"type": ["string", "null"]},
+        "below": {"type": ["string", "null"]}, "above": {"type": ["string", "null"]},
+        "sides": {"type": "object", "additionalProperties": false,
+          "properties": {"north": {"$ref": "#/$defs/side"}, "east": {"$ref": "#/$defs/side"}, "south": {"$ref": "#/$defs/side"}, "west": {"$ref": "#/$defs/side"}}},
+        "drops": {"type": "object", "additionalProperties": {"type": ["integer", "null"]}},
+        "sky": {"type": "boolean"},
+        "roof": {"type": ["integer", "null"]},
+        "light": {"type": ["integer", "null"], "minimum": 0, "maximum": 15}
       }
     },
     "blocks_seen": {

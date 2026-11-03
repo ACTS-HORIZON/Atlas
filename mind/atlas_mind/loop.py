@@ -52,6 +52,7 @@ import json
 import re
 import time
 from collections import deque
+from pathlib import Path
 
 from . import CONTRACT_VERSION, wiki
 from .actions import ActionError, parse
@@ -59,15 +60,29 @@ from .config import Config
 from .llm import LLMError
 from .notes import Notes
 from .prompt import context, load_verb_reference, system_prompt
-from .render import history_line, render_obs
-from .tasks import OPEN, TaskList, fine_key, place_cell
+from .render import history_line, render_inventory, render_obs, render_surroundings
+from .tasks import OPEN, TaskList, fine_key, one_line, place_cell
 
 V = CONTRACT_VERSION
 QUIET_VERBS = {"say", "recall", "stop"}  # their results don't wake a turn
 MAX_FOLLOW_UPS = 3
 MAX_ERROR_RETRIES = 3
 MAX_LOOKUPS_IN_ROW = 2
-LOOKUP_TURNS = 3  # a lookup's answer stays in the context this many turns
+HINT_TURNS = 5  # LOOKUP and other hints expire after this many turns (stall hints also when the target changes)
+FAILED_WINDOW = 10  # a call that failed within the last 10 RECENT lines is not sent again
+
+
+class Recent(deque):
+    """The RECENT lines; n counts every line ever added, so "within the last
+    10 lines" can be checked after older ones have rolled off."""
+
+    def __init__(self, maxlen: int):
+        super().__init__(maxlen=maxlen)
+        self.n = 0
+
+    def append(self, line) -> None:
+        self.n += 1
+        super().append(line)
 NOISE_RE = re.compile(r"\[[^\]]*\]|-?\b\d+(\.\d+)?\b|\bm\d+\b")  # coordinates, numbers, call ids
 SAY_REPEAT_WINDOW_S = 60  # a say matching one of the last 3 says within this window is dropped
 STUCK_RE = re.compile(r"\b(stuck|gave up)\b")  # a partial with this in its detail counts as failed
@@ -78,6 +93,17 @@ def norm_say(text: str) -> str:
 
 
 PLAN_NEXT = "\x00plan-next"  # internal wake: run the next plan step, no model call
+
+
+def target_of(verb: str, args) -> str | None:
+    """What a call is after (block, item, player, target or position), for "the target changed"."""
+    a = args or {}
+    tgt = a.get("block") or a.get("item") or a.get("target") or a.get("player")
+    if isinstance(tgt, str):
+        return f"{verb} {tgt}"
+    if isinstance(a.get("pos"), list):
+        return f"{verb} [" + ", ".join(str(round(v)) for v in a["pos"]) + "]"
+    return None
 
 
 def canon(args) -> str:
@@ -116,11 +142,11 @@ class Mind:
         self.verbs = verbs_in_reference(ref)
         self.system = system_prompt(cfg.bot_name, ref, cfg.retreat_health)
         self.obs: dict | None = None
-        self.recent: deque[str] = deque(maxlen=cfg.history)
+        self.recent: Recent = Recent(cfg.history)
         self.pending: dict[str, dict] = {}
         self.wakes: asyncio.Queue[str] = asyncio.Queue()
         self.asking: dict | None = None
-        self.last_failed: tuple[str, str, str] | None = None
+        self.failures: list[dict] = []  # {verb, args (canonical), detail, at (RECENT line number), turn, stall, target}
         self.low_health = False
         self.decisions: list[dict] = []
         self.turns = 0
@@ -138,6 +164,7 @@ class Mind:
         self.token_total = 0
         self.reasoning_turns = 0
         self.says: deque = deque(maxlen=3)  # (normalised text, time) of the last says sent
+        self.last_call_target: dict[str, str] = {}  # verb -> target of its latest call
         self.call_meta: dict[str, tuple] = {}  # call id -> (task id, place cell when sent)
         self.retriever = retriever if retriever is not None else wiki.load_retriever(cfg.wiki_index)
         if self.retriever is None:
@@ -182,7 +209,11 @@ class Mind:
             if task and call["verb"] not in QUIET_VERBS and m["detail"] != "busy":
                 self.tasks.result(task, call["verb"], call.get("args"), place, m["status"], m.get("detail") or "", failed)
             if failed and m["detail"] != "busy":
-                self.last_failed = (call["verb"], canon(call.get("args")), m["detail"])
+                key = (call["verb"], canon(call.get("args")))
+                self.failures = [f for f in self.failures if (f["verb"], f["args"]) != key]
+                self.failures.append({"verb": key[0], "args": key[1], "detail": m["detail"], "at": self.recent.n,
+                                      "turn": self.turns, "stall": stalled or bool(STUCK_RE.search(m.get("detail") or "")),
+                                      "target": target_of(call["verb"], call.get("args"))})
                 self.last_failure = m["detail"]
             elif m["status"] == "done" and call["verb"] not in QUIET_VERBS:
                 self.last_failure = None
@@ -264,6 +295,28 @@ class Mind:
         return self.dirty or self.tasks.version != self.turn_tasks or fingerprint(self.obs) != self.turn_fp
 
     # ---- thinking -------------------------------------------------------------
+    # ---- failures and hints -------------------------------------------------------
+    def recent_failures(self) -> list[dict]:
+        """Failed calls still in force: within the last FAILED_WINDOW RECENT lines and
+        HINT_TURNS turns. A stuck/gave-up one also ends when a later call of the same
+        verb goes after a different target (the route changed)."""
+        out = []
+        for f in self.failures:
+            if self.recent.n - f["at"] >= FAILED_WINDOW or self.turns - f["turn"] >= HINT_TURNS:
+                continue
+            if f["stall"] and f["target"] and self.last_call_target.get(f["verb"]) not in (None, f["target"]):
+                continue
+            out.append(f)
+        self.failures = out
+        return out
+
+    def failed_recently(self, verb: str, args) -> dict | None:
+        key = (verb, canon(args))
+        return next((f for f in self.recent_failures() if (f["verb"], f["args"]) == key), None)
+
+    def hint_alive(self, h: dict | None) -> bool:
+        return bool(h) and self.turns - h["turn"] <= HINT_TURNS
+
     # ---- knowledge --------------------------------------------------------------
     def rag_query(self) -> str:
         """What to retrieve for: the open tasks' text, the last failure, the current verb target."""
@@ -287,8 +340,7 @@ class Mind:
     async def knowledge(self) -> str:
         """This turn's KNOWLEDGE (and LOOKUP) blocks; a rag trace when there is knowledge."""
         out, shown = "", ()
-        if self.lookup and self.lookup["turns"] > 0:
-            self.lookup["turns"] -= 1
+        if self.lookup and self.turns > self.lookup["turn"] and self.hint_alive(self.lookup):
             shown = self.lookup["ids"]  # not repeated under KNOWLEDGE
             out += f'LOOKUP "{self.lookup["query"]}" (from the wiki; use it over your memory)\n{self.lookup["text"]}\n\n'
         q = self.rag_query()
@@ -307,7 +359,7 @@ class Mind:
             hits = self.retriever.search(q, self.cfg.rag_k)
             pairs = wiki.excerpts(hits, q, self.cfg.lookup_tokens)
             text, titles, ids = (wiki.render(pairs) or "(nothing found)"), [h.title for h, _ in pairs], [h.id for h, _ in pairs]
-        self.lookup = {"query": q, "text": text, "titles": titles, "ids": ids, "turns": LOOKUP_TURNS}
+        self.lookup = {"query": q, "text": text, "titles": titles, "ids": ids, "turn": self.turns}
         self.recent.append(f'you looked up "{q}": ' + ("; ".join(titles) if titles else "nothing found"))
         await self.send({"type": "trace", "v": V, "t": (self.obs or {}).get("t", 0), "kind": "rag", "text": q,
                          "data": {"query": q, "titles": titles, "tokens": wiki.tokens(text), "lookup": True}})
@@ -316,9 +368,12 @@ class Mind:
         extra = ""
         if self.asking:
             extra = f"\nWAITING for {self.asking['player']} to answer: {self.asking['text']}\n"
-        if self.last_failed:
-            extra += f"\nLAST FAILED CALL: {self.last_failed[0]} {self.last_failed[1]} -> {self.last_failed[2]}\n"
-        user = context(self.tasks.render(), render_obs(self.obs), list(self.recent), self.notes.render(), wake, extra, knowledge)
+        fails = self.recent_failures()
+        if fails:
+            extra += "\nFAILED RECENTLY (don't repeat): " + "; ".join(
+                f"{f['verb']} {f['args']} -> {one_line(f['detail'], 90)}" for f in fails[-4:]) + "\n"
+        user = context(self.tasks.render(), render_obs(self.obs, inventory=False), list(self.recent), self.notes.render(), wake, extra,
+                       knowledge, render_inventory(self.obs), render_surroundings(self.obs) if self.obs else "")
         return [{"role": "system", "content": self.system}, {"role": "user", "content": user}]
 
     def resolve_task_ref(self, value: str):
@@ -375,9 +430,9 @@ class Mind:
     def check(self, raw: str) -> dict:
         a = parse(raw, self.verbs)
         self.resolve_refs(a)
-        if a["action"] == "call" and self.last_failed and (a["verb"], canon(a["args"])) == self.last_failed[:2]:
-            raise ActionError(f"that exact call ({a['verb']} {canon(a['args'])}) just failed with: {self.last_failed[2]}. "
-                              "Choose a different action that deals with the reason.")
+        if a["action"] == "call" and (f := self.failed_recently(a["verb"], a["args"])):
+            raise ActionError(f"that exact call ({a['verb']} {canon(a['args'])}) failed recently: {f['detail']}. "
+                              "Don't repeat it: choose a different action that deals with the reason.")
         t = self.task_for(a)
         if t and a["action"] == "call" and t.last_failed == fine_key(a["verb"], a["args"]):
             raise ActionError(f"{a['verb']} {canon(a['args'])} just failed for {t.id} (see its journal). After a failure the next "
@@ -401,14 +456,41 @@ class Mind:
                 raise ActionError(f'you just looked up "{a["query"]}"; the answer is under LOOKUP. Act on it.')
         if a["action"] == "plan":
             first = a["steps"][0]
-            if (self.last_failed and (first["verb"], canon(first["args"])) == self.last_failed[:2]) or \
-                    (t and t.last_failed == fine_key(first["verb"], first["args"])):
-                why = f": {self.last_failed[2]}" if self.last_failed else ""
-                raise ActionError(f"the plan starts with the call that just failed ({first['verb']}){why}. "
+            for i, st in enumerate(a["steps"], 1):
+                f = self.failed_recently(st["verb"], st["args"])
+                if f:
+                    raise ActionError(f"plan step {i} ({st['verb']} {canon(st['args'])}) failed recently: {f['detail']}. "
+                                      "Plan around the reason instead: a different verb, target or method.")
+            if t and t.last_failed == fine_key(first["verb"], first["args"]):
+                raise ActionError(f"the plan starts with the call that just failed for {t.id} ({first['verb']}). "
                                   "Plan around the reason instead: a different verb, target or method.")
             if t and t.state == "new" and any(st["verb"] not in QUIET_VERBS for st in a["steps"]):
                 raise ActionError(f"{t.id} is new: confirm it in chat first (a say with \"about\": \"{t.id}\"), then plan the work.")
         return a
+
+    def dump_context(self, msgs: list[dict], path: Path | None = None) -> Path | None:
+        """ATLAS_MIND_DUMP_CONTEXT=1: the exact text the model gets, one file per turn,
+        logs/context/<tick>.txt (-2, -3… when a tick has several turns); a retry is
+        appended to its turn's file."""
+        if not self.cfg.dump_context:
+            return None
+        try:
+            if path is None:
+                d = Path(self.cfg.dump_dir)
+                d.mkdir(parents=True, exist_ok=True)
+                tick = (self.obs or {}).get("t", 0)
+                path = d / f"{tick}.txt"
+                n = 1
+                while path.exists():
+                    n += 1
+                    path = d / f"{tick}-{n}.txt"
+            text = "".join(f"===== {m['role'].upper()} =====\n{m['content']}\n\n" for m in msgs)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(text)
+            return path
+        except OSError as e:
+            self.log(f"[mind] could not write the context dump: {e}")
+            return None
 
     def unusable(self, attempt: str, err: Exception, raw) -> None:
         finish = getattr(raw, "finish_reason", None)
@@ -418,6 +500,7 @@ class Mind:
     async def decide(self, wake: str) -> dict:
         msgs = self.messages(wake, await self.knowledge())
         self.last_prompt = msgs
+        dump = self.dump_context(msgs)
         self.replies = []
         try:
             raw = await self.llm.complete(msgs)
@@ -431,6 +514,7 @@ class Mind:
             self.unusable("first try", e, raw)
             retry = msgs + [{"role": "assistant", "content": str(raw)},
                             {"role": "user", "content": f"That reply was not usable: {e} Reply again with exactly one valid JSON object."}]
+            self.dump_context(retry[-2:], dump)
             raw2 = ""
             try:
                 raw2 = await self.llm.complete(retry)
@@ -521,8 +605,8 @@ class Mind:
             self.tasks.sent(task, verb, args, place)
         msg = {"type": "call", "v": V, "id": cid, "verb": verb, "args": args}
         self.pending[cid] = msg
-        if (verb, canon(args)) != (self.last_failed or (None, None))[:2]:
-            self.last_failed = None
+        if verb not in QUIET_VERBS and target_of(verb, args):
+            self.last_call_target[verb] = target_of(verb, args)
         self.recent.append(history_line("call", msg))
         await self.send(msg)
         return cid

@@ -14,6 +14,17 @@ const HOSTILE_FALLBACK = new Set([
   'creaking', 'wither', 'ender_dragon'
 ])
 
+/** How much the sky's light is dimmed now: 0 by day, 11 at night (sky light 4), ramps at dusk and dawn; rain 3, thunder 5 more. */
+function skyDarkness (timeOfDay, raining, thundering) {
+  const t = ((Number(timeOfDay) % 24000) + 24000) % 24000
+  let d
+  if (t < 12000) d = 0
+  else if (t < 13800) d = Math.round(11 * (t - 12000) / 1800)
+  else if (t < 22200) d = 11
+  else d = Math.round(11 * (24000 - t) / 1800)
+  return Math.min(11, d + (thundering ? 5 : raining ? 3 : 0))
+}
+
 const deg = r => r * 180 / Math.PI
 const norm180 = d => { d = ((d % 360) + 360) % 360; return d > 180 ? d - 360 : d }
 /** Mineflayer yaw/pitch (radians, yaw 0 = north, pitch + = up) -> unit look vector. */
@@ -161,6 +172,73 @@ class MineflayerView {
     return Math.min(this.maxSight, chunks * 16)
   }
 
+  /**
+   * Light the bot stands in (0-15) and the biome name at a block.
+   * Light: max(block light, sky light - how dark the sky is now), the way the
+   * game combines them. Chunk light data is used where the server sent it;
+   * sky light is also 15 wherever nothing solid is overhead (overworld), so a
+   * missing or empty light section can't read as 0 at noon; block light with
+   * no data is estimated from light-emitting blocks within 8 (no occlusion).
+   * Biome: the chunk's biome id, named through the registry (prismarine-block's
+   * own biome objects come back nameless on 26.1).
+   */
+  lightAndBiome (x, y, z) {
+    const bot = this.bot
+    const col = this.column(x >> 4, z >> 4)
+    if (!col) return { light: null, biome: null }
+    const local = { x: x & 15, y, z: z & 15 }
+    const minY = bot.game.minY ?? -64
+    const idx = Math.floor((y - minY) / 16) + 1
+    const has = (mask, empty) => !!((mask && mask.get && mask.get(idx)) || (empty && empty.get && empty.get(idx)))
+    let sky = 0; let block = null
+    try { if (has(col.skyLightMask, col.emptySkyLightMask)) sky = col.getSkyLight(local) } catch {}
+    try { if (has(col.blockLightMask, col.emptyBlockLightMask)) block = col.getBlockLight(local) } catch {}
+    const overworld = String(bot.game.dimension || '').replace('minecraft:', '') === 'overworld'
+    if (overworld && sky < 15 && this.openToSky(x, y, z)) sky = 15
+    if (block === null) block = this.estimateBlockLight(x, y, z)
+    const light = Math.max(block, overworld ? Math.max(0, sky - skyDarkness(bot.time?.timeOfDay ?? 0, bot.isRaining, bot.thunderState > 0)) : 0)
+    let biome = null
+    try {
+      const id = col.getBiome(local)
+      biome = bot.registry.biomes?.[id]?.name ?? null
+    } catch {}
+    return { light: Math.min(15, light), biome }
+  }
+
+  /** Nothing solid between this block and the top of the world. */
+  openToSky (x, y, z) {
+    const top = (this.bot.game.minY ?? -64) + (this.bot.game.height ?? 384)
+    for (let yy = y + 1; yy < top; yy++) {
+      const c = this.classAt(x, yy, z)
+      if (c === null) return false
+      if (c.opaque || (c.solid && !/glass|ice/.test(c.name))) return false
+    }
+    return true
+  }
+
+  /** Brightest emitter within 8 blocks, minus its taxicab distance. */
+  estimateBlockLight (x, y, z) {
+    const reg = this.bot.registry
+    if (!this.emitByState) this.emitByState = []
+    let best = 0
+    for (let dx = -8; dx <= 8; dx++) {
+      for (let dz = -8; dz <= 8; dz++) {
+        const col = this.column((x + dx) >> 4, (z + dz) >> 4)
+        if (!col) continue
+        for (let dy = -8; dy <= 8; dy++) {
+          const d = Math.abs(dx) + Math.abs(dy) + Math.abs(dz)
+          if (d > 14) continue
+          let id
+          try { id = col.getBlockStateId({ x: (x + dx) & 15, y: y + dy, z: (z + dz) & 15 }) } catch { continue }
+          let e = this.emitByState[id]
+          if (e === undefined) { e = reg.blocksByStateId[id]?.emitLight || 0; this.emitByState[id] = e }
+          if (e - d > best) best = e - d
+        }
+      }
+    }
+    return best
+  }
+
   isHostile (name) {
     const e = this.bot.registry.entitiesByName[name]
     return (e && e.category === 'Hostile mobs') || HOSTILE_FALLBACK.has(name)
@@ -199,7 +277,8 @@ class MineflayerView {
       const r = bot.registry.effects[ef.id]
       return r ? snake(r.name) : String(ef.id)
     })
-    const feet = bot.blockAt(p.floored())
+    const fx = Math.floor(p.x); const fy = Math.floor(p.y); const fz = Math.floor(p.z)
+    const here = this.lightAndBiome(fx, fy, fz)
     return {
       t: Number(bot.time.age) || 0,
       sightRadius: this.sightRadius(),
@@ -229,8 +308,8 @@ class MineflayerView {
         dayTime: bot.time.timeOfDay ?? 0,
         raining: !!bot.isRaining,
         thundering: bot.thunderState > 0,
-        light: feet ? Math.max(feet.light ?? 0, feet.skyLight ?? 0) : null,
-        biome: feet && feet.biome ? feet.biome.name ?? null : null
+        light: here.light,
+        biome: here.biome
       },
       bossBar: extra.bossBar ?? null,
       chat: extra.chat ?? [],
@@ -277,4 +356,4 @@ function clientViewChunks (bot) {
   return { far: 12, normal: 10, short: 8, tiny: 2 }[v] ?? 10
 }
 
-module.exports = { MineflayerView, lookVector, norm180, decode }
+module.exports = { skyDarkness, MineflayerView, lookVector, norm180, decode }

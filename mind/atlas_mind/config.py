@@ -50,6 +50,8 @@ class Config:
     rag_k: int = 3
     rag_tokens: int = 600
     lookup_tokens: int = 900
+    dump_context: bool = False
+    dump_dir: Path = field(default_factory=lambda: ROOT / "logs" / "context")
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Config":
@@ -82,4 +84,6 @@ class Config:
             rag_k=int(g("ATLAS_RAG_K", cls.rag_k)),
             rag_tokens=int(g("ATLAS_RAG_TOKENS", cls.rag_tokens)),
             lookup_tokens=int(g("ATLAS_LOOKUP_TOKENS", cls.lookup_tokens)),
+            dump_context=g("ATLAS_MIND_DUMP_CONTEXT", "0") in ("1", "true", "yes", "on"),
+            dump_dir=path("ATLAS_MIND_DUMP_DIR", "logs/context"),
         )

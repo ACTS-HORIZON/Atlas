@@ -9,7 +9,36 @@ def _v(p) -> str:
     return "(" + ", ".join(f"{x:g}" if isinstance(x, (int, float)) else str(x) for x in p) + ")"
 
 
-def render_obs(o: dict | None) -> str:
+ABBR = {"north": "N", "east": "E", "south": "S", "west": "W"}
+
+
+def render_inventory(o: dict | None) -> str:
+    """One line: INVENTORY: cobblestone 41, oak_log 6 (or empty)."""
+    inv = (o or {}).get("inventory") or {}
+    return "INVENTORY: " + (", ".join(f"{k} {v}" for k, v in sorted(inv.items())) if inv else "empty")
+
+
+def render_surroundings(o: dict | None) -> str:
+    """SURROUNDINGS: the derived sentence, then the cells and the four directions (feet/head) in one line."""
+    s = (o or {}).get("surroundings")
+    if not s:
+        return "SURROUNDINGS: (not reported)"
+    sides = []
+    for d, (feet, head) in (s.get("sides") or {}).items():
+        if feet is None and head is None:
+            sides.append(f"{ABBR.get(d, d)} open")
+        elif feet == head:
+            sides.append(f"{ABBR.get(d, d)} {feet} (feet+head)")
+        else:
+            sides.append(f"{ABBR.get(d, d)} {feet or 'open'}/{head or 'open'}")
+    drops = [f"{ABBR.get(d, d)} {n}" for d, n in (s.get("drops") or {}).items() if n]
+    sky = "open sky" if s.get("sky") else (f"roof {s['roof']} up" if s.get("roof") is not None else "no sky")
+    return (f"SURROUNDINGS: {s.get('summary', '')}\n"
+            f"  feet {s.get('feet')}, head {s.get('head')}, below {s.get('below')}, above {s.get('above')}; "
+            + "; ".join(sides) + (f"; drops {', '.join(drops)}" if drops else "") + f"; {sky}, light {s.get('light')}")
+
+
+def render_obs(o: dict | None, inventory: bool = True) -> str:
     if not o:
         return "(no observation yet: not in game)"
     s, w = o["self"], o["world"]
@@ -21,8 +50,9 @@ def render_obs(o: dict | None) -> str:
         + (", in water" if s["in_water"] else ""),
         f"world: {w['time']}, {w['weather']}, light {w['light']}, biome {w['biome']}",
     ]
-    inv = o.get("inventory") or {}
-    lines.append("inventory: " + (", ".join(f"{k} {v}" for k, v in sorted(inv.items())) if inv else "empty"))
+    if inventory:
+        inv = o.get("inventory") or {}
+        lines.append("inventory: " + (", ".join(f"{k} {v}" for k, v in sorted(inv.items())) if inv else "empty"))
     # blocks: grouped by type, nearest of each with count
     groups: dict[str, list] = {}
     for b in o.get("blocks_seen") or []:

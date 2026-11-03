@@ -20,6 +20,8 @@ data/      known places file (gitignored)
   - Sight: glass, ice and water are transparent; leaves and lava block sight. The radius is `sight_radius` (`ATLAS_SIGHT_RADIUS`, default 64), never more than the server's or the bot's render distance.
   - `entities` and `players`: only those in line of sight. No hidden state. A player's `looking_at` is filled only when the bot can see that block too.
   - `sounds`: type, bearing and near/mid/far only.
+  - `surroundings`: the close-range view, from blocks in line of sight only: feet/head/below/above, the first solid block (and distance, up to 8) N/E/S/W at feet and head height, the floor drop one step each way (judged from the edge of its block, as a player leans over), open sky, light, and one sentence ("in a 1-wide shaft 5 deep, stone all sides, open above", "on a slope, drop of 6 to the south").
+  - `world.light`: the light the bot stands in, as the game combines it: block light, or sky light dimmed for the time of day and weather. Chunk light data where the server sent it; sky light is also 15 under open sky in the overworld (so a missing light section can't read 0 at noon); block light with no data is estimated from light sources within 8 blocks. `world.biome`: named from the chunk's biome id through the registry.
 - **Known places** (`body/src/places.js`): every notable block that has appeared in `blocks_seen` is remembered with position, dimension and last-seen game tick, saved at most every 10 s and on shutdown, and reloaded on start. The file is named after the configured server, `data/known-places.<host>_<port>.json` (e.g. `data/known-places.localhost_25565.json`), so the dev world and the co-op server never share one; `ATLAS_PLACES_FILE` overrides the name. The name comes from `ATLAS_MC_HOST` as written, so `localhost` and `127.0.0.1` give two files for the same server: pick one spelling and keep it. Nothing else can enter it. An entry is dropped when Atlas can see the spot again and the block is gone. `recall {type, near?}` returns the nearest one as `data: {type, pos, dist, age}`, or `failed` with detail `unknown`.
 - **Chat:** only players on `ATLAS_PLAYERS` are listened to.
   - `@Atlas stop` and `@Atlas status` are handled by the body itself, so they work even with the mind busy or down. So is the house-rules chest grant, `@Atlas that chest is yours` (said while looking at the chest).
@@ -195,6 +197,7 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
   - **Follow-up turns:** a turn that only talked (say, note, done) while a task is open gets one follow-up turn to carry on, at most 3 in a row without new input.
 - **Builds the context:**
   - a **system prompt**: who Atlas is, fair play, house rules, no fighting, trust the wiki over memory, and the output format, plus `docs/verbs.md` loaded from the repo at start, so it is never stale;
+  - right under WOKE BECAUSE, **INVENTORY** (one line) and **SURROUNDINGS** (`obs.surroundings`: the sentence, then feet/head/below/above, what is N/E/S/W at feet and head height, drops, sky and light; under 120 tokens);
   - the **task list**;
   - the **latest obs**, rendered compactly (a few hundred tokens, not raw JSON);
   - the **last 15** calls, results and events;
@@ -207,7 +210,7 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
   - **`note`**: `{text}`, appended to `data/notes.md`.
   - **`done`**: `{closes}`
   - **`wait`**
-  - **`lookup`**: `{query, about?}` searches the wiki. The answer (≤ 900 tokens) is shown as `LOOKUP "<query>"` in the next turn, which follows at once, and for 2 turns after. Traced as kind `rag` with `data.lookup: true`.
+  - **`lookup`**: `{query, about?}` searches the wiki. The answer (≤ 900 tokens) is shown as `LOOKUP "<query>"` in the next turn, which follows at once, and expires after 5 turns. Traced as kind `rag` with `data.lookup: true`.
   - **`plan`**: `{steps: [{verb, args}, …], about?}`, up to 6 calls with one `thinking`.
     - **How it runs:** the steps run one at a time without asking the model again. Each step's result is logged as usual.
     - **When it stops:** the mind thinks again only when a step's result isn't `done`, an event arrives (held until the current step ends, then the plan stops), or the plan finishes.
@@ -236,7 +239,8 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
   - **Never invisible:** any `reasoning_content` that comes back is added to the decision trace's `data.reasoning` (first 800 characters).
   - **Warning:** if reasoning arrives while thinking is off, `mind.out` warns that the server ignored the setting.
   - **Through another proxy:** llama-swap passes the request body through unchanged. Through LiteLLM, check that it forwards `chat_template_kwargs` (the warning will say if not).
-- **No repeating a failure:** the exact call that just failed or was refused is not sent again; the model is told so and asked once more.
+- **No repeating a failure:** a call (same verb and args) that failed, was refused, or came back stuck/gave-up is not sent again while it is within the last 10 RECENT lines (and 5 turns), as a single call or as any step of a plan. The model is told so and asked once more. The context shows them in one line, `FAILED RECENTLY (don't repeat): goto {"pos":[9,64,9]} -> gave up …; mine {"block":"iron_ore"} -> …`. A stuck goto's entry also ends when a later goto heads for a different target.
+- **Hints expire:** LOOKUP and the FAILED RECENTLY entries expire after 5 turns; the route-type ones (stuck/gave up) also when the target changes. The Session 4 `ROUTE` hint itself was folded into the task journal in 5b.
 - **Lookups:** at most 2 in a row, and never the same query twice in a row; the model is told to act on what it found.
 - **No fighting:** the prompt forbids it (there are no combat verbs). When health falls below `ATLAS_RETREAT_HEALTH` (6), the mind is woken with "health is low", and may retreat with `goto`.
 
@@ -262,6 +266,8 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
 | `ATLAS_RAG_K` | `3` | excerpts per turn and per lookup |
 | `ATLAS_RAG_TOKENS` | `600` | KNOWLEDGE budget per turn |
 | `ATLAS_LOOKUP_TOKENS` | `900` | budget for a lookup's answer |
+| `ATLAS_MIND_DUMP_CONTEXT` | `0` | `1` writes the exact system and user text of every turn to `logs/context/<tick>.txt` (`-2`, `-3`… for more turns in one tick; a retry is appended to its turn's file) |
+| `ATLAS_MIND_DUMP_DIR` | `logs/context` | where the dumps go |
 
 **Tokens and turns.** After every turn, `mind.out` gets a line like:
 
@@ -289,6 +295,10 @@ It is about 4,300 tokens, most of it the verb reference. Each turn adds a contex
 ```
 WOKE BECAUSE: new task t1 from ACTS_HORIZON: get me 3 iron ingots
 
+INVENTORY: empty
+SURROUNDINGS: on open flat ground
+  feet air, head air, below grass_block, above air; N open; E open; S open; W oak_log 6 (feet+head); open sky, light 15
+
 TASKS
 t1 [new] from ACTS_HORIZON: get me 3 iron ingots
 
@@ -296,7 +306,6 @@ OBSERVATION
 t=2410 survival in overworld at (0.5, 64, 0.5), facing yaw 0
 health 20/20, food 20/20, xp 0, holding nothing
 world: day, clear, light 15, biome plains
-inventory: empty
 blocks seen: oak_log x2 (nearest (12, 64, -3) 11.2m); water x1 (nearest (-6, 62, 9) 11.4m)
 entities: sheep 7.2m front-left
 player ACTS_HORIZON 3.9m at (3.4, 64, -2.1), looking at (3, 63, -1)

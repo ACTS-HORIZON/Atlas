@@ -68,6 +68,7 @@ How you play:
   from the danger; nothing more.
 - Ore to ingots: mine it, then smelt it in a furnace (craft one from 8 cobblestone and place it if none is near).
 - Use note for things worth remembering across sessions (where things are, what worked).
+- Before crafting or asking, check INVENTORY and SURROUNDINGS; you often already have the item.
 - Facts about the game: trust KNOWLEDGE and LOOKUP (the wiki) over your memory when they disagree.
 
 {OUTPUT_FORMAT}
@@ -83,12 +84,15 @@ def load_verb_reference(path: Path) -> str:
         return "(verb reference not found)"
 
 
-def context(tasks: str, obs: str, recent: list[str], notes: str, wake: str, extra: str = "", knowledge: str = "") -> str:
+def context(tasks: str, obs: str, recent: list[str], notes: str, wake: str, extra: str = "", knowledge: str = "",
+            inventory: str = "", surroundings: str = "") -> str:
     recent_text = "\n".join(recent) if recent else "(nothing yet)"
     if knowledge:
         knowledge = "\n" + knowledge.strip("\n") + "\n"
+    top = "\n".join(x for x in (inventory, surroundings) if x)
+    top = f"\n{top}\n" if top else ""
     return f"""WOKE BECAUSE: {wake}
-
+{top}
 TASKS
 {tasks}
 

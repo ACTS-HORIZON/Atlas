@@ -149,10 +149,14 @@ test('craft plans against the real 26.1 recipes: precise "missing" reasons', () 
   assert.equal(describeMissing(m.craftPlan('oak_planks', 8).options), '2 oak_log')
   assert.equal(describeMissing(m.craftPlan('stone_pickaxe', 1).options), '3 of cobbled_deepslate, blackstone or cobblestone, 2 stick')
   m = craftMotor({ oak_planks: 1 })
-  assert.equal(describeMissing(m.craftPlan('crafting_table', 1).options), '3 oak_planks', 'counts what it has')
+  assert.equal(describeMissing(m.craftPlan('crafting_table', 1).options), '4 planks (any kind)', 'never one variant when any works')
+  m = craftMotor({ spruce_log: 3 })
+  const hint = names => { for (const v of names) { const o = m.craftPlan(v, 1).options.find(o => !Object.keys(o.missing).length); if (o) return `you have ${Object.keys(o.uses)[0]} 3: craft ${v}` } return null }
+  assert.equal(describeMissing(m.craftPlan('stick', 4).options, hint), '2 planks (any kind) — you have spruce_log 3: craft spruce_planks')
+  assert.equal(describeMissing(m.craftPlan('oak_planks', 4).options, hint), '1 oak_log', 'a named item stays named')
   m = craftMotor({ oak_planks: 3, stick: 2 })
   const p = m.craftPlan('wooden_pickaxe', 1)
-  assert.deepEqual(p.options[0], { requiresTable: true, yields: 1, times: 1, missing: {} })
+  assert.deepEqual(p.options[0], { requiresTable: true, yields: 1, times: 1, missing: {}, uses: { oak_planks: 3, stick: 2 } })
   assert.deepEqual(craftMotor({}).craftPlan('not_an_item', 1), { known: false, options: [] })
 })
 
@@ -230,4 +234,16 @@ test('equip, dig, eat: precise failures, otherwise done', async () => {
   s = setup(world(), { food: 12, foods: [{ name: 'bread', count: 2, harmful: false }], inv: { bread: 2 } })
   assert.deepEqual(await run('eat', s.act, {}), { status: 'done', detail: 'ate bread; food 12 → 17', data: { item: 'bread', food_before: 12, food_after: 17 } })
   assert.deepEqual(await run('eat', s.act, { item: 'stone' }), { status: 'failed', detail: 'eat: stone is not food' })
+})
+
+test('craft: a missing tag ingredient is "any kind", with what the inventory makes it from', async () => {
+  const opt = (missing, uses) => ({ requiresTable: false, yields: 4, times: 1, missing, uses })
+  const craftPlan = item => {
+    if (item === 'stick') return { known: true, options: [opt({ oak_planks: 2 }, { oak_planks: 2 }), opt({ spruce_planks: 2 }, { spruce_planks: 2 }), opt({ birch_planks: 2 }, { birch_planks: 2 })] }
+    if (item === 'spruce_planks') return { known: true, options: [opt({}, { spruce_log: 1 })] }
+    return { known: true, options: [opt({ [item.replace('planks', 'log')]: 1 }, {})] }
+  }
+  const s = setup(world(), { craftPlan, inv: { spruce_log: 3 } })
+  const r = await run('craft', s.act, { item: 'stick', count: 4 })
+  assert.deepEqual(r, { status: 'failed', detail: 'craft: missing 2 planks (any kind) for 4 stick — you have spruce_log 3: craft spruce_planks' })
 })

@@ -118,8 +118,18 @@ async function pickUpNearby (api, signal) {
   }
 }
 
-/** Open one cell in front at dy, re-digging gravel/sand that falls in. A reason string when it has to stop. */
+const BRIDGE = ['cobblestone', 'cobbled_deepslate', 'dirt', 'netherrack', 'stone', 'andesite', 'diorite', 'granite', 'tuff', 'deepslate', 'blackstone']
+const MAX_FALL = 3
+
+/**
+ * Open one cell in front at dy, re-digging gravel/sand that falls in. A
+ * reason string when it has to stop. A dig the game says it can't see
+ * ("Block not in view": the bot is off-centre or turned) is retried after
+ * facing the way again and re-centring; if it still fails, the reason is
+ * "blocked: …" and the tunnel turns instead of stopping.
+ */
 async function clearAhead (act, api, dir, dy) {
+  let unseen = 0
   for (let tries = 0; ; tries++) {
     const name = api.peek(api.ahead(dir, dy))
     if (name === null || OPEN.has(name)) return null
@@ -127,9 +137,48 @@ async function clearAhead (act, api, dir, dy) {
     if (tries >= 8) return `${name} keeps falling in`
     const r = await api.digAhead(dir, dy, { signal: act.signal })
     if (act.signal.aborted) return 'stopped'
+    if (!r.ok && /not in view/i.test(r.reason || '')) {
+      if (++unseen > 2) return `blocked: could not get a clear look at the ${name} ahead`
+      await api.face(dir)
+      await api.recenter({ signal: act.signal })
+      continue
+    }
     if (!r.ok) return r.reason
     await sleep(200)
   }
+}
+
+/**
+ * The floor of the next step (at ahead(dir, floorDy)): 'ok', a fall
+ * {fall: n} to take, or {stop: reason}. A hole is bridged with a block from
+ * the inventory when there is one (cobblestone, dirt…); else, if the drop is
+ * 3 or less, the bot steps down into it; deeper, it stops. extra = blocks
+ * already dropped by the step itself (1 on the staircase).
+ */
+async function floorAhead (act, api, dir, floorDy, extra = 0) {
+  const name = api.peek(api.ahead(dir, floorDy))
+  if (name !== null && !OPEN.has(name) && !FLUIDS.has(name)) return 'ok'
+  if (FLUIDS.has(name)) return { stop: `${name} under the next step` }
+  const inv = api.inventory()
+  const mat = BRIDGE.find(m => inv[m] > 0)
+  if (mat) {
+    const r = await api.place(mat, api.ahead(dir, floorDy))
+    if (act.signal.aborted) return { stop: 'stopped' }
+    if (r.ok) return 'ok'
+  }
+  // how deep: air below the step, as far as it can be seen
+  let depth = 0
+  for (let k = 0; k <= MAX_FALL + 1; k++) {
+    const c = api.peek(api.ahead(dir, floorDy - k), { lean: dir })
+    if (c === null) { depth = null; break }
+    if (FLUIDS.has(c)) return { stop: `${c} ${k + 1} below the next step` }
+    if (!OPEN.has(c)) break
+    depth++
+  }
+  const nothing = mat ? '' : '; nothing to bridge it with'
+  if (depth === null) return { stop: `a drop under the next step (can't see the bottom${nothing})` }
+  if (depth + extra > MAX_FALL) return { stop: `a drop of ${depth + extra}${depth > MAX_FALL ? '+' : ''} under the next step${mat ? '' : ' (nothing to bridge it with)'}` }
+  return { fall: depth }
 }
 
 /**
@@ -153,16 +202,16 @@ async function staircase (act, api, block, radius, skip, y, strip, progress) {
       if (act.signal.aborted) return 'stopped'
       if (why) return stop(why)
     }
-    // the next step's floor, seen through the opened cell: solid ground only
-    const floor = api.peek(api.ahead(dir, -2))
-    if (floor === null || OPEN.has(floor)) return stop(floor ? `a drop under the next step (${floor})` : 'a drop under the next step')
-    if (FLUIDS.has(floor)) return stop(`${floor} under the next step`)
-    if (floor === 'bedrock' && at - 2 <= minY) return stop('bedrock')
+    // the next step's floor, seen through the opened cell: solid ground, a
+    // bridged hole, or a short fall (3 at most, the step included)
+    const floor = await floorAhead(act, api, dir, -2, 1)
+    if (act.signal.aborted) return 'stopped'
+    if (floor.stop) return stop(floor.stop)
     for (const [dy, n] of [[-1, 2], [0, 2], [-2, 1]]) { // lava one block further on, or seeping in
       const beyond = api.peek(api.ahead(dir, dy, n))
       if (beyond === 'lava') return stop('lava ahead')
     }
-    const s = await api.stepDown(dir, { signal: act.signal })
+    const s = await api.stepDown(dir, { signal: act.signal, depth: 1 + (floor.fall || 0) })
     if (act.signal.aborted) return 'stopped'
     if (s.status !== 'reached') return stop('could not step down')
     strip.stairs++
@@ -180,26 +229,37 @@ async function stripMine (act, api, block, radius, skip, strip, progress) {
   const length = cfg.stripLength || 24
   const max = cfg.stripMax || 256
   let dir = api.facing()
-  let leg = 'long'; let side = 'right'; let sinceTurn = 0
+  let leg = 'long'; let side = 'right'; let sinceTurn = 0; let turnsBlocked = 0
   await api.face(dir)
   while (strip.dug < max) {
     if (act.signal.aborted) return 'stopped'
     if (api.seenBlocks(block, radius).some(t => !skip.has(t.pos.join(',')))) return 'found'
 
     // clear the head block, then the feet block (gravel above falls into the gap: dig again)
+    let blocked = null
     for (const dy of [1, 0]) {
       const why = await clearAhead(act, api, dir, dy)
       if (act.signal.aborted) return 'stopped'
+      if (why && /^blocked: /.test(why)) { blocked = why; break }
       if (why) { strip.stopped = why; return 'stopped' }
     }
-    // what the opened cell shows: no stepping into a hole, lava or water
-    const floor = api.peek(api.ahead(dir, -1))
-    if (floor === null || OPEN.has(floor) || FLUIDS.has(floor)) { strip.stopped = floor ? `${floor} under the next step` : 'drop ahead'; return 'stopped' }
+    if (blocked) { // re-plan: tunnel on in the next direction instead
+      if (++turnsBlocked >= 4) { strip.stopped = blocked; return 'stopped' }
+      dir = RIGHT[dir]; sinceTurn = 0
+      await api.face(dir)
+      progress(`${blocked}; turning ${dir}`)
+      continue
+    }
+    turnsBlocked = 0
+    // the opened cell's floor: a hole is bridged or stepped down into (3 at most); lava and water stop it
+    const floor = await floorAhead(act, api, dir, -1)
+    if (act.signal.aborted) return 'stopped'
+    if (floor.stop) { strip.stopped = floor.stop; return 'stopped' }
     for (const dy of [0, 1]) {
       const beyond = api.peek(api.ahead(dir, dy, 2))
       if (beyond === 'lava') { strip.stopped = 'lava ahead'; return 'stopped' }
     }
-    const s = await api.step(dir, { signal: act.signal })
+    const s = floor.fall ? await api.stepDown(dir, { signal: act.signal, depth: floor.fall }) : await api.step(dir, { signal: act.signal })
     if (act.signal.aborted) return 'stopped'
     if (s.status !== 'reached') { strip.stopped = 'could not step forward'; return 'stopped' }
     strip.dug++

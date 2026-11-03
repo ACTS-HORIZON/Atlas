@@ -216,7 +216,19 @@ test('explore: walks in legs, reports what it saw and new known places', async (
   const p = await run('explore', s.act, { direction: 'forward', distance: 30 })
   assert.equal(p.status, 'partial')
   assert.equal(p.data.direction, 'south', 'forward = the way the bot faces')
-  assert.match(p.detail, /then blocked/)
+  assert.match(p.detail, /then blocked; saw/)
+})
+
+test('explore: dig defaults on (it tunnels through what is in front, never places); "no way on" names what blocked it', async () => {
+  const w = world().box([-31, 10, 2], [31, 11, 2], 'stone').set(0, 11, 2, 'oak_leaves')
+  let s = setup(w, { goto: () => ({ status: 'no_path', remaining: 10, moved: 0 }) })
+  const r = await run('explore', s.act, { direction: 'south', distance: 20 })
+  const g = s.motor.calls.find(c => c[0] === 'goto')[1]
+  assert.deepEqual([g.dig, g.scaffold], [true, false])
+  assert.match(r.detail, /^walked 0 of 20 blocks south, then no way on \(ahead south 2 blocks: stone at feet, oak_leaves at head\); saw/)
+  s = setup(world(), { walk: true })
+  await run('explore', s.act, { direction: 'north', distance: 5, dig: false })
+  assert.equal(s.motor.calls.find(c => c[0] === 'goto')[1].dig, false)
 })
 
 test('runner: long verbs are the task with progress, others are busy, stop interrupts', async () => {

@@ -26,7 +26,8 @@ const SCHEMAS = {
     additionalProperties: false,
     properties: {
       direction: { enum: ['north', 'south', 'east', 'west', 'north-east', 'north-west', 'south-east', 'south-west', 'forward'] },
-      distance: { type: 'integer', minimum: 1, maximum: 512 }
+      distance: { type: 'integer', minimum: 1, maximum: 512 },
+      dig: { type: 'boolean', default: true }
     }
   },
   mine: {

@@ -60,14 +60,15 @@ The nearest known place of `type` in this dimension. `near` defaults to the bot'
   - `refused`: `fair play: <target> has not been observed …`
 - **Who is on the Locator Bar:** whoever the server sends a waypoint for (the 26.1 `tracked_waypoint` packet); the game decides, and the body adds no rules of its own. These rules were not checked against minecraft.wiki: the site was unreachable from the build environment.
 
-### explore {direction, distance}
+### explore {direction, distance, dig = true}
 - **`direction`:** north, south, east, west, north-east, north-west, south-east, south-west, or forward (the way the bot faces).
 - **`distance`:** 1–512.
-- **What it does:** walks in 16-block legs, never digging or placing, and looks left and right after each leg.
+- **`dig`:** as goto: the path may tunnel through what is in front (a hill, a tree). It never places blocks. `dig: false` walks only.
+- **What it does:** walks in 16-block legs and looks left and right after each leg.
 - **Progress:** `<dir>: <n>/<distance> blocks, <k> notable blocks seen`.
 - **Results:**
   - `done`: `walked <n> blocks <dir>; saw <type> <count>, …; <k> new known places`
-  - `partial`: `… then blocked|no way on|took too long`
+  - `partial`: `… then blocked|no way on|took too long`, with what stood in front when it saw it: `(ahead south 2 blocks: stone at feet, oak_leaves at head)`
   - Both carry `data: {direction, walked, seen: {type: count}, new_places}`.
 
 ### mine {block, count = 1, radius = 32, y?}
@@ -80,11 +81,13 @@ The nearest known place of `type` in this dimension. `near` defaults to the bot'
 - **Strip-mining, ores only (`*_ore`, ancient_debris) when none is in view at the start:**
   - **Tunnel:** a 1×2 tunnel straight ahead at the current y, in a serpentine: `ATLAS_STRIP_LENGTH` straight (default 24), turn, 3 across, turn, back.
   - **Targets on the way:** the target type is mined as soon as it comes into view.
-  - **Stops:** at visible lava or water ahead, a hole under the next step, gravel that keeps falling, or `ATLAS_STRIP_MAX` tunnel blocks (default 256).
+  - **A hole under the next step:** bridged with a block from the inventory (cobblestone, cobbled_deepslate, dirt, netherrack, stone, andesite, diorite, granite, tuff, deepslate, blackstone); with none, it steps down into it if the drop is 3 or less and tunnels on from there.
+  - **Stops:** at visible lava or water ahead or under the next step, a drop deeper than 3 it can't bridge (`a drop of <n> under the next step (nothing to bridge it with)`), gravel that keeps falling, or `ATLAS_STRIP_MAX` tunnel blocks (default 256).
+  - **A block it can't get a clear look at** (the game's "Block not in view"): it faces the way again, re-centres and retries; if that keeps failing, the tunnel turns right and carries on (`blocked: could not get a clear look at the <block> ahead; turning <dir>`), stopping only after 4 such turns in a row.
   - **Tools:** tunnel blocks are dug by hand if there is no tool.
 - **`y` (ores): go to that level first.** When the strip-mine starts, it digs a 1-wide staircase (2 high) straight ahead down to `y`, then tunnels at `y` as above. With `y`, the strip-mine also starts once the ores in view are mined.
-  - **Each step:** clear the three blocks in front (head+1, head, feet−1), check that the floor which opened up is solid, then step down. It never digs the block under its own feet and never steps onto air, water or lava.
-  - **Stops with the reason:** water or lava in front, lava one block further on, a drop under the next step, or the bottom of the world: `staircase at y <n> stopped: <reason>`.
+  - **Each step:** clear the three blocks in front (head+1, head, feet−1), check the floor which opened up, then step down. It never digs the block under its own feet and never steps onto water or lava. A hole under the step is bridged or dropped into as in the tunnel (3 at most, the step included).
+  - **Stops with the reason:** water or lava in front, lava one block further on, a deeper drop it can't bridge, or the bottom of the world: `staircase at y <n> stopped: <reason>`.
   - **Down only:** at or below `y` already, it tunnels where it is.
   - **Picking `y`:** see the ore table below; e.g. `mine {block: "iron_ore", count: 3, y: 16}`.
 - **Progress:** `<mined>/<count> <block>[, tunnel <n>]: going to|digging [x, y, z]|tunnelling <dir>`.
@@ -132,7 +135,7 @@ Walks onto visible drops of `item` until none are left in sight. This is how it 
 - **Results:**
   - `done`: `crafted <n> <item>[ at the crafting_table at [x, y, z]]`, `data: {item, crafted, table}`
   - `failed`:
-    - `craft: missing <what> for <count> <item>`. `<what>` lists what the cheapest recipe still needs, e.g. `3 oak_planks`, `2 planks (any kind)`, or `3 of cobbled_deepslate, blackstone or cobblestone, 2 stick`.
+    - `craft: missing <what> for <count> <item>[ — <hint>]`. `<what>` lists what the cheapest recipe still needs, e.g. `1 oak_log`, `2 planks (any kind)`, or `3 of cobbled_deepslate, blackstone or cobblestone, 2 stick`. An ingredient any variant fills (planks, logs, wool…) is never named as one variant. The hint says what the inventory can make it from: `— you have spruce_log 3: craft spruce_planks`.
     - `craft: <item> needs crafting_table nearby (none seen or known within 48 blocks)`
     - `craft: <item> has no crafting recipe` (smelting is not crafting)
     - `craft: could not reach the crafting_table at …`
