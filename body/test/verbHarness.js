@@ -28,7 +28,7 @@ function fakeMotor (w, opt = {}) {
       if (r === 'never') {
         return new Promise(resolve => o.signal.addEventListener('abort', () => resolve({ status: 'aborted', remaining: 5, moved: 0 }), { once: true }))
       }
-      if (r.status === 'reached' && o.kind !== 'look' && opt.walk) this.pos = [o.pos[0], this.pos[1], o.pos[2]]
+      if (r.status === 'reached' && o.kind !== 'look' && opt.walk) this.pos = [o.pos[0], opt.walk === '3d' ? o.pos[1] : this.pos[1], o.pos[2]]
       return Promise.resolve(r)
     },
     stop () { this.calls.push(['stop']) },

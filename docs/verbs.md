@@ -70,11 +70,11 @@ The nearest known place of `type` in this dimension. `near` defaults to the bot'
   - `partial`: `… then blocked|no way on|took too long`
   - Both carry `data: {direction, walked, seen: {type: count}, new_places}`.
 
-### mine {block, count = 1, radius = 32}
+### mine {block, count = 1, radius = 32, y?}
 - **Blocks, not items:** mine takes block names; items come from blocks (cobblestone ← stone, raw_iron ← iron_ore, coal ← coal_ore, dirt ← grass_block). Asking for an item fails with the block to mine instead.
 - **Cobblestone needs no furnace:** mining stone gives cobblestone; smelting cobblestone gives stone (the reverse).
 - **Finding stone:** stone is usually under 1–4 blocks of dirt/grass, or exposed on hillsides and in caves. If none is in view, dig down a few blocks (`mine dirt`, `dig`) or into a slope rather than exploring the surface.
-- **Limits:** `count` 1–512, `radius` 1–128.
+- **Limits:** `count` 1–512, `radius` 1–128, `y` −64–320.
 - **Targets:** notable types (ores, logs, …) come from `blocks_seen` and known places within `radius`. Any type, stone included, also counts when visible in the terrain around the bot, looked for up to 24 blocks out.
 - **For each target, nearest first:** walk until a face is in reach (the path may dig and pillar), dig it with the best tool, then pick up drops within 4 blocks.
 - **Strip-mining, ores only (`*_ore`, ancient_debris) when none is in view at the start:**
@@ -82,13 +82,33 @@ The nearest known place of `type` in this dimension. `near` defaults to the bot'
   - **Targets on the way:** the target type is mined as soon as it comes into view.
   - **Stops:** at visible lava or water ahead, a hole under the next step, gravel that keeps falling, or `ATLAS_STRIP_MAX` tunnel blocks (default 256).
   - **Tools:** tunnel blocks are dug by hand if there is no tool.
+- **`y` (ores): go to that level first.** When the strip-mine starts, it digs a 1-wide staircase (2 high) straight ahead down to `y`, then tunnels at `y` as above. With `y`, the strip-mine also starts once the ores in view are mined.
+  - **Each step:** clear the three blocks in front (head+1, head, feet−1), check that the floor which opened up is solid, then step down. It never digs the block under its own feet and never steps onto air, water or lava.
+  - **Stops with the reason:** water or lava in front, lava one block further on, a drop under the next step, or the bottom of the world: `staircase at y <n> stopped: <reason>`.
+  - **Down only:** at or below `y` already, it tunnels where it is.
+  - **Picking `y`:** see the ore table below; e.g. `mine {block: "iron_ore", count: 3, y: 16}`.
 - **Progress:** `<mined>/<count> <block>[, tunnel <n>]: going to|digging [x, y, z]|tunnelling <dir>`.
 - **Results:**
   - `done`: `mined <n> <block>`
-  - `partial`: `mined <n> of <count> <block>; none left in view within <r> blocks` or `…; strip-mining stopped: <reason>`. When targets in protected regions were skipped, it adds `; <k> inside protected regions left alone`.
+  - `partial`: `mined <n> of <count> <block>; none left in view within <r> blocks`, `…; strip-mining stopped: <reason>` or `…; staircase at y <n> stopped: <reason>`. When targets in protected regions were skipped, it adds `; <k> inside protected regions left alone`.
   - `failed`: `mine: <block> needs one of: <tools>; none in inventory` (checked before moving); `mine: no <block> in view within <r> blocks` (a type other than ore), plus `; <block> the item drops from <blocks>. Use mine <block>` when other blocks drop it; `mine: <item> is an item, not a block; it drops from <blocks>. Use mine <block>`; for crafted things (stick, planks, crafting_table) `… is crafted from <ingredients>. Use craft <item>`; `mine: unknown block <x>`; `mine: box is not supported yet`; `mine: cannot dig in adventure mode`.
   - `refused`: every target in view is protected: `house rules: …; no other <block> in view`.
-  - `done` and `partial` carry `data: {block, mined, requested, tunnel}`.
+  - `done` and `partial` carry `data: {block, mined, requested, tunnel}`, plus `{y, stairs, at_y}` when `y` was given.
+
+**Where ores generate** (overworld, Java 1.18+; "peak" is the most common level). Not yet checked against the fetched wiki: verify with `scripts/wiki_index.py --check-ores` on atlas and fix this table if they differ.
+
+| Ore | Levels | Peak | Also |
+|---|---|---|---|
+| coal_ore | 0 … 192 | 96 | 136 … 320 on high terrain |
+| copper_ore | −16 … 112 | 48 | more in dripstone caves |
+| iron_ore | −24 … 56 | 16 | mountains above 80 (peak 232); small veins −64 … 72 |
+| gold_ore | −64 … 32 | −16 | badlands 32 … 256 |
+| redstone_ore | −64 … 15 | lowest levels | |
+| lapis_ore | −64 … 64 | 0 | |
+| diamond_ore | −64 … 16 | −59 | rarely exposed to air |
+| emerald_ore | mountains only | 232 | −16 … 320 |
+
+Below y 0 ores are the `deepslate_*` variant (same drops, slower to mine). Strip-mine where the peak is: iron at y 16, diamonds near y −59 (watch for lava below y −54).
 
 ### dig {pos}
 Digs one observed block: one visible now, or a known place. It walks within reach first (the path may dig and pillar) and digs with the best tool, or by hand if it has none.

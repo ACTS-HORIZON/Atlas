@@ -30,6 +30,9 @@ class ParseTest(unittest.TestCase):
         self.assertEqual((m["verb"], m["args"]), ("mine", {"block": "iron_ore", "count": 8}))
         self.assertEqual(parse_command("mine coal_ore 3 16", nid)["args"], {"block": "coal_ore", "count": 3, "radius": 16})
         self.assertTrue(parse_command("mine coal_ore lots", nid).startswith("usage"))
+        self.assertEqual(parse_command("mine iron_ore 3 y=16", nid)["args"], {"block": "iron_ore", "count": 3, "y": 16})
+        self.assertEqual(parse_command("mine diamond_ore 2 48 y=-59", nid)["args"], {"block": "diamond_ore", "count": 2, "radius": 48, "y": -59})
+        self.assertTrue(parse_command("mine iron_ore 3 y=deep", nid).startswith("usage"))
         self.assertEqual(parse_command("collect oak_log", nid)["args"], {"item": "oak_log"})
         self.assertTrue(parse_command("collect", nid).startswith("usage"))
 

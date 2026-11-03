@@ -1,5 +1,5 @@
 'use strict'
-// mine {block, count = 1, radius = 32}
+// mine {block, count = 1, radius = 32, y?}
 //
 // Only blocks it has seen are targets: notable types from blocks_seen and
 // known places, and any type (stone, dirt, gravel, sand, logs…) visible in
@@ -15,6 +15,13 @@
 // back), mining any target that comes into view, until count or stop.
 // A common type not in view fails ("no stone in view"); moving is the mind's
 // decision.
+//
+// y (ores): the level to strip-mine at. Before tunnelling it digs a 1-wide
+// staircase (2 high; 3 blocks cleared per step) down to y. It steps down only
+// onto a solid floor it has seen through the opened step, never digs a fluid,
+// and stops with the reason at water, lava (also one block further on), a drop
+// or the bottom of the world. It only goes down: above y it tunnels where it
+// is. With y, strip-mining also follows once the ores in view are mined.
 //
 // Refused: a dig on a position that was not observed (fair play) or inside a
 // protected region (house rules), both enforced by the API. Failed: unknown
@@ -33,7 +40,7 @@ async function run (act, args) {
   const err = checkArgs('mine', args)
   if (err) return failed(err)
   const api = act.api
-  const { block, count, radius } = args
+  const { block, count, radius, y } = args
   if (!api.isBlock(block)) {
     const hint = api.mineHint(block) // e.g. raw_iron: "an item, not a block; it drops from iron_ore …"
     return failed(`mine: ${hint || `unknown block ${block}`}`)
@@ -53,15 +60,22 @@ async function run (act, args) {
     const hint = api.mineHint(block, { inView: false }) // e.g. cobblestone: "the item drops from stone …"
     return failed(`mine: no ${block} in view within ${notable ? radius : Math.min(radius, 24)} blocks${hint ? `; ${hint}` : ''}`)
   }
-  const strip = { allowed: ore && initial.length === 0, dug: 0, stopped: null }
+  const strip = { allowed: ore && (initial.length === 0 || y !== undefined), dug: 0, stairs: 0, stopped: null, staircase: y !== undefined }
   let mined = 0
-  const progress = note => act.progress(`${mined}/${count} ${block}${strip.dug ? `, tunnel ${strip.dug}` : ''}${note ? ': ' + note : ''}`)
+  const progress = note => act.progress(`${mined}/${count} ${block}${strip.stairs ? `, stairs ${strip.stairs}` : ''}${strip.dug ? `, tunnel ${strip.dug}` : ''}${note ? ': ' + note : ''}`)
 
   while (mined < count) {
     if (act.signal.aborted) return null
     const targets = api.targetsOfType(block, radius).filter(t => !skip.has(t.pos.join(',')))
     if (!targets.length) {
       if (!strip.allowed || strip.stopped) break
+      if (strip.staircase) {
+        const r = await staircase(act, api, block, radius, skip, y, strip, progress)
+        if (act.signal.aborted) return null
+        if (r === 'found') continue
+        if (r === 'stopped') break
+        strip.staircase = false // at y (or below it): tunnel from here
+      }
       progress('none in view, strip-mining')
       const r = await stripMine(act, api, block, radius, skip, strip, progress)
       if (act.signal.aborted) return null
@@ -87,10 +101,11 @@ async function run (act, args) {
   }
 
   const data = { block, mined, requested: count, tunnel: strip.dug }
+  if (y !== undefined) Object.assign(data, { y, stairs: strip.stairs, at_y: Math.floor(api.here().pos[1]) })
   if (mined >= count) return { status: 'done', detail: `mined ${mined} ${block}`, data }
   if (mined === 0 && protectedSkipped && !strip.stopped) return refused(`${houseReason}; no other ${block} in view`)
   const prot = protectedSkipped ? `; ${protectedSkipped} inside protected regions left alone` : ''
-  const why = strip.stopped ? `strip-mining stopped: ${strip.stopped}` : `none left in view within ${notable ? radius : Math.min(radius, 24)} blocks`
+  const why = strip.stopped ? `${strip.stopIn || 'strip-mining'} stopped: ${strip.stopped}` : `none left in view within ${notable ? radius : Math.min(radius, 24)} blocks`
   return { status: 'partial', detail: `mined ${mined} of ${count} ${block}; ${why}${prot}`, data }
 }
 
@@ -101,6 +116,59 @@ async function pickUpNearby (api, signal) {
     if (signal.aborted) return
     await api.pickUp(d, { signal })
   }
+}
+
+/** Open one cell in front at dy, re-digging gravel/sand that falls in. A reason string when it has to stop. */
+async function clearAhead (act, api, dir, dy) {
+  for (let tries = 0; ; tries++) {
+    const name = api.peek(api.ahead(dir, dy))
+    if (name === null || OPEN.has(name)) return null
+    if (FLUIDS.has(name)) return `${name} ahead`
+    if (tries >= 8) return `${name} keeps falling in`
+    const r = await api.digAhead(dir, dy, { signal: act.signal })
+    if (act.signal.aborted) return 'stopped'
+    if (!r.ok) return r.reason
+    await sleep(200)
+  }
+}
+
+/**
+ * Staircase down to level y: per step, clear head+1, head and feet-1 in
+ * front, check the floor that opened up (feet-2) is solid, step down.
+ * 'found' when a target comes into view, 'arrived' at y, 'stopped' (reason
+ * in strip.stopped).
+ */
+async function staircase (act, api, block, radius, skip, y, strip, progress) {
+  const dir = api.facing()
+  await api.face(dir)
+  const minY = -64
+  while (Math.floor(api.here().pos[1]) > y) {
+    if (act.signal.aborted) return 'stopped'
+    if (api.seenBlocks(block, radius).some(t => !skip.has(t.pos.join(',')))) return 'found'
+    const at = Math.floor(api.here().pos[1])
+    const stop = reason => { strip.stopped = reason; strip.stopIn = `staircase at y ${at}`; return 'stopped' }
+    if (at - 2 < minY) return stop('the bottom of the world')
+    for (const dy of [1, 0, -1]) {
+      const why = await clearAhead(act, api, dir, dy)
+      if (act.signal.aborted) return 'stopped'
+      if (why) return stop(why)
+    }
+    // the next step's floor, seen through the opened cell: solid ground only
+    const floor = api.peek(api.ahead(dir, -2))
+    if (floor === null || OPEN.has(floor)) return stop(floor ? `a drop under the next step (${floor})` : 'a drop under the next step')
+    if (FLUIDS.has(floor)) return stop(`${floor} under the next step`)
+    if (floor === 'bedrock' && at - 2 <= minY) return stop('bedrock')
+    for (const [dy, n] of [[-1, 2], [0, 2], [-2, 1]]) { // lava one block further on, or seeping in
+      const beyond = api.peek(api.ahead(dir, dy, n))
+      if (beyond === 'lava') return stop('lava ahead')
+    }
+    const s = await api.stepDown(dir, { signal: act.signal })
+    if (act.signal.aborted) return 'stopped'
+    if (s.status !== 'reached') return stop('could not step down')
+    strip.stairs++
+    progress(`staircase ${dir}, y ${Math.floor(api.here().pos[1])} -> ${y}`)
+  }
+  return 'arrived'
 }
 
 /**
@@ -120,16 +188,9 @@ async function stripMine (act, api, block, radius, skip, strip, progress) {
 
     // clear the head block, then the feet block (gravel above falls into the gap: dig again)
     for (const dy of [1, 0]) {
-      for (let tries = 0; ; tries++) {
-        const name = api.peek(api.ahead(dir, dy))
-        if (name === null || OPEN.has(name)) break
-        if (FLUIDS.has(name)) { strip.stopped = `${name} ahead`; return 'stopped' }
-        if (tries >= 8) { strip.stopped = `${name} keeps falling in`; return 'stopped' }
-        const r = await api.digAhead(dir, dy, { signal: act.signal })
-        if (act.signal.aborted) return 'stopped'
-        if (!r.ok) { strip.stopped = r.reason; return 'stopped' }
-        await sleep(200)
-      }
+      const why = await clearAhead(act, api, dir, dy)
+      if (act.signal.aborted) return 'stopped'
+      if (why) { strip.stopped = why; return 'stopped' }
     }
     // what the opened cell shows: no stepping into a hole, lava or water
     const floor = api.peek(api.ahead(dir, -1))
@@ -156,4 +217,4 @@ async function stripMine (act, api, block, radius, skip, strip, progress) {
   return 'stopped'
 }
 
-module.exports = { run, file: __filename, stripMine }
+module.exports = { run, file: __filename, stripMine, staircase }

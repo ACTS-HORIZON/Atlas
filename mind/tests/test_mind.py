@@ -397,7 +397,7 @@ class MindTest(MindHarness, unittest.IsolatedAsyncioTestCase):
             {"thinking": "Go a bit left.", "action": "call", "verb": "goto", "args": {"pos": [8, 64, 9]}, "about": "t1"},
             {"thinking": "Go a bit right.", "action": "call", "verb": "goto", "args": {"pos": [10, 64, 9]}, "about": "t1"},
             {"thinking": "I'm stuck; ask.", "action": "ask_player", "player": "ACTS_HORIZON", "text": "I'm stuck, can you come closer?", "about": "t1"},
-            {"thinking": "Fine: look for another way out.", "action": "call", "verb": "explore", "args": {"dir": "south"}, "about": "t1"},
+            {"thinking": "Fine: look for another way out.", "action": "call", "verb": "explore", "args": {"direction": "south", "distance": 32}, "about": "t1"},
         ], respond=lambda c: ("partial", STUCK, None) if c["verb"] == "goto" else ("done", "ok", None))
         await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "come here"})
         await until(lambda: len(self.body.calls()) >= 5)
@@ -418,7 +418,7 @@ class MindTest(MindHarness, unittest.IsolatedAsyncioTestCase):
             {"thinking": "Confirm.", "action": "say", "text": "On it.", "about": "t1"},
             {"thinking": "Mine.", "action": "call", "verb": "mine", "args": {"block": "iron_ore"}, "about": "t1"},
             {"thinking": "Deeper.", "action": "call", "verb": "mine", "args": {"block": "iron_ore", "y": 16}, "about": "t1"},
-            {"thinking": "Look around.", "action": "call", "verb": "explore", "args": {"dir": "north"}, "about": "t1"},
+            {"thinking": "Look around.", "action": "call", "verb": "explore", "args": {"direction": "north", "distance": 32}, "about": "t1"},
             {"thinking": "Ask.", "action": "ask_player", "player": "ACTS_HORIZON", "text": "Know where iron is?", "about": "t1"},
         ], respond=fail)
         await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "get iron"})

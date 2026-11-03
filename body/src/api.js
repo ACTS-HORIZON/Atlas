@@ -216,6 +216,12 @@ class VerbApi {
     return this.motor.goto({ pos: [p[0] + 0.5, p[1], p[2] + 0.5], range: 0, signal, stuckMs: 4000, timeoutMs: 8000 })
   }
 
+  /** One block forward and one down (cardinal dir): a staircase step. */
+  stepDown (dir, { signal } = {}) {
+    const p = this.ahead(dir, -1, 1)
+    return this.motor.goto({ pos: [p[0] + 0.5, p[1], p[2] + 0.5], range: 0, dig: false, scaffold: false, signal, stuckMs: 4000, timeoutMs: 8000 })
+  }
+
   face (dir) { return this.motor.face(dir) }
 
   /** Look left, right and back to the front (the explore pause). */
@@ -245,9 +251,9 @@ class VerbApi {
     return this.motor.dig(pos, { signal, allowHand })
   }
 
-  /** Dig the block directly in front (dy 0 = feet level, 1 = head level). */
+  /** Dig the block directly in front (dy 0 = feet level, 1 = head level, -1 = the next step down). */
   async digAhead (dir, dy, { signal } = {}) {
-    if (dy !== 0 && dy !== 1) return { ok: false, refused: true, reason: 'only the two blocks in front can be tunnelled' }
+    if (dy !== 0 && dy !== 1 && dy !== -1) return { ok: false, refused: true, reason: 'only the blocks in front (feet, head, one below) can be tunnelled' }
     const pos = this.ahead(dir, dy, 1)
     const house = this.houseCheck('dig', pos)
     if (house) return { ok: false, refused: true, reason: house }

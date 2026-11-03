@@ -9,7 +9,7 @@ Prints every message from the body. Type:
     goto <x> <y> <z> [nodig] [noscaffold]   walk there (tunnels and pillars unless told not to)
     goto <target>           walk to an observed player, entity type or block type
     explore <dir> <n>       walk n blocks (north, south-east, ..., forward) and report
-    mine <block> <n> [radius]   mine n observed blocks (strip-mines if none seen)
+    mine <block> <n> [radius] [y=<level>]   mine n observed blocks (strip-mines if none seen; y: staircase down first)
     collect <item>          pick up visible drops of that item
     craft <item> [n]        craft (2x2, or at a crafting table it has seen)
     place <block> <x> <y> <z>   place a block next to Atlas
@@ -40,7 +40,7 @@ from . import CONTRACT_VERSION
 from .pretty import format_message
 
 HELP = ("commands: say <text> | stop | recall <type> [x y z] | goto <x y z | target> | explore <dir> <n> |"
-        " mine <block> <n> [radius] | collect <item> | craft <item> [n] | place <block> <x y z> | equip <item> [slot] |"
+        " mine <block> <n> [radius] [y=<level>] | collect <item> | craft <item> [n] | place <block> <x y z> | equip <item> [slot] |"
         " dig <x y z> | eat [item] | give <item> <n> <player> | deposit|withdraw <item> <x y z> [n] |"
         " trace [kind] <text> | obs | quit")
 DIRECTIONS = ("north", "south", "east", "west", "north-east", "north-west", "south-east", "south-west", "forward")
@@ -131,11 +131,16 @@ def parse_command(line: str, next_id, now_t=lambda: 0) -> dict | None | str:
             return "usage: explore <" + "|".join(DIRECTIONS) + "> <blocks>"
         return call("explore", {"direction": parts[0], "distance": int(parts[1])})
     if cmd == "mine":
-        if len(parts) not in (2, 3) or not all(p.isdigit() for p in parts[1:]):
-            return "usage: mine <block> <count> [radius]"
+        ys = [p for p in parts if p.startswith("y=")]
+        parts = [p for p in parts if not p.startswith("y=")]
+        if len(parts) not in (2, 3) or not all(p.isdigit() for p in parts[1:]) or len(ys) > 1 \
+                or (ys and not ys[0][2:].lstrip("-").isdigit()):
+            return "usage: mine <block> <count> [radius] [y=<level>]"
         args = {"block": parts[0], "count": int(parts[1])}
         if len(parts) == 3:
             args["radius"] = int(parts[2])
+        if ys:
+            args["y"] = int(ys[0][2:])
         return call("mine", args)
     if cmd == "collect":
         if len(parts) != 1:

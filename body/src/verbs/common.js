@@ -36,7 +36,8 @@ const SCHEMAS = {
     properties: {
       block: { type: 'string', minLength: 1 },
       count: { type: 'integer', minimum: 1, maximum: 512, default: 1 },
-      radius: { type: 'integer', minimum: 1, maximum: 128, default: 32 }
+      radius: { type: 'integer', minimum: 1, maximum: 128, default: 32 },
+      y: { type: 'integer', minimum: -64, maximum: 320 }
     }
   },
   collect: {
