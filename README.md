@@ -23,7 +23,7 @@ data/      known places file (gitignored)
   - `surroundings`: the close-range view, from blocks in line of sight only: feet/head/below/above, the first solid block (and distance, up to 8) N/E/S/W at feet and head height, the floor drop one step each way (judged from the edge of its block, as a player leans over), open sky, light, and one sentence ("in a 1-wide shaft 5 deep, stone all sides, open above", "on a slope, drop of 6 to the south").
   - `world.light`: the light the bot stands in, as the game combines it: block light, or sky light dimmed for the time of day and weather. Chunk light data where the server sent it; sky light is also 15 under open sky in the overworld (so a missing light section can't read 0 at noon); block light with no data is estimated from light sources within 8 blocks. `world.biome`: named from the chunk's biome id through the registry.
 - **Known places** (`body/src/places.js`): every notable block that has appeared in `blocks_seen` is remembered with position, dimension and last-seen game tick, saved at most every 10 s and on shutdown, and reloaded on start. The file is named after the configured server, `data/known-places.<host>_<port>.json` (e.g. `data/known-places.localhost_25565.json`), so the dev world and the co-op server never share one; `ATLAS_PLACES_FILE` overrides the name. The name comes from `ATLAS_MC_HOST` as written, so `localhost` and `127.0.0.1` give two files for the same server: pick one spelling and keep it. Nothing else can enter it. An entry is dropped when Atlas can see the spot again and the block is gone. `recall {type, near?}` returns the nearest one as `data: {type, pos, dist, age}`, or `failed` with detail `unknown`.
-- **Chat:** only players on `ATLAS_PLAYERS` are listened to.
+- **Chat:** only players on `ATLAS_PLAYERS` are listened to. `obs.chat` is a rolling buffer, so it can hold lines from before the mind connected; the mind leaves those out of the model's context, and tasks come only from `task_from_chat` events it received itself.
   - `@Atlas stop` and `@Atlas status` are handled by the body itself, so they work even with the mind busy or down. So is the house-rules chest grant, `@Atlas that chest is yours` (said while looking at the chest).
   - Everything else, `come here` included, is a task for the mind.
   - Any other `@Atlas …` becomes a `task_from_chat` event, and their other chat a `player_said` event.
@@ -556,6 +556,10 @@ Start the mind with `python -u … | tee -a logs/mind.out` (see Run) and keep th
    - `withdraw` from that chest works.
    - From another chest: `refused — house rules: … has not been given to Atlas …`.
    - `deposit` into any chest it can see works.
+
+## Session 5h-2 (pending)
+
+The craft loop seen after the stone pickaxe on atlas (HEAD 3b98bcd): waiting for the `mind.out` tail and two context dumps. Start the mind with `ATLAS_MIND_DUMP_CONTEXT=1` so the dumps land in `logs/context/`.
 
 ## Session 5 live checklist (atlas)
 

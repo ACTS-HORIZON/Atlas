@@ -111,19 +111,68 @@ class Motor {
    * front (towards the target) and the block above, when the pathfinder's own
    * rules would break them; re-plan from where it stands. At most
    * maxRecoveries cycles per goto.
-   * On stuck / no_path / timeout, `why` says what is around the bot and
-   * whether the pathfinder would dig it, plus its last plan (see diagnose()).
+   * On stuck / no_path / timeout / no_progress, `why` says what is around
+   * the bot and whether the pathfinder would dig it, plus its last plan (see
+   * diagnose()).
+   *
+   * Not moving is measured by the bot's own position, whatever the
+   * pathfinder says it is doing: a step is the feet entering another block,
+   * or a block actually broken ('diggingCompleted'). Its "mining" state alone
+   * is not progress (a dig that keeps failing, e.g. "Block not in view",
+   * flips it on and off forever). Planning watchdog: no step within
+   * planWatchMs (15 s) of the call or of the last step -> no_progress, with
+   * `planner` {status, visited, ms, plan_end, nearest, nearest_dist}.
+   *
+   * Far goals (more than legAt = 48 blocks, kind near/xz): walked in legs of
+   * legLength (16) blocks along the straight line, each leg its own plan
+   * (GoalNearXZ, range 3), then the real goal for the last stretch. Through
+   * solid stone with dig, the real planner times out (5 s, ~10k nodes) on a
+   * 24+ block goal and returns a partial path; a 16-block leg plans in ~3 s.
    */
-  goto ({ kind = 'near', pos, range = 1, dig = false, scaffold = false, signal, timeoutMs, stuckMs = 15000, stallMs = 3000, maxRecoveries = 3, onProgress }) {
+  async goto (opts) {
+    const { kind = 'near', pos, legAt = 48, legLength = 16 } = opts
+    const bot = this.bot
+    if (!bot.pathfinder || kind === 'look') return this._leg(opts)
+    const target = new Vec3(pos[0], pos[1], pos[2])
+    const flat = () => Math.hypot(bot.entity.position.x - target.x, bot.entity.position.z - target.z)
+    const dist = () => kind === 'xz' ? flat() : bot.entity.position.distanceTo(target)
+    if (dist() <= legAt) return this._leg(opts)
+    const start = bot.entity.position.clone()
+    const t0 = Date.now()
+    const out = { recoveries: 0, tried: [], legs: 0 }
+    const progress = () => { try { opts.onProgress?.(r1(dist())) } catch {} }
+    while (dist() > legLength) { // legs all the way in, so the last plan is a short one too
+      if (opts.signal?.aborted) return { status: 'aborted', remaining: r1(dist()), moved: r1(bot.entity.position.distanceTo(start)), ...out }
+      const p = bot.entity.position
+      const d = flat() || 1
+      const lx = p.x + (target.x - p.x) * Math.min(1, legLength / d)
+      const lz = p.z + (target.z - p.z) * Math.min(1, legLength / d)
+      const left = opts.timeoutMs !== undefined ? Math.max(1000, opts.timeoutMs - (Date.now() - t0)) : undefined
+      const r = await this._leg({ ...opts, kind: 'nearxz', pos: [lx, p.y, lz], range: 3, timeoutMs: left, onProgress: progress })
+      out.legs++
+      out.recoveries += r.recoveries || 0
+      out.tried.push(...(r.tried || []))
+      if (r.status !== 'reached') {
+        return { ...r, ...out, remaining: r1(dist()), moved: r1(bot.entity.position.distanceTo(start)), leg: out.legs }
+      }
+    }
+    const left = opts.timeoutMs !== undefined ? Math.max(1000, opts.timeoutMs - (Date.now() - t0)) : undefined
+    const r = await this._leg({ ...opts, timeoutMs: left })
+    return { ...r, recoveries: out.recoveries + (r.recoveries || 0), tried: [...out.tried, ...(r.tried || [])], legs: out.legs + 1, moved: r1(bot.entity.position.distanceTo(start)) }
+  }
+
+  /** One planned walk to one goal (see goto). */
+  _leg ({ kind = 'near', pos, range = 1, dig = false, scaffold = false, signal, timeoutMs, stuckMs = 15000, stallMs = 3000, miningStallMs = 12000, planWatchMs = 15000, maxRecoveries = 3, onProgress }) {
     const bot = this.bot
     if (!bot.pathfinder) return Promise.resolve({ status: 'no_path', remaining: null, moved: 0, recoveries: 0, tried: [], reason: 'pathfinder not loaded' })
     const target = new Vec3(pos[0], pos[1], pos[2])
     let goal
     if (kind === 'xz') goal = new goals.GoalXZ(Math.floor(pos[0]), Math.floor(pos[2]))
+    else if (kind === 'nearxz') goal = new goals.GoalNearXZ(pos[0], pos[2], range)
     else if (kind === 'look') goal = new goals.GoalLookAtBlock(target.floored(), bot.world, { reach: 4.5 })
     else goal = new goals.GoalNear(pos[0], pos[1], pos[2], range)
     const centre = kind === 'look' ? target.floored().offset(0.5, 0.5, 0.5) : target
-    const dist = () => kind === 'xz'
+    const dist = () => kind === 'xz' || kind === 'nearxz'
       ? Math.hypot(bot.entity.position.x - target.x, bot.entity.position.z - target.z)
       : bot.entity.position.distanceTo(centre)
     const start = bot.entity.position.clone()
@@ -134,8 +183,11 @@ class Motor {
     bot.pathfinder.setMovements(movements)
     let lastPlan = null
     let lastPos = bot.entity.position.clone(); let lastMove = Date.now()
+    let lastCell = bot.entity.position.floored(); let lastStep = Date.now()
+    let nearest = bot.entity.position.clone(); let nearestDist = dist()
     let recoveries = 0; let recovering = false
     const tried = []
+    const onDug = () => { lastStep = Date.now(); lastMove = Date.now() } // a block really broken counts as a step
     return new Promise(resolve => {
       let finished = false
       const finish = status => {
@@ -144,19 +196,29 @@ class Motor {
         clearInterval(tick)
         bot.removeListener('goal_reached', onReached)
         bot.removeListener('path_update', onPath)
+        bot.removeListener('diggingCompleted', onDug)
         signal?.removeEventListener('abort', onAbort)
         try { bot.pathfinder.setGoal(null) } catch {}
         bot.clearControlStates()
         const out = { status, remaining: r1(dist()), moved: r1(bot.entity.position.distanceTo(start)), recoveries, tried }
-        if (status === 'stuck' || status === 'no_path' || status === 'timeout') {
+        if (status === 'stuck' || status === 'no_path' || status === 'timeout' || status === 'no_progress') {
           try { out.why = this.diagnose(movements, target, lastPlan, { dig, scaffold }) } catch {}
+          out.planner = {
+            status: lastPlan ? lastPlan.status : 'no plan yet',
+            visited: lastPlan?.visited ?? null,
+            ms: lastPlan?.ms ?? null,
+            plan_end: lastPlan?.end ?? null,
+            nearest: [nearest.x, nearest.y, nearest.z].map(r1),
+            nearest_dist: r1(nearestDist)
+          }
         }
         resolve(out)
       }
       const atEnd = () => goal.isEnd(bot.entity.position.floored())
       const onReached = () => finish('reached')
       const onPath = r => {
-        lastPlan = { status: r.status, next: r.path && r.path[0] ? r.path[0] : null }
+        const end = r.path && r.path.length ? r.path[r.path.length - 1] : null
+        lastPlan = { status: r.status, next: r.path && r.path[0] ? r.path[0] : null, visited: r.visitedNodes ?? null, ms: r.time != null ? Math.round(r.time) : null, end: end ? [end.x, end.y, end.z] : null }
         if (r.path.length === 0 && (r.status === 'noPath' || r.status === 'timeout')) {
           if (atEnd()) finish('reached')
           else if (recovering) { /* re-planning after a recovery: wait for it */ } else finish('no_path')
@@ -167,11 +229,16 @@ class Motor {
         const d = dist()
         try { onProgress?.(r1(d)) } catch {}
         const mining = bot.pathfinder.isMining()
-        if (d < best - 0.5 || mining) { best = Math.min(best, d); lastGain = Date.now() }
-        if (bot.entity.position.distanceTo(lastPos) > 0.3 || mining) { lastPos = bot.entity.position.clone(); lastMove = Date.now() }
+        const now = Date.now()
+        if (d < best - 0.5) { best = Math.min(best, d); lastGain = now }
+        if (d < nearestDist) { nearestDist = d; nearest = bot.entity.position.clone() }
+        if (bot.entity.position.distanceTo(lastPos) > 0.3) { lastPos = bot.entity.position.clone(); lastMove = now }
+        const cell = bot.entity.position.floored()
+        if (!cell.equals(lastCell)) { lastCell = cell; lastStep = now; lastGain = Math.max(lastGain, now - stuckMs / 2) }
         if (atEnd()) return finish('reached')
-        if (Date.now() - t0 > limit) return finish('timeout')
-        if (!recovering && Date.now() - lastMove > stallMs) {
+        if (now - t0 > limit) return finish('timeout')
+        if (now - lastStep > planWatchMs) return finish('no_progress')
+        if (!recovering && now - lastMove > (mining ? miningStallMs : stallMs)) {
           if (recoveries < maxRecoveries) {
             recovering = true
             recoveries++
@@ -186,6 +253,7 @@ class Motor {
       }, Math.min(500, Math.max(50, stallMs / 3)))
       bot.on('goal_reached', onReached)
       bot.on('path_update', onPath)
+      bot.on('diggingCompleted', onDug)
       signal?.addEventListener('abort', onAbort, { once: true })
       if (signal?.aborted) return finish('aborted')
       if (atEnd()) return finish('reached')

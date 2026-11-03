@@ -17,15 +17,15 @@ from atlas_mind.render import render_obs, render_surroundings
 from atlas_mind.replay import replay
 
 
-def make_obs(t=100, health=20, inventory=None, task=None):
+def make_obs(t=100, health=20, inventory=None, task=None, chat=None, pos=None):
     return {"type": "obs", "v": "0.1", "t": t,
-            "self": {"pos": [0.5, 64, 0.5], "dim": "overworld", "yaw": 0, "pitch": 0, "health": health, "food": 20, "xp": 0,
+            "self": {"pos": pos or [0.5, 64, 0.5], "dim": "overworld", "yaw": 0, "pitch": 0, "health": health, "food": 20, "xp": 0,
                      "on_ground": True, "in_water": False, "held": None, "armor": [], "effects": [], "gamemode": "survival"},
             "inventory": inventory or {}, "world": {"time": "day", "weather": "clear", "light": 15, "biome": "plains"},
             "blocks_seen": [{"type": "oak_log", "pos": [3, 64, 5], "dist": 5.8}, {"type": "oak_log", "pos": [4, 65, 5], "dist": 6.4}],
             "entities": [{"type": "cow", "rel": [5, 0, 2], "dist": 5.4, "bearing": "front-left", "approaching": False, "hostile": False}],
             "players": [{"name": "ACTS_HORIZON", "pos": [2.5, 64, -3.5], "dist": 4.5, "looking_at": [3, 64, 5]}],
-            "sounds": [], "boss_bar": None, "chat": [], "task": task}
+            "sounds": [], "boss_bar": None, "chat": chat or [], "task": task}
 
 
 STUCK = 'gave up 13.3 blocks short of [9, 64, 9] (stuck: feet air, head air, below spruce_log; in front: spruce_leaves (would dig) at [-13, 76, -10]; dig on, scaffold on; last plan: partial, no next step)'
@@ -35,8 +35,9 @@ class FakeBody:
     """Speaks the link: obs on connect and on observe, a result for every call
     (from respond(call) -> (status, detail, data) or None to hold it)."""
 
-    def __init__(self, respond=None):
+    def __init__(self, respond=None, first_obs=None):
         self.respond = respond or (lambda c: ("done", f"{c['verb']} ok", None))
+        self.first_obs = first_obs
         self.received: list[dict] = []
         self.ws = None
         self.held: list[dict] = []
@@ -47,7 +48,7 @@ class FakeBody:
 
     async def handler(self, ws):
         self.ws = ws
-        await ws.send(json.dumps(make_obs()))
+        await ws.send(json.dumps(self.first_obs or make_obs()))
         async for data in ws:
             m = json.loads(data)
             self.received.append(m)
@@ -86,9 +87,9 @@ async def until(pred, timeout=3.0):
 
 class MindHarness:
     """start() / teardown for mind tests against the fake body (a mixin, so other modules reuse it without its tests)."""
-    async def start(self, script, respond=None, retriever=None, **cfg):
+    async def start(self, script, respond=None, retriever=None, first_obs=None, **cfg):
         self.tmp = tempfile.TemporaryDirectory()
-        self.body = FakeBody(respond)
+        self.body = FakeBody(respond, first_obs)
         url = await self.body.start()
         self.llm = FakeLLM(script)
         self.cfg = Config(link_url=url, idle_s=cfg.pop("idle_s", 0.2), ask_timeout_s=cfg.pop("ask_timeout_s", 30),
@@ -841,3 +842,33 @@ class DumpTest(MindHarness, unittest.IsolatedAsyncioTestCase):
         self.assertIn("That reply was not usable", text, "a retry is appended to its turn's file")
         self.assertEqual(text.split("===== USER =====\n", 1)[1].split("\n\n===== ASSISTANT", 1)[0], self.llm.prompts[0][1]["content"],
                          "the exact user text")
+
+
+OLD_CHAT = [{"from": "ACTS_HORIZON", "text": "@atlas get me 8 iron ingots", "t": 40},
+            {"from": "ACTS_HORIZON", "text": "@Atlas come here", "t": 95}]
+
+
+class OldChatTest(MindHarness, unittest.IsolatedAsyncioTestCase):
+    async def test_old_chat_in_the_obs_makes_no_task_and_no_action(self):
+        await self.start([{"thinking": "Nothing to do.", "action": "wait"}] * 3, first_obs=make_obs(t=100, chat=OLD_CHAT))
+        await asyncio.sleep(0.6)  # a few idle ticks
+        self.assertEqual(self.mind.tasks.tasks, [], "no task from chat lines in the obs")
+        self.assertEqual(self.llm.prompts, [], "nothing changed: no model call at all")
+        self.assertEqual(self.body.calls(), [])
+        # the world changes (it moved): an idle turn runs, and the old lines are not in its context
+        later = make_obs(t=160, chat=OLD_CHAT + [{"from": "ACTS_HORIZON", "text": "nice weather", "t": 150}], pos=[9.5, 64, 9.5])
+        await self.body.ws.send(json.dumps(later))
+        await until(lambda: len(self.llm.prompts) >= 1)
+        p = self.prompt_text(0)
+        self.assertNotIn("get me 8 iron ingots", p)
+        self.assertNotIn("come here", p)
+        self.assertIn("chat <ACTS_HORIZON> nice weather", p, "chat since the mind connected is still shown")
+        self.assertEqual(self.mind.tasks.tasks, [])
+        self.assertEqual(self.body.calls(), [], "it waited: no action")
+        self.assertEqual(self.mind.obs["chat"][0]["text"], "@atlas get me 8 iron ingots", "the obs itself (for display) is untouched")
+
+    async def test_a_task_comes_only_from_task_from_chat(self):
+        await self.start([{"thinking": "Confirm.", "action": "say", "text": "On it.", "about": "t1"}], first_obs=make_obs(t=100, chat=OLD_CHAT))
+        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "get me 3 logs"})
+        await until(lambda: len(self.llm.prompts) >= 1)
+        self.assertEqual([t.text for t in self.mind.tasks.tasks], ["get me 3 logs"])

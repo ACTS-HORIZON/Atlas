@@ -164,6 +164,7 @@ class Mind:
         self.token_total = 0
         self.reasoning_turns = 0
         self.says: deque = deque(maxlen=3)  # (normalised text, time) of the last says sent
+        self.connect_t = None  # game tick of the first obs since the link came up
         self.last_call_target: dict[str, str] = {}  # verb -> target of its latest call
         self.call_meta: dict[str, tuple] = {}  # call id -> (task id, place cell when sent)
         self.retriever = retriever if retriever is not None else wiki.load_retriever(cfg.wiki_index)
@@ -281,6 +282,8 @@ class Mind:
 
     def set_obs(self, o: dict) -> None:
         self.obs = o
+        if self.connect_t is None and isinstance(o.get("t"), (int, float)):
+            self.connect_t = o["t"]  # the first obs after (re)connecting: its chat is all from before
         if self.turn_fp is None:
             self.turn_fp = fingerprint(o)  # the baseline: nothing has changed yet
         h = o.get("self", {}).get("health")
@@ -290,6 +293,16 @@ class Mind:
                 self.wake(f"health is low ({h}/20)")
             elif h >= self.cfg.retreat_health:
                 self.low_health = False
+
+    def fresh_obs(self) -> dict | None:
+        """The obs as the model sees it: chat from before the mind connected
+        (obs.chat is the body's rolling buffer) is left out. Old "@Atlas …"
+        lines are not tasks: tasks come only from task_from_chat events
+        received on this connection."""
+        o = self.obs
+        if not o or self.connect_t is None or not o.get("chat"):
+            return o
+        return {**o, "chat": [c for c in o["chat"] if (c.get("t") or 0) > self.connect_t]}
 
     def changed_since_turn(self) -> bool:
         return self.dirty or self.tasks.version != self.turn_tasks or fingerprint(self.obs) != self.turn_fp
@@ -372,7 +385,7 @@ class Mind:
         if fails:
             extra += "\nFAILED RECENTLY (don't repeat): " + "; ".join(
                 f"{f['verb']} {f['args']} -> {one_line(f['detail'], 90)}" for f in fails[-4:]) + "\n"
-        user = context(self.tasks.render(), render_obs(self.obs, inventory=False), list(self.recent), self.notes.render(), wake, extra,
+        user = context(self.tasks.render(), render_obs(self.fresh_obs(), inventory=False), list(self.recent), self.notes.render(), wake, extra,
                        knowledge, render_inventory(self.obs), render_surroundings(self.obs) if self.obs else "")
         return [{"role": "system", "content": self.system}, {"role": "user", "content": user}]
 
@@ -705,6 +718,7 @@ class Mind:
             try:
                 async with connect(self.cfg.link_url, max_size=None) as ws:
                     self.ws = ws
+                    self.connect_t = None
                     self.log(f"[mind] connected to {self.cfg.link_url}")
                     thinker = asyncio.create_task(self.think_forever())
                     try:

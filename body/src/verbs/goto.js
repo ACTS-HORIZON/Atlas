@@ -47,7 +47,9 @@ async function walkTo (act, api, pos, what, range, move) {
   const tried = r.tried && r.tried.length ? `; tried ${r.tried.join(' / ')}` : ''
   if (r.status === 'reached') return { status: 'done', detail: `arrived at ${what}${r.recoveries ? ` after ${r.recoveries} recover${r.recoveries > 1 ? 'ies' : 'y'}` : ''}`, data }
   if (r.status === 'no_path' && r.moved < 1) return { status: 'failed', detail: `no path to ${what}${because}`, data }
-  const why = { no_path: 'no further path', stuck: 'stuck', timeout: 'took too long', aborted: 'stopped' }[r.status] || r.status
+  if (r.planner) data.planner = r.planner
+  const why = r.status === 'no_progress' ? `no path found yet: ${plannerText(r.planner)}`
+    : { no_path: 'no further path', stuck: 'stuck', timeout: 'took too long', aborted: 'stopped' }[r.status] || r.status
   return { status: 'partial', detail: `gave up ${r.remaining} blocks short of ${what} (${why}${because})${tried}`, data }
 }
 
@@ -73,6 +75,15 @@ async function followBearing (act, api, name, move, range) {
       return { status: r.status === 'no_path' ? 'failed' : 'partial', detail: `blocked while following ${name}'s bearing after ${walked()} blocks (${r.status})`, data: { pos: null, remaining: null } }
     }
   }
+}
+
+/** "planner timeout after 5001 ms, 10020 nodes visited, its best plan ends at [25, 60, 0]; nearest point reached [x, y, z], 105.8 blocks from the goal" */
+function plannerText (p) {
+  if (!p) return 'no plan'
+  const parts = [`planner ${p.status}${p.ms != null ? ` after ${p.ms} ms` : ''}`]
+  if (p.visited != null) parts.push(`${p.visited} nodes visited`)
+  if (p.plan_end) parts.push(`its best plan ends at [${p.plan_end.join(', ')}]`)
+  return parts.join(', ') + (p.nearest ? `; nearest point reached [${p.nearest.join(', ')}], ${p.nearest_dist} blocks from the goal` : '')
 }
 
 module.exports = { run, file: __filename }
