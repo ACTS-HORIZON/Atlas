@@ -261,6 +261,83 @@ class MindTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.body.calls()[0]["args"], {"text": "hi"})
         self.assertEqual(len(self.llm.prompts), 1, "parsed on the first try")
 
+    async def test_plan_runs_three_steps_with_one_model_call(self):
+        await self.start([
+            {"thinking": "Confirm.", "action": "say", "text": "On it: a stone pickaxe.", "about": "t1"},
+            {"thinking": "Obvious next steps.", "action": "plan", "about": "t1", "steps": [
+                {"verb": "craft", "args": {"item": "stick", "count": 4}},
+                {"verb": "craft", "args": {"item": "stone_pickaxe"}},
+                {"verb": "equip", "args": {"item": "stone_pickaxe"}}]},
+            {"thinking": "Done; report.", "action": "say", "text": "Here is my stone pickaxe.", "closes": "t1"},
+        ])
+        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "make a stone pickaxe"})
+        await until(lambda: len(self.body.calls()) >= 5)
+        self.assertEqual([c["verb"] for c in self.body.calls()], ["say", "craft", "craft", "equip", "say"])
+        self.assertEqual(len(self.llm.prompts), 3, "confirm, one plan, the report: the plan's 3 steps cost one model call")
+        self.assertIn("plan finished (3 steps)", self.prompt_text(2))
+        for i in ("m2", "m3", "m4"):  # every step's result is in the history as usual
+            self.assertIn(f"result {i}: done", self.prompt_text(2))
+        trace = [m for m in self.body.received if m["type"] == "trace"][1]
+        self.assertEqual([st["verb"] for st in trace["data"]["steps"]], ["craft", "craft", "equip"])
+        self.assertEqual(self.mind.tasks.get("t1").state, "done")
+
+    async def test_failed_plan_step_stops_the_plan_and_rethinks_once(self):
+        await self.start([
+            {"thinking": "Confirm.", "action": "say", "text": "On it.", "about": "t1"},
+            {"thinking": "Craft then mine.", "action": "plan", "about": "t1", "steps": [
+                {"verb": "craft", "args": {"item": "stick", "count": 4}},
+                {"verb": "craft", "args": {"item": "stone_pickaxe"}},
+                {"verb": "mine", "args": {"block": "iron_ore", "count": 3}}]},
+            {"thinking": "Need cobblestone first.", "action": "call", "verb": "mine", "args": {"block": "stone", "count": 3}, "about": "t1"},
+        ], respond=lambda c: ("failed", "craft: missing 3 of cobbled_deepslate, blackstone or cobblestone for 1 stone_pickaxe", None)
+           if c["args"].get("item") == "stone_pickaxe" else None if c["args"].get("block") == "stone" else ("done", "ok", None))
+        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "get iron"})
+        await until(lambda: len(self.body.calls()) >= 4)
+        await asyncio.sleep(0.3)
+        self.assertEqual([(c["verb"], c["args"].get("item") or c["args"].get("block")) for c in self.body.calls()],
+                         [("say", None), ("craft", "stick"), ("craft", "stone_pickaxe"), ("mine", "stone")], "step 3 never ran")
+        self.assertEqual(len(self.llm.prompts), 3, "one re-think after the failed step")
+        self.assertIn("plan stopped at step 2/3 (craft): failed - craft: missing 3 of", self.prompt_text(2))
+
+    async def test_task_from_chat_mid_plan_stops_it_after_the_current_step(self):
+        await self.start([
+            {"thinking": "Confirm.", "action": "say", "text": "On it.", "about": "t1"},
+            {"thinking": "Three crafts.", "action": "plan", "about": "t1", "steps": [
+                {"verb": "craft", "args": {"item": "oak_planks", "count": 4}},
+                {"verb": "craft", "args": {"item": "stick", "count": 4}},
+                {"verb": "craft", "args": {"item": "crafting_table"}}]},
+            {"thinking": "Answer the new question.", "action": "say", "text": "Crafting.", "closes": "t2"},
+        ], respond=lambda c: None if c["verb"] == "craft" else ("done", "said", None))
+        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "make a table"})
+        await until(lambda: self.body.held)  # step 1 is running
+        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "what are you doing?"})
+        await asyncio.sleep(0.3)
+        self.assertEqual(len(self.llm.prompts), 2, "the event waits for the current step")
+        await self.body.result(self.body.held[0]["id"], "done", "crafted 4 oak_planks")
+        await until(lambda: len(self.llm.prompts) == 3)
+        self.assertIn("plan stopped after step 1/3; new task t2 from ACTS_HORIZON: what are you doing?", self.prompt_text(2))
+        await asyncio.sleep(0.3)
+        self.assertEqual([c["args"].get("item") for c in self.body.calls() if c["verb"] == "craft"], ["oak_planks"], "steps 2 and 3 never ran")
+
+    async def test_unusable_decision_retries_on_idle_then_waits(self):
+        logs = []
+        bad = ("I am thinking about it", "stop")
+        await self.start([bad] * 8, idle_s=0.1)
+        self.mind.log = logs.append
+        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "get wood"})
+        await until(lambda: len(self.mind.decisions) >= 4, timeout=5)  # the turn, then 3 retries with nothing changing
+        await asyncio.sleep(0.8)
+        self.assertEqual(len(self.mind.decisions), 4, "1 turn + 3 retries, then it waits")
+        self.assertEqual(len(self.llm.prompts), 8, "each turn: one try and one in-turn retry")
+        self.assertIn("WOKE BECAUSE: retrying after an unusable decision (1/3)", self.prompt_text(2))
+        self.assertIn("WOKE BECAUSE: retrying after an unusable decision (3/3)", self.prompt_text(6))
+        self.assertTrue(any("3 retries after unusable decisions failed; waiting for something to change" in line for line in logs))
+        # a change in the world brings it back
+        self.llm.script = [{"thinking": "Confirm.", "action": "say", "text": "On it.", "about": "t1"}]
+        await self.body.ws.send(json.dumps(make_obs(inventory={"oak_log": 1})))
+        await until(lambda: self.body.calls())
+        self.assertEqual(self.mind.error_streak, 0)
+
     async def test_low_health_wakes_it(self):
         await self.start([{"thinking": "Hurt; back off.", "action": "call", "verb": "goto", "args": {"pos": [-10, 64, -10]}}])
         await self.body.ws.send(json.dumps(make_obs(health=4)))
@@ -362,7 +439,8 @@ class LLMClientTest(unittest.TestCase):
             self.assertEqual(seen["path"], "/v1/chat/completions")
             self.assertEqual(seen["auth"], "Bearer k123")
             self.assertEqual(seen["body"], {"model": "gemma-3-12b", "messages": [{"role": "user", "content": "hi"}], "temperature": 0.2,
-                                            "max_tokens": 99, "response_format": {"type": "json_object"}, "stop": ["\n}"]})
+                                            "max_tokens": 99, "response_format": {"type": "json_object"}, "stop": ["\n}"],
+                                            "chat_template_kwargs": {"enable_thinking": False}, "reasoning_effort": "none"})
             # stopped on the closing brace: the brace is put back and the object parses
             cut = OpenAICompatLLM(base, "cut")
             r = asyncio.run(cut.complete([]))
@@ -381,3 +459,85 @@ class LLMClientTest(unittest.TestCase):
                              "ATLAS_LLM_JSON_MODE": "0", "ATLAS_PLAYERS": "A, B", "ATLAS_NOTES_FILE": "/tmp/n.md", "ATLAS_IDLE_S": "5"})
         self.assertEqual((c.link_url, c.llm_url, c.llm_json_mode, c.players, str(c.notes_file), c.idle_s),
                          ("ws://127.0.0.1:9000", "http://gpu:8080/v1", False, ["A", "B"], "/tmp/n.md", 5.0))
+
+
+class ThinkingTest(unittest.TestCase):
+    """Native thinking (Gemma 4 on llama.cpp): a live-shaped server that
+    behaves like llama.cpp, adding reasoning_content unless the request turns
+    thinking off with chat_template_kwargs.enable_thinking=false or
+    reasoning_effort "none"."""
+
+    def serve(self):
+        import http.server
+        import threading
+        seen = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+                seen.append(body)
+                off = (body.get("chat_template_kwargs") or {}).get("enable_thinking") is False or body.get("reasoning_effort") == "none"
+                msg = {"role": "assistant", "content": '{"thinking": "Logs are close; mine them.", "action": "wait"}'}
+                if not off:
+                    msg["reasoning_content"] = "The player wants logs. I see oak_log at 11 blocks. " * 20
+                reply = {"choices": [{"finish_reason": "stop", "index": 0, "message": msg}], "created": 1793701234,
+                         "model": "gemma-4-26b-a4b", "system_fingerprint": "b7210-0a1b2c3d", "object": "chat.completion",
+                         "usage": {"completion_tokens": 70 if off else 748, "prompt_tokens": 4210, "total_tokens": 4280 if off else 4958},
+                         "id": "chatcmpl-Q2w3e4r5", "timings": {"prompt_n": 4210, "predicted_n": 70 if off else 748}}
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(json.dumps(reply).encode())
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (srv.shutdown(), srv.server_close()))
+        return f"http://127.0.0.1:{srv.server_port}/v1", seen
+
+    def test_thinking_off_by_default_and_reasoning_absent(self):
+        from atlas_mind.llm import OpenAICompatLLM
+        base, seen = self.serve()
+        self.assertFalse(Config.from_env({"ATLAS_ENV_FILE": "/nonexistent"}).llm_thinking, "off by default")
+        r = asyncio.run(OpenAICompatLLM(base, "gemma-4-26b-a4b").complete([{"role": "user", "content": "hi"}]))
+        self.assertEqual(seen[0]["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertEqual(seen[0]["reasoning_effort"], "none")
+        self.assertEqual(r.reasoning, "", "reasoning_content absent")
+        self.assertEqual(r.completion_tokens, 70)
+
+    def test_thinking_on_is_never_invisible(self):
+        from atlas_mind.llm import OpenAICompatLLM
+        base, seen = self.serve()
+        r = asyncio.run(OpenAICompatLLM(base, "gemma-4-26b-a4b", thinking=True).complete([{"role": "user", "content": "hi"}]))
+        self.assertNotIn("chat_template_kwargs", seen[0])
+        self.assertNotIn("reasoning_effort", seen[0])
+        self.assertTrue(r.reasoning.startswith("The player wants logs."))
+        self.assertEqual(r.completion_tokens, 748)
+
+        async def scenario():
+            body = FakeBody()
+            url = await body.start()
+            with tempfile.TemporaryDirectory() as d:
+                logs = []
+                cfg = Config(link_url=url, idle_s=0.1, notes_file=Path(d) / "n.md", verb_reference=ROOT / "docs" / "verbs.md", llm_thinking=False)
+                llm = FakeLLM([r, ('{"thinking": "x", "action": "wait"}', "stop", "", 12)])
+                mind = Mind(cfg, llm, log=logs.append)
+                task = asyncio.create_task(mind.run())
+                await until(lambda: body.ws is not None and mind.obs is not None)
+                await body.event("player_said", {"from": "ACTS_HORIZON", "text": "hi"})
+                await until(lambda: any(m["type"] == "trace" for m in body.received))
+                await body.event("player_said", {"from": "ACTS_HORIZON", "text": "again"})
+                await until(lambda: len(mind.decisions) >= 2)
+                task.cancel()
+                body.stop()
+                return body, logs
+        body, logs = asyncio.run(scenario())
+        trace = next(m for m in body.received if m["type"] == "trace")
+        self.assertTrue(trace["data"]["reasoning"].startswith("The player wants logs."))
+        self.assertTrue(trace["data"]["reasoning"].endswith("…"), "truncated")
+        self.assertLessEqual(len(trace["data"]["reasoning"]), 801)
+        text = "\n".join(logs)
+        self.assertIn("[llm] turn 1: 748 completion tokens in 1 call(s) (with reasoning); mean 748 over 1 turns, 1 with reasoning", text)
+        self.assertIn("[llm] turn 2: 12 completion tokens in 1 call(s); mean 380 over 2 turns, 1 with reasoning", text)
+        self.assertIn("reasoning_content came back although ATLAS_LLM_THINKING=0", text)

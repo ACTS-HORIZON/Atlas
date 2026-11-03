@@ -205,6 +205,10 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
   - **`note`**: `{text}`, appended to `data/notes.md`.
   - **`done`**: `{closes}`
   - **`wait`**
+  - **`plan`**: `{steps: [{verb, args}, …], about?}`, up to 6 calls with one `thinking`.
+    - **How it runs:** the steps run one at a time without asking the model again. Each step's result is logged as usual.
+    - **When it stops:** the mind thinks again only when a step's result isn't `done`, an event arrives (held until the current step ends, then the plan stops), or the plan finishes.
+    - **When to use one:** the prompt says to plan when the next few steps are obvious (craft sticks → craft stone_pickaxe → mine iron_ore), and to make a single call when the next step depends on what it will see.
   - Every action carries `thinking`, sent first as a `trace` (kind `decision`). The reply may be wrapped in prose or code fences: the first complete JSON object with an `action` is used.
 - **Tracks task state:** `new → confirmed → running → done | stopped`.
   - **Moving between states:** tasks come from `task_from_chat`. A `say` about a task confirms it, a call for it makes it running, and a `say` or `done` with `closes` finishes it. `@Atlas stop` stops the confirmed and running ones.
@@ -216,6 +220,11 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
 - **Invalid replies:** a reply with no complete JSON object (or an unknown verb or task) is retried once, with the error shown to the model; after that it waits. Every unusable reply is logged with the server's `finish_reason` and the raw text (first 500 characters), e.g. `[llm] unusable reply (first try, finish_reason=length): the reply was cut off …`.
 - **Truncation:** `max_tokens` defaults to 2000. In JSON mode, generation stops at the closing brace of the top-level object (stop sequence `"\n}"`, brace restored) instead of running on (`ATLAS_LLM_STOP=0` to turn that off).
 - **Task discipline:** a confirmed task is never confirmed again, and work on a new task starts with confirming it.
+- **No stall after a bad reply:** after an unusable decision, the next idle tick runs a turn even if nothing changed in the world. That's up to 3 retries; after that it logs `[mind] 3 retries after unusable decisions failed; waiting for something to change` and waits for a change.
+- **Native thinking off:** every request carries `chat_template_kwargs: {"enable_thinking": false}` and `reasoning_effort: "none"`. llama.cpp reads both: either one sets the chat template's `enable_thinking` to false, Gemma 4's template included. `ATLAS_LLM_THINKING=1` turns thinking back on.
+  - **Never invisible:** any `reasoning_content` that comes back is added to the decision trace's `data.reasoning` (first 800 characters).
+  - **Warning:** if reasoning arrives while thinking is off, `mind.out` warns that the server ignored the setting.
+  - **Through another proxy:** llama-swap passes the request body through unchanged. Through LiteLLM, check that it forwards `chat_template_kwargs` (the warning will say if not).
 - **No repeating a failure:** the exact call that just failed or was refused is not sent again; the model is told so and asked once more.
 - **No fighting:** the prompt forbids it (there are no combat verbs). When health falls below `ATLAS_RETREAT_HEALTH` (6), the mind is woken with "health is low", and may retreat with `goto`.
 
@@ -229,6 +238,7 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
 | `ATLAS_LLM_TEMPERATURE` | `0.4` | |
 | `ATLAS_LLM_MAX_TOKENS` | `2000` | |
 | `ATLAS_LLM_STOP` | `1` | in JSON mode, stop at the end of the action object |
+| `ATLAS_LLM_THINKING` | `0` | `1` lets the model use native thinking (slower, many more tokens) |
 | `ATLAS_LLM_JSON_MODE` | `1` | sends `response_format: {"type": "json_object"}`; set `0` if the server rejects it |
 | `ATLAS_LLM_TIMEOUT_S` | `120` | |
 | `ATLAS_IDLE_S` | `10` | idle wake |
@@ -237,13 +247,28 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
 | `ATLAS_NOTES_FILE` | `data/notes.md` | |
 | `ATLAS_NOTES_MAX_LINES` | `80` | the oldest notes are dropped (and counted) past this |
 
+**Tokens and turns.** After every turn, `mind.out` gets a line like:
+
+```
+[llm] turn 14: 82 completion tokens in 1 call(s); mean 91 over 14 turns, 0 with reasoning
+```
+
+- **Completion tokens:** what the model generated this turn (two calls if the first reply was unusable and retried).
+- **Mean:** the running average per turn since the mind started.
+- **With reasoning:** how many turns came back with native thinking.
+
+What to expect with thinking off is roughly 60–150 tokens per turn: one JSON object, with `thinking` capped at two sentences. Three things to watch:
+- **High mean:** a mean in the hundreds, or turns with reasoning while `ATLAS_LLM_THINKING=0`, means thinking is still on at the server.
+- **Turns vs work:** count the `[llm] turn` lines against the work done. Plans run several steps per turn and idle ticks without changes cost nothing, so 15 minutes of steady work should take well under the ~70 model calls measured before plans existed.
+- **Daily totals:** `grep -c '^\[llm\] turn' mind.out` gives the number of model turns, and the last line's mean gives the per-turn cost.
+
 **The prompt.** To see the system prompt:
 
 ```bash
 cd /opt/atlas/mind && .venv/bin/python -m atlas_mind --print-prompt
 ```
 
-It is about 3,300 tokens, most of it the verb reference. Each turn adds a context like this one (fresh spawn, first wake):
+It is about 4,300 tokens, most of it the verb reference. Each turn adds a context like this one (fresh spawn, first wake):
 
 ```
 WOKE BECAUSE: new task t1 from ACTS_HORIZON: get me 3 iron ingots

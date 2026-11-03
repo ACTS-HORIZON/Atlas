@@ -11,7 +11,15 @@ OUTPUT_FORMAT = """Reply with exactly one JSON object and nothing else. One of:
 {"thinking": "...", "action": "note", "text": "<something worth remembering>"}
 {"thinking": "...", "action": "done", "closes": "t1"}
 {"thinking": "...", "action": "wait"}
-"thinking" is one or two short sentences: why this action, now. It is shown to the players watching.
+{"thinking": "...", "action": "plan", "about": "t1", "steps": [{"verb": "<verb>", "args": {...}}, ...]}
+"thinking": at most two short sentences: why this, now. It is shown to the players watching. No long reasoning.
+
+Plans: a plan is up to 6 calls run in order, one at a time, without asking you again. You are woken
+when a step's result is not "done", when something happens (a new task, a player talks, damage, stop),
+or when the plan finishes. Use a plan when the next few steps are obvious, e.g.
+  {"verb": "craft", "args": {"item": "stick", "count": 4}}, {"verb": "craft", "args": {"item": "stone_pickaxe"}},
+  {"verb": "mine", "args": {"block": "iron_ore", "count": 3}}
+Use a single call when the next step depends on what you will see (exploring, a failure you must react to).
 "about" names the task an action is for; "closes" finishes a task; add "standing": true to a say or call
 for a task that never finishes (farm this, stay here) so it stays open until stopped.
 

@@ -7,6 +7,7 @@
 {"thinking": "...", "action": "note", "text": "..."}
 {"thinking": "...", "action": "done", "closes": "t1"}                         # finish t1 without chat
 {"thinking": "...", "action": "wait"}
+{"thinking": "...", "action": "plan", "about": "t1", "steps": [{"verb": "craft", "args": {...}}, ...]}  # up to 6 calls
 
 "about" ties an action to a task; "closes" finishes one; "standing": true
 marks the task it is about as standing (re-planned until stopped).
@@ -16,7 +17,8 @@ from __future__ import annotations
 
 import json
 
-ACTIONS = ("call", "say", "ask_player", "note", "done", "wait")
+ACTIONS = ("call", "say", "ask_player", "note", "done", "wait", "plan")
+MAX_PLAN = 6
 
 
 class ActionError(ValueError):
@@ -101,6 +103,21 @@ def validate(obj: dict, verbs: set[str] | None = None) -> dict:
         if not isinstance(text, str) or not text.strip():
             raise ActionError(f'"{a}" needs "text"')
         out["text"] = text.strip()
+    elif a == "plan":
+        steps = obj.get("steps")
+        if not isinstance(steps, list) or not 1 <= len(steps) <= MAX_PLAN:
+            raise ActionError(f'"plan" needs "steps": a list of 1 to {MAX_PLAN} calls')
+        norm = []
+        for i, st in enumerate(steps, 1):
+            if not isinstance(st, dict) or not isinstance(st.get("verb"), str) or not st["verb"]:
+                raise ActionError(f'plan step {i} needs "verb"')
+            if verbs is not None and st["verb"] not in verbs:
+                raise ActionError(f'plan step {i}: unknown verb "{st["verb"]}"; known: {", ".join(sorted(verbs))}')
+            args = st.get("args", {})
+            if not isinstance(args, dict):
+                raise ActionError(f'plan step {i}: "args" must be an object')
+            norm.append({"verb": st["verb"], "args": args})
+        out["steps"] = norm
     elif a == "ask_player":
         player, text = obj.get("player"), obj.get("text")
         if not isinstance(player, str) or not player or not isinstance(text, str) or not text.strip():

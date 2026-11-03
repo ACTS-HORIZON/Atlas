@@ -33,12 +33,12 @@ def main(argv: list[str] | None = None) -> int:
         pass
     cfg = Config.from_env()
     llm = OpenAICompatLLM(cfg.llm_url, cfg.llm_model, cfg.llm_key, cfg.llm_temperature, cfg.llm_max_tokens, cfg.llm_json_mode,
-                          cfg.llm_timeout_s, stop_after_object=cfg.llm_stop)
+                          cfg.llm_timeout_s, stop_after_object=cfg.llm_stop, thinking=cfg.llm_thinking)
     mind = Mind(cfg, llm)
     if a.print_prompt:
         print(mind.system)
         return 0
-    print(f"[mind] model {cfg.llm_model} at {cfg.llm_url} (max_tokens {cfg.llm_max_tokens}); notes {cfg.notes_file}; verbs: {', '.join(sorted(mind.verbs))}", file=sys.stderr)
+    print(f"[mind] model {cfg.llm_model} at {cfg.llm_url} (max_tokens {cfg.llm_max_tokens}, thinking {'on' if cfg.llm_thinking else 'off'}); notes {cfg.notes_file}; verbs: {', '.join(sorted(mind.verbs))}", file=sys.stderr)
     try:
         if a.replay:
             asyncio.run(replay(mind, a.replay, a.every, a.limit, a.show_prompt))

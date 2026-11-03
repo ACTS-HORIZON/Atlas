@@ -4,8 +4,14 @@
    or the idle timer.
 2. Build the context: tasks (with their state and what the bot already said),
    the latest obs (compact), recent calls / results / events, notes.
-3. Ask the model for exactly one action: call, say, ask_player, note, done or
-   wait. Its "thinking" goes to the body as a trace (kind "decision") first.
+3. Ask the model for exactly one action: call, say, ask_player, note, done,
+   wait, or a plan (up to 6 calls). Its "thinking" goes to the body as a
+   trace (kind "decision") first.
+
+Plans: the steps run one at a time without asking the model again. The
+mind thinks again only when a step's result isn't "done", an event arrives
+(it is held until the current step ends, then the plan stops), or the plan
+finishes.
 
 Wake policy (no model call is wasted):
 - results of say, recall and stop, and of calls nothing is waiting on, don't
@@ -24,7 +30,9 @@ Guards that don't rely on the model:
 - a task that is already confirmed is not confirmed again, and work on a
   new task starts with confirming it;
 - after a turn that only talked while a task is open, one follow-up turn
-  carries on (at most 3 in a row without new input).
+  carries on (at most 3 in a row without new input);
+- after an unusable decision the next idle tick runs a turn even if nothing
+  changed (up to 3 retries, then it waits for a change and says so).
 """
 from __future__ import annotations
 
@@ -46,6 +54,8 @@ from .tasks import TaskList
 V = CONTRACT_VERSION
 QUIET_VERBS = {"say", "recall", "stop"}  # their results don't wake a turn
 MAX_FOLLOW_UPS = 3
+MAX_ERROR_RETRIES = 3
+PLAN_NEXT = "\x00plan-next"  # internal wake: run the next plan step, no model call
 
 
 def canon(args) -> str:
@@ -98,6 +108,13 @@ class Mind:
         self.turn_fp = None  # obs fingerprint at the last turn (or the first obs)
         self.turn_tasks = 0  # task list version at the last turn
         self.follow_ups = 0
+        self.plan: dict | None = None
+        self.error_streak = 0
+        self.error_wait_logged = False
+        self.replies: list = []  # the model replies of the current turn
+        self.token_turns = 0
+        self.token_total = 0
+        self.reasoning_turns = 0
 
     # ---- link -----------------------------------------------------------------
     async def send(self, msg: dict) -> None:
@@ -107,6 +124,9 @@ class Mind:
     def wake(self, reason: str) -> None:
         self.dirty = True
         self.follow_ups = 0  # real input: follow-ups may start over
+        if self.plan is not None:
+            self.plan["interrupt"].append(reason)  # held until the current step ends
+            return
         self.wakes.put_nowait(reason)
 
     def long_pending(self) -> bool:
@@ -127,6 +147,9 @@ class Mind:
             failed = m["status"] in ("failed", "refused")
             if failed and m["detail"] != "busy":
                 self.last_failed = (call["verb"], canon(call.get("args")), m["detail"])
+            if self.plan is not None and m["id"] == self.plan.get("cid"):
+                self.plan_step_done(call, m)
+                return
             if call["verb"] in QUIET_VERBS:
                 if call["verb"] == "recall" or failed:
                     self.dirty = True  # new information for the next turn, no turn of its own
@@ -150,6 +173,39 @@ class Mind:
                 self.wake(f"stop requested by {d.get('from', 'someone')}" + (f"; {', '.join(t.id for t in stopped)} stopped" if stopped else ""))
             else:
                 self.wake(f"event {kind}")
+
+    # ---- plans ----------------------------------------------------------------
+    def plan_step_done(self, call: dict, m: dict) -> None:
+        p = self.plan
+        step = f"{p['i']}/{p['n']}"
+        if m["status"] == "done" and p["steps"] and not p["interrupt"]:
+            self.wakes.put_nowait(PLAN_NEXT)  # carry on, no model call
+            return
+        self.plan = None
+        if m["status"] != "done":
+            reason = f"plan stopped at step {step} ({call['verb']}): {m['status']} - {m['detail']}"
+        elif p["interrupt"]:
+            reason = f"plan stopped after step {step}"
+        else:
+            reason = f"plan finished ({p['n']} steps)"
+        self.dirty = True
+        self.wakes.put_nowait("; ".join([reason] + p["interrupt"]))
+
+    async def plan_next(self) -> None:
+        p = self.plan
+        if p is None:
+            return
+        if p["interrupt"]:  # an event came in between steps
+            self.plan = None
+            self.wakes.put_nowait("; ".join([f"plan stopped after step {p['i']}/{p['n']}"] + p["interrupt"]))
+            return
+        st = p["steps"].pop(0)
+        p["i"] += 1
+        task = self.tasks.get(p.get("about"))
+        if task and st["verb"] not in QUIET_VERBS:
+            self.tasks.started(task)
+        self.log(f"[mind] plan step {p['i']}/{p['n']}: {st['verb']} {canon(st['args'])}")
+        p["cid"] = await self.call(st["verb"], st["args"])
 
     def set_obs(self, o: dict) -> None:
         self.obs = o
@@ -185,7 +241,7 @@ class Mind:
                 raise ActionError(f'there is no task "{tid}"; tasks: {", ".join(x.id for x in self.tasks.tasks) or "none"}')
             return t
         working = self.tasks.working()
-        return working[0] if len(working) == 1 and a["action"] == "call" else None
+        return working[0] if len(working) == 1 and a["action"] in ("call", "plan") else None
 
     def check(self, raw: str) -> dict:
         a = parse(raw, self.verbs)
@@ -201,6 +257,13 @@ class Mind:
                               f'or finish it with a say that has "closes": "{t.id}".')
         if t and a["action"] == "call" and a["verb"] not in QUIET_VERBS and t.state == "new":
             raise ActionError(f"{t.id} is new: confirm it in chat first (a say with \"about\": \"{t.id}\"), then start it.")
+        if a["action"] == "plan":
+            first = a["steps"][0]
+            if self.last_failed and (first["verb"], canon(first["args"])) == self.last_failed[:2]:
+                raise ActionError(f"the plan starts with the exact call that just failed ({first['verb']}): {self.last_failed[2]}. "
+                                  "Plan around the reason instead.")
+            if t and t.state == "new" and any(st["verb"] not in QUIET_VERBS for st in a["steps"]):
+                raise ActionError(f"{t.id} is new: confirm it in chat first (a say with \"about\": \"{t.id}\"), then plan the work.")
         return a
 
     def unusable(self, attempt: str, err: Exception, raw) -> None:
@@ -210,8 +273,10 @@ class Mind:
 
     async def decide(self, wake: str) -> dict:
         msgs = self.messages(wake)
+        self.replies = []
         try:
             raw = await self.llm.complete(msgs)
+            self.replies.append(raw)
         except LLMError as e:
             self.log(f"[llm] {e}")
             return {"action": "wait", "thinking": f"model unavailable: {e}"[:200], "error": True}
@@ -224,6 +289,7 @@ class Mind:
             raw2 = ""
             try:
                 raw2 = await self.llm.complete(retry)
+                self.replies.append(raw2)
                 return self.check(raw2)
             except LLMError as e2:
                 self.log(f"[llm] {e2}")
@@ -235,13 +301,20 @@ class Mind:
     async def act(self, a: dict) -> None:
         self.decisions.append(a)
         t = (self.obs or {}).get("t", 0)
-        summary = {k: a[k] for k in ("action", "verb", "args", "text", "player", "about", "closes", "standing") if k in a}
+        summary = {k: a[k] for k in ("action", "verb", "args", "text", "player", "about", "closes", "standing", "steps") if k in a}
+        reasoning = " / ".join(r.reasoning for r in self.replies if getattr(r, "reasoning", ""))
+        if reasoning:  # native thinking: never invisible
+            summary["reasoning"] = reasoning[:800] + ("…" if len(reasoning) > 800 else "")
         await self.send({"type": "trace", "v": V, "t": t, "kind": "decision", "text": a["thinking"], "data": summary})
         task = None if a.get("error") else self.task_for(a)
         if task and "standing" in a:
             self.tasks.set_standing(task, a["standing"])
         kind = a["action"]
-        if kind == "call":
+        if kind == "plan":
+            self.plan = {"steps": list(a["steps"]), "n": len(a["steps"]), "i": 0, "about": task.id if task else None,
+                         "interrupt": [], "cid": None}
+            await self.plan_next()
+        elif kind == "call":
             if task and a["verb"] not in QUIET_VERBS:
                 self.tasks.started(task)
             await self.call(a["verb"], a["args"])
@@ -296,6 +369,12 @@ class Mind:
         self.turn_fp = fingerprint(self.obs)
         a = await self.decide(reason)
         self.log(f"[mind] {a['action']}: {a['thinking']}")
+        self.count_tokens()
+        if a.get("error"):
+            self.error_streak += 1
+        else:
+            self.error_streak = 0
+            self.error_wait_logged = False
         await self.act(a)
         self.turn_tasks = self.tasks.version  # what this turn did itself is not news
         # A turn that only talked (confirmed a task, reported, noted) while a
@@ -308,9 +387,30 @@ class Mind:
                 self.follow_ups += 1
                 self.wakes.put_nowait(f"carry on with {', '.join(t.id for t in self.tasks.working())}")
 
+    def count_tokens(self) -> None:
+        """Completion tokens of this turn's model calls, and the running mean, to mind.out."""
+        toks = [r.completion_tokens for r in self.replies if getattr(r, "completion_tokens", None) is not None]
+        if not toks:
+            return
+        n = sum(toks)
+        self.token_turns += 1
+        self.token_total += n
+        reasoning = any(getattr(r, "reasoning", "") for r in self.replies)
+        self.reasoning_turns += reasoning
+        self.log(f"[llm] turn {self.turns}: {n} completion tokens in {len(toks)} call(s){' (with reasoning)' if reasoning else ''}; "
+                 f"mean {self.token_total / self.token_turns:.0f} over {self.token_turns} turns, {self.reasoning_turns} with reasoning")
+        if reasoning and not self.cfg.llm_thinking:
+            self.log("[llm] warning: reasoning_content came back although ATLAS_LLM_THINKING=0; the server ignored enable_thinking")
+
     async def think_forever(self) -> None:
         while True:
             reason = await self.next_wake()
+            if PLAN_NEXT in reason:
+                rest = [r for r in reason.split("; ") if r != PLAN_NEXT]
+                await self.plan_next()
+                if not rest:
+                    continue
+                reason = "; ".join(rest)
             if reason == "idle":
                 if self.asking:
                     if time.monotonic() < self.asking["deadline"]:
@@ -318,9 +418,14 @@ class Mind:
                     reason = f"no answer from {self.asking['player']} after {self.cfg.ask_timeout_s:g} s"
                     self.recent.append(f"no answer from {self.asking['player']}")
                     self.asking = None
-                elif self.long_pending():
-                    continue  # a verb is running: its result will wake us
+                elif self.long_pending() or self.plan is not None:
+                    continue  # a verb or a plan is running: its result will wake us
+                elif 0 < self.error_streak <= MAX_ERROR_RETRIES:
+                    reason = f"retrying after an unusable decision ({self.error_streak}/{MAX_ERROR_RETRIES})"
                 elif not self.changed_since_turn():
+                    if self.error_streak > MAX_ERROR_RETRIES and not self.error_wait_logged:
+                        self.error_wait_logged = True
+                        self.log(f"[mind] {MAX_ERROR_RETRIES} retries after unusable decisions failed; waiting for something to change")
                     continue  # nothing new: no model call
                 else:
                     reason = "idle, something changed since your last turn"
@@ -349,4 +454,5 @@ class Mind:
                 self.log(f"[mind] link down ({e.__class__.__name__}); retrying in 3 s")
             self.ws = None
             self.pending.clear()
+            self.plan = None
             await asyncio.sleep(3)

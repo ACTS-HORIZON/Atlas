@@ -36,6 +36,7 @@ class Config:
     llm_max_tokens: int = 2000
     llm_json_mode: bool = True
     llm_stop: bool = True
+    llm_thinking: bool = False
     llm_timeout_s: float = 120.0
     idle_s: float = 10.0
     ask_timeout_s: float = 120.0
@@ -63,6 +64,7 @@ class Config:
             llm_max_tokens=int(g("ATLAS_LLM_MAX_TOKENS", cls.llm_max_tokens)),
             llm_json_mode=g("ATLAS_LLM_JSON_MODE", "1") not in ("0", "false", "no"),
             llm_stop=g("ATLAS_LLM_STOP", "1") not in ("0", "false", "no"),
+            llm_thinking=g("ATLAS_LLM_THINKING", "0") in ("1", "true", "yes", "on"),
             llm_timeout_s=float(g("ATLAS_LLM_TIMEOUT_S", cls.llm_timeout_s)),
             idle_s=float(g("ATLAS_IDLE_S", cls.idle_s)),
             ask_timeout_s=float(g("ATLAS_ASK_TIMEOUT_S", cls.ask_timeout_s)),

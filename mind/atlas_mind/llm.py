@@ -23,12 +23,17 @@ class LLMError(Exception):
 
 
 class Reply(str):
-    """The model's text, with the server's finish_reason ("stop", "length", ...)."""
+    """The model's text, with the server's finish_reason ("stop", "length", ...),
+    any native reasoning it returned (reasoning_content), and token usage."""
     finish_reason: str | None = None
+    reasoning: str = ""
+    completion_tokens: int | None = None
 
-    def __new__(cls, text: str, finish_reason: str | None = None):
+    def __new__(cls, text: str, finish_reason: str | None = None, reasoning: str = "", completion_tokens: int | None = None):
         r = super().__new__(cls, text)
         r.finish_reason = finish_reason
+        r.reasoning = reasoning or ""
+        r.completion_tokens = completion_tokens
         return r
 
 
@@ -54,7 +59,8 @@ def open_depth(text: str) -> int:
 
 class OpenAICompatLLM:
     def __init__(self, url: str, model: str, key: str | None = None, temperature: float = 0.4,
-                 max_tokens: int = 2000, json_mode: bool = True, timeout_s: float = 120.0, stop_after_object: bool = True):
+                 max_tokens: int = 2000, json_mode: bool = True, timeout_s: float = 120.0, stop_after_object: bool = True,
+                 thinking: bool = False):
         self.url = url.rstrip("/") + "/chat/completions"
         self.model = model
         self.key = key
@@ -63,6 +69,7 @@ class OpenAICompatLLM:
         self.json_mode = json_mode
         self.timeout_s = timeout_s
         self.stop_after_object = stop_after_object
+        self.thinking = thinking
 
     def _post(self, messages: Messages) -> Reply:
         body = {"model": self.model, "messages": messages, "temperature": self.temperature, "max_tokens": self.max_tokens}
@@ -70,6 +77,12 @@ class OpenAICompatLLM:
             body["response_format"] = {"type": "json_object"}
             if self.stop_after_object:
                 body["stop"] = STOP
+        if not self.thinking:
+            # Native thinking off (Gemma 4 and other reasoning templates). llama.cpp
+            # reads both: chat_template_kwargs.enable_thinking=false sets the
+            # template's enable_thinking, and reasoning_effort "none" does the same.
+            body["chat_template_kwargs"] = {"enable_thinking": False}
+            body["reasoning_effort"] = "none"
         req = urllib.request.Request(self.url, data=json.dumps(body).encode(), method="POST",
                                      headers={"content-type": "application/json",
                                               **({"authorization": f"Bearer {self.key}"} if self.key else {})})
@@ -84,12 +97,14 @@ class OpenAICompatLLM:
             choice = data["choices"][0]
             text = choice["message"]["content"] or ""
             finish = choice.get("finish_reason")
+            reasoning = choice["message"].get("reasoning_content") or ""
+            tokens = (data.get("usage") or {}).get("completion_tokens")
         except (KeyError, IndexError, TypeError) as e:
             raise LLMError(f"unexpected reply shape: {str(data)[:300]}") from e
         # stopped on the top-level closing brace: put it back
         if self.json_mode and self.stop_after_object and finish == "stop" and text.lstrip().startswith("{") and open_depth(text) == 1:
             text = text.rstrip() + "\n}"
-        return Reply(text, finish)
+        return Reply(text, finish, reasoning, tokens)
 
     async def complete(self, messages: Messages) -> Reply:
         return await asyncio.to_thread(self._post, messages)
@@ -112,6 +127,8 @@ class FakeLLM:
         item = self.script.pop(0)
         if callable(item):
             item = item(messages)
+        if isinstance(item, Reply):
+            return item
         if isinstance(item, tuple):
-            return Reply(item[0], item[1])
+            return Reply(*item)
         return Reply(item if isinstance(item, str) else json.dumps(item), "stop")

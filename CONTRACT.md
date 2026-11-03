@@ -139,6 +139,7 @@ Kinds: `task_from_chat`, `player_said` (any chat from an allowlisted player that
 1. Wakes on a result, an event, or an idle timer (\~10 s).
 2. Builds context: task, full observation, notes, short memory, RAG hits for what it's about to do.
 3. Outputs exactly one of: a verb call, `say`, `ask_player(question)` (says it in chat and waits for a `player_said`), `write_verb(spec)`, `ask_advisor(question)`, or `wait`.
+   Or, instead of one action, a **plan**: an ordered list of up to 6 calls with one `thinking`. The mind runs it step by step (still one verb at a time) and thinks again only when a result isn't `done`, an event arrives (`task_from_chat`, `player_said`, `damaged_badly`, `died`, `stop_requested`, …), or the plan finishes. Each step's result is logged as usual. A plan is for when the next few steps are obvious (craft sticks → craft stone_pickaxe → mine iron_ore); a single action is for when the next step depends on what the bot will see.
 4. `ask_advisor` only exists when the advisor is enabled (config, off by default). Input/output only. Capped per session by dollars or tokens (config).
 5. Notes: Gemma writes down what worked, where things are, and what it learned; the notes file persists across sessions, worlds and servers.
 
