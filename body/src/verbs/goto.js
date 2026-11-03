@@ -41,10 +41,14 @@ async function walkTo (act, api, pos, what, range, move) {
   act.progress(`to ${what}`)
   const r = await api.goto(pos, { range, ...move, signal: act.signal, onProgress: d => act.progress(`to ${what}: ${d} blocks left`) })
   const data = { pos: pos.map(r1), remaining: r.remaining }
-  if (r.status === 'reached') return { status: 'done', detail: `arrived at ${what}`, data }
-  if (r.status === 'no_path' && r.moved < 1) return { status: 'failed', detail: `no path to ${what}`, data }
+  if (r.recoveries) data.recoveries = r.recoveries
+  if (r.why) { const { text, ...why } = r.why; data.why = why }
+  const because = r.why ? `: ${r.why.text}` : ''
+  const tried = r.tried && r.tried.length ? `; tried ${r.tried.join(' / ')}` : ''
+  if (r.status === 'reached') return { status: 'done', detail: `arrived at ${what}${r.recoveries ? ` after ${r.recoveries} recover${r.recoveries > 1 ? 'ies' : 'y'}` : ''}`, data }
+  if (r.status === 'no_path' && r.moved < 1) return { status: 'failed', detail: `no path to ${what}${because}`, data }
   const why = { no_path: 'no further path', stuck: 'stuck', timeout: 'took too long', aborted: 'stopped' }[r.status] || r.status
-  return { status: 'partial', detail: `gave up ${r.remaining} blocks short of ${what} (${why})`, data }
+  return { status: 'partial', detail: `gave up ${r.remaining} blocks short of ${what} (${why}${because})${tried}`, data }
 }
 
 /** Walk along a player's Locator Bar bearing until they are in sight. */

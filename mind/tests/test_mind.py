@@ -352,6 +352,50 @@ class MindTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("t1 [new] from ACTS_HORIZON: bring me 8 spruce logs", seen["context"])
         self.assertIn("WOKE BECAUSE: new task t1 from ACTS_HORIZON: bring me 8 spruce logs", seen["context"])
 
+    async def test_stuck_partial_counts_as_failed_for_the_repeat_guard(self):
+        await self.start([
+            {"thinking": "Confirm.", "action": "say", "text": "Coming.", "about": "t1"},
+            {"thinking": "Go to him.", "action": "call", "verb": "goto", "args": {"target": "ACTS_HORIZON"}, "about": "t1"},
+            {"thinking": "Try again.", "action": "call", "verb": "goto", "args": {"target": "ACTS_HORIZON"}, "about": "t1"},
+            {"thinking": "Dig down first.", "action": "call", "verb": "dig", "args": {"pos": [-14, 75, -11]}, "about": "t1"},
+        ], respond=lambda c: ("partial", 'gave up 13.3 blocks short of player ACTS_HORIZON at [-1.5, 64, -3.5] (stuck: feet air, head air, below spruce_log; in front: spruce_leaves (would dig) at [-13, 76, -10]; dig on, scaffold on; last plan: partial, no next step)', {"pos": [-1.5, 64, -3.5], "remaining": 13.3}) if c["verb"] == "goto" else ("done", "ok", None))
+        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "come here"})
+        await until(lambda: len(self.body.calls()) >= 3)
+        self.assertEqual([c["verb"] for c in self.body.calls()[:3]], ["say", "goto", "dig"], "the stuck goto was not sent again")
+        self.assertIn("just failed with: gave up 13.3 blocks short", self.llm.prompts[3][-1]["content"])
+
+    async def test_repeated_say_is_dropped(self):
+        logs = []
+        await self.start([
+            {"thinking": "Answer.", "action": "say", "text": "On my way!"},
+            {"thinking": "Answer again.", "action": "say", "text": "on my way"},
+            {"thinking": "Answer again, later.", "action": "say", "text": "On my way!"},
+        ])
+        self.mind.log = logs.append
+        await self.body.event("player_said", {"from": "ACTS_HORIZON", "text": "where are you?"})
+        await until(lambda: len(self.body.calls()) == 1)
+        await self.body.event("player_said", {"from": "ACTS_HORIZON", "text": "hello??"})
+        await until(lambda: len(self.mind.decisions) == 2)
+        await asyncio.sleep(0.2)
+        self.assertEqual(len(self.body.calls()), 1, "the same text (any case or punctuation) is not said again")
+        self.assertIn('[mind] warning: dropped a repeated say (said within 60 s): "on my way"', logs)
+        self.mind.now = lambda: __import__("time").monotonic() + 61  # a minute later it may be said again
+        await self.body.event("player_said", {"from": "ACTS_HORIZON", "text": "still there?"})
+        await until(lambda: len(self.body.calls()) == 2)
+
+    async def test_two_stalls_toward_a_target_add_a_route_hint(self):
+        await self.start([
+            {"thinking": "Confirm.", "action": "say", "text": "Coming.", "about": "t1"},
+            {"thinking": "Go.", "action": "call", "verb": "goto", "args": {"target": "ACTS_HORIZON"}, "about": "t1"},
+            {"thinking": "Go, wider.", "action": "call", "verb": "goto", "args": {"target": "ACTS_HORIZON", "range": 3}, "about": "t1"},
+            {"thinking": "Ask him.", "action": "ask_player", "player": "ACTS_HORIZON", "text": "I'm stuck in a tree, can you come closer?", "about": "t1"},
+        ], respond=lambda c: ("partial", 'gave up 13.3 blocks short of player ACTS_HORIZON at [-1.5, 64, -3.5] (stuck: feet air, head air, below spruce_log; in front: spruce_leaves (would dig) at [-13, 76, -10]; dig on, scaffold on; last plan: partial, no next step)', None) if c["verb"] == "goto" else ("done", "ok", None))
+        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "come here"})
+        await until(lambda: len(self.llm.prompts) >= 4)
+        hint = "ROUTE: the direct route to target ACTS_HORIZON is blocked (2 stuck attempts); try digging down/around, explore in another direction, or ask the player to come closer"
+        self.assertNotIn("ROUTE:", self.prompt_text(2), "one stall: no hint yet")
+        self.assertIn(hint, self.prompt_text(3))
+
     async def test_low_health_wakes_it(self):
         await self.start([{"thinking": "Hurt; back off.", "action": "call", "verb": "goto", "args": {"pos": [-10, 64, -10]}}])
         await self.body.ws.send(json.dumps(make_obs(health=4)))

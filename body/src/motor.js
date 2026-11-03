@@ -103,11 +103,20 @@ class Motor {
   /**
    * Walk to a goal. kind: 'near' (pos, range), 'xz' (pos x/z only),
    * 'look' (stand where a face of block pos is in reach and view).
-   * Resolves {status: reached|no_path|stuck|timeout|aborted, remaining, moved}.
+   * Resolves {status: reached|no_path|stuck|timeout|aborted, remaining, moved,
+   * recoveries, tried, why?}.
+   *
+   * Stall recovery: if the bot hasn't moved for stallMs (and isn't digging),
+   * one recovery cycle runs: jump; with dig, dig the head and feet blocks in
+   * front (towards the target) and the block above, when the pathfinder's own
+   * rules would break them; re-plan from where it stands. At most
+   * maxRecoveries cycles per goto.
+   * On stuck / no_path / timeout, `why` says what is around the bot and
+   * whether the pathfinder would dig it, plus its last plan (see diagnose()).
    */
-  goto ({ kind = 'near', pos, range = 1, dig = false, scaffold = false, signal, timeoutMs, stuckMs = 15000, onProgress }) {
+  goto ({ kind = 'near', pos, range = 1, dig = false, scaffold = false, signal, timeoutMs, stuckMs = 15000, stallMs = 3000, maxRecoveries = 3, onProgress }) {
     const bot = this.bot
-    if (!bot.pathfinder) return Promise.resolve({ status: 'no_path', remaining: null, moved: 0, reason: 'pathfinder not loaded' })
+    if (!bot.pathfinder) return Promise.resolve({ status: 'no_path', remaining: null, moved: 0, recoveries: 0, tried: [], reason: 'pathfinder not loaded' })
     const target = new Vec3(pos[0], pos[1], pos[2])
     let goal
     if (kind === 'xz') goal = new goals.GoalXZ(Math.floor(pos[0]), Math.floor(pos[2]))
@@ -121,7 +130,12 @@ class Motor {
     const t0 = Date.now()
     const limit = timeoutMs ?? 30000 + 1500 * dist()
     let best = dist(); let lastGain = Date.now()
-    bot.pathfinder.setMovements(this.movements({ dig, scaffold }))
+    const movements = this.movements({ dig, scaffold })
+    bot.pathfinder.setMovements(movements)
+    let lastPlan = null
+    let lastPos = bot.entity.position.clone(); let lastMove = Date.now()
+    let recoveries = 0; let recovering = false
+    const tried = []
     return new Promise(resolve => {
       let finished = false
       const finish = status => {
@@ -133,22 +147,43 @@ class Motor {
         signal?.removeEventListener('abort', onAbort)
         try { bot.pathfinder.setGoal(null) } catch {}
         bot.clearControlStates()
-        resolve({ status, remaining: r1(dist()), moved: r1(bot.entity.position.distanceTo(start)) })
+        const out = { status, remaining: r1(dist()), moved: r1(bot.entity.position.distanceTo(start)), recoveries, tried }
+        if (status === 'stuck' || status === 'no_path' || status === 'timeout') {
+          try { out.why = this.diagnose(movements, target, lastPlan, { dig, scaffold }) } catch {}
+        }
+        resolve(out)
       }
       const atEnd = () => goal.isEnd(bot.entity.position.floored())
       const onReached = () => finish('reached')
       const onPath = r => {
-        if (r.path.length === 0 && (r.status === 'noPath' || r.status === 'timeout')) finish(atEnd() ? 'reached' : 'no_path')
+        lastPlan = { status: r.status, next: r.path && r.path[0] ? r.path[0] : null }
+        if (r.path.length === 0 && (r.status === 'noPath' || r.status === 'timeout')) {
+          if (atEnd()) finish('reached')
+          else if (recovering) { /* re-planning after a recovery: wait for it */ } else finish('no_path')
+        }
       }
       const onAbort = () => finish('aborted')
       const tick = setInterval(() => {
         const d = dist()
         try { onProgress?.(r1(d)) } catch {}
-        if (d < best - 0.5 || bot.pathfinder.isMining()) { best = Math.min(best, d); lastGain = Date.now() }
-        if (atEnd()) finish('reached')
-        else if (Date.now() - lastGain > stuckMs) finish('stuck')
-        else if (Date.now() - t0 > limit) finish('timeout')
-      }, 500)
+        const mining = bot.pathfinder.isMining()
+        if (d < best - 0.5 || mining) { best = Math.min(best, d); lastGain = Date.now() }
+        if (bot.entity.position.distanceTo(lastPos) > 0.3 || mining) { lastPos = bot.entity.position.clone(); lastMove = Date.now() }
+        if (atEnd()) return finish('reached')
+        if (Date.now() - t0 > limit) return finish('timeout')
+        if (!recovering && Date.now() - lastMove > stallMs) {
+          if (recoveries < maxRecoveries) {
+            recovering = true
+            recoveries++
+            this.recover(goal, movements, target, dig, signal)
+              .then(steps => { tried.push(steps) })
+              .catch(err => { tried.push(`recovery failed: ${err.message}`) })
+              .finally(() => { recovering = false; lastMove = Date.now(); lastGain = Math.max(lastGain, Date.now() - stuckMs / 2) })
+            return
+          }
+        }
+        if (!recovering && Date.now() - lastGain > stuckMs) finish('stuck')
+      }, Math.min(500, Math.max(50, stallMs / 3)))
       bot.on('goal_reached', onReached)
       bot.on('path_update', onPath)
       signal?.addEventListener('abort', onAbort, { once: true })
@@ -156,6 +191,71 @@ class Motor {
       if (atEnd()) return finish('reached')
       bot.pathfinder.setGoal(goal)
     })
+  }
+
+  /** The cells the bot would move through first, towards target: [head front, feet front, above head]. */
+  frontCells (target) {
+    const p = this.bot.entity.position
+    const feet = p.floored()
+    const dx = target.x - p.x; const dz = target.z - p.z
+    const dir = Math.abs(dx) >= Math.abs(dz) ? new Vec3(Math.sign(dx) || 1, 0, 0) : new Vec3(0, 0, Math.sign(dz) || 1)
+    return [feet.plus(dir).offset(0, 1, 0), feet.plus(dir), feet.offset(0, 2, 0)]
+  }
+
+  /** One recovery cycle: jump, dig what's in the way (if dig), re-plan. Returns what it did. */
+  async recover (goal, movements, target, dig, signal) {
+    const bot = this.bot
+    const done = []
+    bot.setControlState('jump', true)
+    await new Promise(resolve => setTimeout(resolve, 350))
+    bot.setControlState('jump', false)
+    done.push('jump')
+    if (dig) {
+      for (const p of this.frontCells(target)) {
+        if (signal?.aborted) break
+        const b = bot.blockAt(p)
+        if (!b || b.boundingBox !== 'block') continue
+        if (!movements.safeToBreak(b)) { done.push(`left ${b.name} (the pathfinder won't break it)`); continue }
+        const r = await this.dig([p.x, p.y, p.z], { allowHand: true, signal })
+        done.push(r.ok ? `dug ${b.name}` : `couldn't dig ${b.name}: ${r.reason}`)
+      }
+    }
+    try { bot.pathfinder.setGoal(null); bot.pathfinder.setGoal(goal) } catch {}
+    done.push('re-planned')
+    return done.join(', ')
+  }
+
+  /**
+   * Why goto is stuck: the blocks at the bot's feet, head, below, in front
+   * (towards the target) and above, whether the pathfinder would break each
+   * (dig on and its movement rules allow it), and its last plan.
+   * Plain data plus a one-line `text`.
+   */
+  diagnose (movements, target, lastPlan, { dig, scaffold }) {
+    const bot = this.bot
+    const feet = bot.entity.position.floored()
+    const [frontHead, frontFeet, above] = this.frontCells(target)
+    const describe = p => {
+      const b = bot.blockAt(p)
+      if (!b) return { pos: [p.x, p.y, p.z], name: 'unloaded' }
+      const solid = b.boundingBox === 'block'
+      const out = { pos: [p.x, p.y, p.z], name: b.name, solid }
+      if (solid) out.breakable = dig ? !!movements.safeToBreak(b) : false
+      return out
+    }
+    const cells = { feet: describe(feet), head: describe(feet.offset(0, 1, 0)), below: describe(feet.offset(0, -1, 0)), front_feet: describe(frontFeet), front_head: describe(frontHead), above: describe(above) }
+    const next = lastPlan && lastPlan.next
+      ? { pos: [lastPlan.next.x, lastPlan.next.y, lastPlan.next.z], break: (lastPlan.next.toBreak || []).map(q => bot.blockAt(q)?.name || '?'), place: (lastPlan.next.toPlace || []).length }
+      : null
+    const label = c => !c.solid ? c.name : `${c.name} (${c.breakable ? 'would dig' : dig ? "won't dig" : 'dig off'})`
+    const blocking = [cells.front_feet, cells.front_head].filter(c => c.solid)
+    const text = [
+      `feet ${cells.feet.name}, head ${cells.head.name}, below ${cells.below.name}`,
+      blocking.length ? `in front: ${blocking.map(c => `${label(c)} at [${c.pos.join(', ')}]`).join(', ')}` : 'nothing solid in front',
+      `dig ${dig ? 'on' : 'off'}, scaffold ${scaffold ? 'on' : 'off'}`,
+      lastPlan ? `last plan: ${lastPlan.status}${next ? `, next step [${next.pos.join(', ')}]${next.break.length ? ` breaking ${next.break.join('+')}` : ''}${next.place ? ` placing ${next.place}` : ''}` : ', no next step'}` : 'no plan yet'
+    ].join('; ')
+    return { ...cells, dig: !!dig, scaffold: !!scaffold, plan: lastPlan ? lastPlan.status : null, next_step: next, text }
   }
 
   /** Stop everything: path, digging, controls. */

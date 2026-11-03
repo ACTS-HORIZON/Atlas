@@ -56,6 +56,27 @@ V = CONTRACT_VERSION
 QUIET_VERBS = {"say", "recall", "stop"}  # their results don't wake a turn
 MAX_FOLLOW_UPS = 3
 MAX_ERROR_RETRIES = 3
+SAY_REPEAT_WINDOW_S = 60  # a say matching one of the last 3 says within this window is dropped
+STUCK_RE = re.compile(r"\b(stuck|gave up)\b")
+
+
+def norm_say(text: str) -> str:
+    return " ".join(re.sub(r"[^\w\s]", " ", text.lower()).split())
+
+
+def target_key(call: dict) -> str | None:
+    """What a movement-ish call was trying to reach, to count repeated stalls."""
+    a = call.get("args") or {}
+    if call["verb"] == "goto":
+        if a.get("target"):
+            return f"target {a['target']}"
+        if isinstance(a.get("pos"), list):
+            return "pos [" + ", ".join(str(round(v)) for v in a["pos"]) + "]"
+    if call["verb"] == "give" and a.get("player"):
+        return f"target {a['player']}"
+    if call["verb"] in ("deposit", "withdraw") and isinstance(a.get("chest"), list):
+        return "chest [" + ", ".join(str(v) for v in a["chest"]) + "]"
+    return None
 PLAN_NEXT = "\x00plan-next"  # internal wake: run the next plan step, no model call
 
 
@@ -116,6 +137,8 @@ class Mind:
         self.token_turns = 0
         self.token_total = 0
         self.reasoning_turns = 0
+        self.says: deque = deque(maxlen=3)  # (normalised text, time) of the last says sent
+        self.stalls: dict[str, int] = {}  # target -> stuck / gave-up results toward it
 
     # ---- link -----------------------------------------------------------------
     async def send(self, msg: dict) -> None:
@@ -145,7 +168,14 @@ class Mind:
             self.recent.append(history_line("result", m))
             if not call:
                 return  # nothing was waiting on it
-            failed = m["status"] in ("failed", "refused")
+            stalled = m["status"] == "partial" and bool(STUCK_RE.search(m.get("detail") or ""))
+            failed = m["status"] in ("failed", "refused") or stalled  # a stuck/gave-up partial is a failure for the repeat guard
+            key = target_key(call)
+            if key:
+                if stalled or (m["status"] == "failed" and STUCK_RE.search(m.get("detail") or "")):
+                    self.stalls[key] = self.stalls.get(key, 0) + 1
+                elif m["status"] == "done":
+                    self.stalls.pop(key, None)
             if failed and m["detail"] != "busy":
                 self.last_failed = (call["verb"], canon(call.get("args")), m["detail"])
             if self.plan is not None and m["id"] == self.plan.get("cid"):
@@ -207,6 +237,8 @@ class Mind:
             self.tasks.started(task)
         self.log(f"[mind] plan step {p['i']}/{p['n']}: {st['verb']} {canon(st['args'])}")
         p["cid"] = await self.call(st["verb"], st["args"])
+        if p["cid"] is None:  # a dropped (repeated) say: carry on
+            self.wakes.put_nowait(PLAN_NEXT) if p["steps"] else self.plan_step_done(st, {"status": "done", "detail": "skipped"})
 
     def set_obs(self, o: dict) -> None:
         self.obs = o
@@ -230,6 +262,10 @@ class Mind:
             extra = f"\nWAITING for {self.asking['player']} to answer: {self.asking['text']}\n"
         if self.last_failed:
             extra += f"\nLAST FAILED CALL: {self.last_failed[0]} {self.last_failed[1]} -> {self.last_failed[2]}\n"
+        for key, n in self.stalls.items():
+            if n >= 2:
+                extra += (f"\nROUTE: the direct route to {key} is blocked ({n} stuck attempts); try digging down/around, "
+                          "explore in another direction, or ask the player to come closer\n")
         user = context(self.tasks.render(), render_obs(self.obs), list(self.recent), self.notes.render(), wake, extra)
         return [{"role": "system", "content": self.system}, {"role": "user", "content": user}]
 
@@ -381,7 +417,25 @@ class Mind:
             self.recent.append(f"you noted: {a['text']}")
             await self.send({"type": "trace", "v": V, "t": t, "kind": "note", "text": a["text"]})
 
-    async def call(self, verb: str, args: dict) -> str:
+    def repeated_say(self, text: str) -> bool:
+        """Does this say match one of the last 3 says sent within the window?"""
+        n = norm_say(text)
+        now = self.now()
+        for prev, t in self.says:
+            if now - t <= SAY_REPEAT_WINDOW_S and (prev == n or difflib.SequenceMatcher(None, prev, n).ratio() >= 0.9):
+                return True
+        return False
+
+    def now(self) -> float:
+        return time.monotonic()
+
+    async def call(self, verb: str, args: dict) -> str | None:
+        if verb == "say" and isinstance(args.get("text"), str):
+            if self.repeated_say(args["text"]):
+                self.log(f'[mind] warning: dropped a repeated say (said within {SAY_REPEAT_WINDOW_S} s): "{args["text"]}"')
+                self.recent.append(f'you did not repeat yourself: "{args["text"]}" was already said')
+                return None
+            self.says.append((norm_say(args["text"]), self.now()))
         self._n += 1
         cid = f"m{self._n}"
         msg = {"type": "call", "v": V, "id": cid, "verb": verb, "args": args}

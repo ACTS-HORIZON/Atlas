@@ -53,7 +53,9 @@ The nearest known place of `type` in this dimension. `near` defaults to the bot'
 - **Progress:** `to <what>: <n> blocks left`, or `following <name>'s bearing (<deg>°), <n> blocks so far`.
 - **Results:**
   - `done`: `arrived at <what>`, `data: {pos, remaining}`
-  - `partial`: `gave up <n> blocks short of <what> (stuck|took too long|no further path)`, `data: {pos, remaining}`. Following a bearing: `lost <name>'s bearing after <n> blocks`, `data: {pos: null, remaining: null}`
+  - `partial`: `gave up <n> blocks short of <what> (stuck|took too long|no further path: <why>); tried <recoveries>`, `data: {pos, remaining, why, recoveries}`. Following a bearing: `lost <name>'s bearing after <n> blocks`, `data: {pos: null, remaining: null}`
+  - `<why>` says what is around: `feet <block>, head <block>, below <block>; in front: <block> (would dig|won't dig|dig off) at [x, y, z]; dig on|off, scaffold on|off; last plan: <status>, next step […]`. `data.why` has the same as fields.
+- **Getting unstuck:** when it hasn't moved for about 3 s, it jumps, digs the blocks in front and above (with `dig`, leaves and logs included), and re-plans, at most 3 times per goto. A stuck or gave-up `partial` counts as a failure: don't repeat the same call; dig down or around, try another direction, or ask the player to come closer.
   - `failed`: `no path to <what>`
   - `refused`: `fair play: <target> has not been observed …`
 - **Who is on the Locator Bar:** whoever the server sends a waypoint for (the 26.1 `tracked_waypoint` packet); the game decides, and the body adds no rules of its own. These rules were not checked against minecraft.wiki: the site was unreachable from the build environment.
