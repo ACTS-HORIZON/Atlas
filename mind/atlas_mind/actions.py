@@ -9,6 +9,7 @@
 {"thinking": "...", "action": "wait"}
 {"thinking": "...", "action": "plan", "about": "t1", "steps": [{"verb": "craft", "args": {...}}, ...]}  # up to 6 calls
 {"thinking": "...", "action": "lookup", "query": "iron ore y level", "about": "t1"}  # the wiki; answer next turn
+{"thinking": "...", "action": "lesson", "text": "when a player is above me, goto surface first"}  # data/lessons.jsonl
 
 "about" ties an action to a task; "closes" finishes one; "standing": true
 marks the task it is about as standing (re-planned until stopped).
@@ -18,7 +19,7 @@ from __future__ import annotations
 
 import json
 
-ACTIONS = ("call", "say", "ask_player", "note", "done", "wait", "plan", "lookup")
+ACTIONS = ("call", "say", "ask_player", "note", "done", "wait", "plan", "lookup", "lesson")
 MAX_PLAN = 6
 
 
@@ -106,7 +107,7 @@ def validate(obj: dict, verbs: set[str] | None = None) -> dict:
         if not isinstance(args, dict):
             raise ActionError('"args" must be an object')
         out.update(verb=verb, args=args)
-    elif a in ("say", "note"):
+    elif a in ("say", "note", "lesson"):
         text = obj.get("text")
         if not isinstance(text, str) or not text.strip():
             raise ActionError(f'"{a}" needs "text"')

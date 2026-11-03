@@ -95,7 +95,8 @@ class MindHarness:
         self.llm = FakeLLM(script)
         self.cfg = Config(link_url=url, idle_s=cfg.pop("idle_s", 0.2), ask_timeout_s=cfg.pop("ask_timeout_s", 30),
                           notes_file=Path(self.tmp.name) / "notes.md", verb_reference=ROOT / "docs" / "verbs.md",
-                          wiki_index=cfg.pop("wiki_index", Path(self.tmp.name) / "no-index.json"), **cfg)
+                          wiki_index=cfg.pop("wiki_index", Path(self.tmp.name) / "no-index.json"),
+                          lessons=cfg.pop("lessons", False), lessons_file=cfg.pop("lessons_file", Path(self.tmp.name) / "lessons.jsonl"), **cfg)
         self.mind = Mind(self.cfg, self.llm, log=lambda *_: None, retriever=retriever)
         self.task = asyncio.create_task(self.mind.run())
         await until(lambda: self.body.ws is not None and self.mind.obs is not None)
@@ -556,7 +557,7 @@ class UnitTest(unittest.TestCase):
             lines.append({"ts": "t3", "dir": "out", "msg": {"type": "result", "v": "0.1", "id": "m1", "status": "done", "detail": "mined 3 oak_log", "obs": make_obs(t=9)}})
             log.write_text("\n".join(json.dumps(x) for x in lines) + "\n")
             llm = FakeLLM([])
-            cfg = Config(notes_file=Path(d) / "notes.md", verb_reference=ROOT / "docs" / "verbs.md", wiki_index=Path(d) / "none.json")
+            cfg = Config(notes_file=Path(d) / "notes.md", verb_reference=ROOT / "docs" / "verbs.md", wiki_index=Path(d) / "none.json", lessons_file=Path(d) / "lessons.jsonl")
             out = []
             n = asyncio.run(replay(Mind(cfg, llm, log=lambda *_: None), [str(log)], every=2, limit=10, out=out.append))
             self.assertEqual(n, 4)  # obs 2 and 4, the event, the result
@@ -688,7 +689,7 @@ class ThinkingTest(unittest.TestCase):
             url = await body.start()
             with tempfile.TemporaryDirectory() as d:
                 logs = []
-                cfg = Config(link_url=url, idle_s=0.1, notes_file=Path(d) / "n.md", verb_reference=ROOT / "docs" / "verbs.md", llm_thinking=False, wiki_index=Path(d) / "none.json")
+                cfg = Config(link_url=url, idle_s=0.1, notes_file=Path(d) / "n.md", verb_reference=ROOT / "docs" / "verbs.md", llm_thinking=False, wiki_index=Path(d) / "none.json", lessons_file=Path(d) / "lessons.jsonl")
                 llm = FakeLLM([r, ('{"thinking": "x", "action": "wait"}', "stop", "", 12)])
                 mind = Mind(cfg, llm, log=logs.append)
                 task = asyncio.create_task(mind.run())
@@ -717,7 +718,7 @@ class TaskRefTest(unittest.TestCase):
     def mind(self, *texts):
         d = tempfile.mkdtemp()
         logs = []
-        m = Mind(Config(notes_file=Path(d) / "n.md", verb_reference=ROOT / "docs" / "verbs.md", wiki_index=Path(d) / "none.json"), FakeLLM([]), log=logs.append)
+        m = Mind(Config(notes_file=Path(d) / "n.md", verb_reference=ROOT / "docs" / "verbs.md", wiki_index=Path(d) / "none.json", lessons_file=Path(d) / "lessons.jsonl"), FakeLLM([]), log=logs.append)
         for t in texts:
             m.tasks.add("ACTS_HORIZON", t)
         return m, logs
@@ -792,7 +793,7 @@ SHAFT = {"summary": "in a 1-wide shaft 5 deep, stone all sides, open above", "fe
 class EyesTest(unittest.TestCase):
     def test_inventory_and_surroundings_near_the_top(self):
         with tempfile.TemporaryDirectory() as d:
-            m = Mind(Config(notes_file=Path(d) / "n.md", verb_reference=ROOT / "docs" / "verbs.md", wiki_index=Path(d) / "none.json"),
+            m = Mind(Config(notes_file=Path(d) / "n.md", verb_reference=ROOT / "docs" / "verbs.md", wiki_index=Path(d) / "none.json", lessons_file=Path(d) / "lessons.jsonl"),
                      FakeLLM([]), log=lambda *_: None)
             o = make_obs(inventory={"spruce_log": 3, "cobblestone": 9})
             o["surroundings"] = SHAFT
@@ -943,3 +944,121 @@ class NoGuardsTest(MindHarness, unittest.IsolatedAsyncioTestCase):
         self.assertIn('[mind] fuse: mine {"block":"stone"} ×5; pausing 0.6 s', logs)
         await until(lambda: len(self.body.calls()) >= 6, timeout=5)
         self.assertGreaterEqual(asyncio.get_running_loop().time() - t5, 0.5, "the 6th call came after the pause")
+
+
+class LessonsTest(MindHarness, unittest.IsolatedAsyncioTestCase):
+    def lesson_prompts(self):
+        return [m for m in self.llm.prompts if "Time to write down a lesson" in m[-1]["content"]]
+
+    def traces(self, kind):
+        return [m for m in self.body.received if m["type"] == "trace" and m["kind"] == kind]
+
+    async def test_a_task_close_produces_exactly_one_lesson_turn(self):
+        await self.start([
+            {"thinking": "Confirm.", "action": "say", "text": "On it.", "about": "t1"},
+            {"thinking": "Done.", "action": "say", "text": "Here you go.", "closes": "t1"},
+            {"lesson": "when asked for logs, mine the nearest tree first"},
+            {"thinking": "w", "action": "wait"},
+        ], lessons=True)
+        await self.body.event("task_from_chat", {"from": "Rook", "text": "get me some logs"})
+        await until(lambda: self.traces("lesson"))
+        await asyncio.sleep(0.5)
+        self.assertEqual(len(self.lesson_prompts()), 1, "exactly one lesson turn")
+        lp = self.lesson_prompts()[0][-1]["content"]
+        self.assertIn("(t1 done)", lp)
+        self.assertIn('Reply with exactly {"lesson": "..."} or {"lesson": null}', lp)
+        rows = [json.loads(x) for x in self.cfg.lessons_file.read_text().splitlines()]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["lesson"], "when asked for logs, mine the nearest tree first")
+        self.assertEqual(rows[0]["outcome"], "done")
+        self.assertEqual(rows[0]["situation"]["task_text"], "get me some logs")
+        self.assertEqual(rows[0]["server"], "localhost:25565")
+        self.assertEqual(set(rows[0]), {"t", "server", "situation", "lesson", "outcome"})
+        tr = self.traces("lesson")[0]
+        self.assertEqual(tr["text"], "when asked for logs, mine the nearest tree first")
+
+    async def test_two_same_class_failures_give_a_lesson_turn_and_a_stuck_line(self):
+        details = iter(["mine: no iron_ore in view within 32 blocks", "mine: no iron_ore in view within 48 blocks"])
+        await self.start([
+            {"thinking": "Mine.", "action": "call", "verb": "mine", "args": {"block": "iron_ore"}},
+            {"thinking": "Wider.", "action": "call", "verb": "mine", "args": {"block": "iron_ore", "radius": 48}},
+            {"lesson": None},
+            {"thinking": "Look it up.", "action": "lookup", "query": "iron ore y level"},
+            {"thinking": "w", "action": "wait"},
+        ], respond=lambda c: ("failed", next(details), None), lessons=True)
+        t = self.mind.tasks.add("Rook", "get iron")
+        t.state = "running"
+        self.mind.wake("go")
+        await until(lambda: len(self.llm.prompts) >= 4)
+        self.assertEqual(len(self.lesson_prompts()), 1)
+        self.assertIn("mine: no iron_ore in view within blocks came back twice in a row", self.lesson_prompts()[0][-1]["content"])
+        p = self.llm.prompts[3][-1]["content"]
+        self.assertIn('STUCK: "mine: no iron_ore in view within blocks" came back 2x in a row (last: mine {"block":"iron_ore","radius":48} -> mine: no iron_ore in view within 48 blocks). Lessons for it: none yet.', p)
+        self.assertIn("different in kind", p)
+        self.assertEqual(self.traces("lesson"), [], "a null lesson is not stored")
+        self.assertFalse(self.cfg.lessons_file.exists())
+
+    async def test_fuse_and_stuck_mode_dont_interact(self):
+        logs = []
+        call = {"thinking": "Mine.", "action": "call", "verb": "mine", "args": {"block": "stone"}}
+        await self.start([call, call, {"lesson": "stone needs a pickaxe; craft one before mining stone"}, call, call, call, call],
+                         respond=lambda c: ("failed", "mine: stone needs one of: wooden_pickaxe; none in inventory", None), lessons=True, fuse_s=0.6)
+        t = self.mind.tasks.add("Rook", "get stone")
+        t.state = "running"
+        self.mind.log = logs.append
+        self.mind.wake("go")
+        await until(lambda: len(self.body.calls()) >= 6, timeout=6)
+        self.assertEqual(len(self.lesson_prompts()), 1, "stuck mode asked for one lesson (at 2), not again at 3, 4, 5")
+        self.assertEqual(sum("fuse:" in str(x) for x in logs), 1, "the fuse fired once, at 5")
+        self.assertEqual([c["verb"] for c in self.body.calls()], ["mine"] * 6, "nothing was refused: stuck only informs, the fuse only pauses")
+        later = self.llm.prompts[-1][-1]["content"]
+        self.assertIn("STUCK:", later)
+        self.assertIn('Lessons for it: "stone needs a pickaxe; craft one before mining stone"', later)
+
+    async def test_the_lesson_action_and_lessons_in_the_context(self):
+        await self.start([
+            {"thinking": "Remember this.", "action": "lesson", "text": "when a player is above me, goto surface first"},
+            {"thinking": "w", "action": "wait"},
+        ], lessons=True)
+        t = self.mind.tasks.add("Rook", "bring me the pickaxe, I'm up on the surface")
+        t.state = "running"
+        self.mind.wake("go")
+        await until(lambda: self.traces("lesson"))
+        self.mind.wake("again")
+        await until(lambda: len(self.llm.prompts) >= 2)
+        p = self.llm.prompts[1][-1]["content"]
+        self.assertIn("LESSONS (from your own play; use them over your memory when they disagree)\n- (0 min ago) when a player is above me, goto surface first", p)
+        self.assertLess(p.index("LESSONS"), p.index("Decide the next action"))
+
+
+class LessonStoreTest(unittest.TestCase):
+    def test_retrieved_for_a_matching_situation_not_an_unrelated_one(self):
+        from atlas_mind.lessons import LessonStore, failure_class
+        with tempfile.TemporaryDirectory() as d:
+            s = LessonStore(Path(d) / "l.jsonl", "localhost:25565")
+            s.add("when a player is above me, goto surface first",
+                  {"verb": "give", "failure_class": failure_class("give", "give: could not reach Rook: Rook is above you, not ahead"),
+                   "surroundings_sentence": "in a 1-wide tunnel running north-south, stone all sides", "task_text": "bring me a pickaxe"}, "done")
+            s.add("smelt raw iron in a furnace before crafting iron tools",
+                  {"verb": "craft", "failure_class": "craft: missing iron_ingot", "surroundings_sentence": "on open flat ground", "task_text": "make an iron pickaxe"}, "done")
+            hit = s.search("give the pickaxe to Rook; Rook is above you, not ahead; in a 1-wide tunnel running north-south", 3)
+            self.assertEqual(hit[0][0]["lesson"], "when a player is above me, goto surface first")
+            self.assertEqual(s.search("go fishing in the ocean with a boat", 3), [], "unrelated: nothing")
+            again = LessonStore(Path(d) / "l.jsonl")
+            self.assertEqual(len(again.items), 2, "persisted, one line each")
+
+    def test_capped_oldest_pruned(self):
+        from atlas_mind.lessons import LessonStore
+        with tempfile.TemporaryDirectory() as d:
+            s = LessonStore(Path(d) / "l.jsonl", max_lessons=3)
+            for i in range(5):
+                s.add(f"lesson number {i}", {}, "written")
+            self.assertEqual([x["lesson"] for x in s.items], ["lesson number 2", "lesson number 3", "lesson number 4"])
+            self.assertEqual(len((Path(d) / "l.jsonl").read_text().splitlines()), 3)
+
+    def test_failure_class_ignores_numbers_and_coordinates(self):
+        from atlas_mind.lessons import failure_class
+        self.assertEqual(failure_class("mine", "mine: no iron_ore in view within 32 blocks"), failure_class("mine", "mine: no iron_ore in view within 48 blocks"))
+        self.assertEqual(failure_class("goto", "gave up 13.3 blocks short of [9, 64, 9] (stuck: feet air)"),
+                         failure_class("goto", "gave up 2 blocks short of [1, 2, 3] (stuck: head stone)"))
+        self.assertNotEqual(failure_class("mine", "mine: no iron_ore in view"), failure_class("craft", "craft: missing 2 planks"))

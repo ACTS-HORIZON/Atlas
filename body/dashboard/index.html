@@ -121,6 +121,11 @@
   </section>
 
   <section>
+    <h2>Notes &amp; lessons <span class="n" id="notes-n"></span></h2>
+    <div id="notes" class="feed scroll tall"><div class="empty">no notes or lessons yet</div></div>
+  </section>
+
+  <section>
     <h2>Known places <span class="n" id="places-n"></span></h2>
     <div class="scroll"><table id="places"></table></div>
   </section>
@@ -253,7 +258,7 @@ function renderChat (chat) {
 }
 
 // ---- other messages ----
-let nEvents = 0; let nTrace = 0
+let nEvents = 0; let nTrace = 0; let nNotes = 0
 function renderEvent (env) {
   const m = env.msg
   $('events-n').textContent = ++nEvents
@@ -265,6 +270,10 @@ function renderTrace (env) {
   const item = el('div', null, el('span', { class: 't' }, 't=' + m.t), tag(m.kind, m.kind === 'decision' ? 'done' : ''), m.text)
   if (m.data && Object.keys(m.data).length) item.append(el('details', null, el('summary', null, 'data'), el('pre', null, JSON.stringify(m.data, null, 2))))
   pushFeed($('trace'), item)
+  if (m.kind === 'note' || m.kind === 'lesson') { // what the mind wrote down: notes (places, facts) and lessons from its own play
+    $('notes-n').textContent = ++nNotes
+    pushFeed($('notes'), el('div', null, el('span', { class: 't' }, 't=' + m.t), tag(m.kind, m.kind === 'lesson' ? 'done' : ''), m.text))
+  }
 }
 function renderCall (env) {
   const m = env.msg

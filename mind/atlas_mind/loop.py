@@ -57,7 +57,8 @@ from collections import deque
 from pathlib import Path
 
 from . import CONTRACT_VERSION, wiki
-from .actions import ActionError, parse
+from .lessons import LessonStore, age, failure_class
+from .actions import ActionError, extract_json, parse
 from .config import Config
 from .llm import LLMError
 from .notes import Notes
@@ -182,6 +183,10 @@ class Mind:
         self.connect_t = None  # game tick of the first obs since the link came up
         self.last_call_target: dict[str, str] = {}
         self.fuse_streak: tuple = (None, 0)  # (call key, identical failures in a row)
+        self.lessons = LessonStore(cfg.lessons_file, cfg.server, cfg.lessons_max)
+        self.lesson_queue: list[dict] = []  # situations waiting for a lesson turn
+        self.class_streak: dict | None = None  # {cls, n, verb, args, detail, task}: same failure class in a row
+        self.stuck: dict | None = None  # the streak once it reached 2 (stuck mode: a STUCK line, nothing refused)
         self.fuse_until = 0.0  # verb -> target of its latest call
         self.call_meta: dict[str, tuple] = {}  # call id -> (task id, place cell when sent)
         self.retriever = retriever if retriever is not None else wiki.load_retriever(cfg.wiki_index)
@@ -228,6 +233,7 @@ class Mind:
                 self.tasks.result(task, call["verb"], call.get("args"), place, m["status"], m.get("detail") or "", failed)
             if call["verb"] not in QUIET_VERBS and m["detail"] != "busy":
                 self.fuse_check(call, failed)
+                self.class_check(call, m, failed, task)
             if failed and m["detail"] != "busy":
                 key = (call["verb"], canon(call.get("args")))
                 self.failures = [f for f in self.failures if (f["verb"], f["args"]) != key]
@@ -259,6 +265,8 @@ class Mind:
                     self.wake(f"{d.get('from')} said: {d.get('text')}")
             elif kind == "stop_requested":
                 stopped = self.tasks.stop_working()
+                for st in stopped:
+                    self.lesson_closed(st, "stopped")
                 self.asking = None
                 self.wake(f"stop requested by {d.get('from', 'someone')}" + (f"; {', '.join(t.id for t in stopped)} stopped" if stopped else ""))
             else:
@@ -356,6 +364,96 @@ class Mind:
 
     # ---- thinking -------------------------------------------------------------
     # ---- failures and hints -------------------------------------------------------
+    # ---- lessons and stuck mode ---------------------------------------------------
+    def situation(self, task=None, verb: str | None = None, cls: str | None = None) -> dict:
+        s = ((self.obs or {}).get("surroundings") or {}).get("summary")
+        return {"verb": verb or (self.class_streak or {}).get("verb"), "failure_class": cls or (self.class_streak or {}).get("cls"),
+                "surroundings_sentence": s, "task_text": task.text if task else None}
+
+    def class_check(self, call: dict, m: dict, failed: bool, task) -> None:
+        """Same failure class (same verb, same reason family) twice in a row: a lesson turn, and stuck mode
+        (a STUCK line in the context until something else happens). Nothing is refused."""
+        if not failed:
+            if m["status"] == "done":
+                self.class_streak = None
+                self.stuck = None
+            return
+        cls = failure_class(call["verb"], m.get("detail") or "")
+        n = self.class_streak["n"] + 1 if self.class_streak and self.class_streak["cls"] == cls else 1
+        self.class_streak = {"cls": cls, "n": n, "verb": call["verb"], "args": canon(call.get("args")), "detail": m.get("detail") or "",
+                             "task": task.id if task else None}
+        if n >= 2:
+            self.stuck = dict(self.class_streak)
+        else:
+            self.stuck = None
+        if n == 2 and self.cfg.lessons:
+            self.lesson_queue.append({"why": f"{cls} came back twice in a row", "outcome": "failing",
+                                      "situation": self.situation(task, call["verb"], cls), "task": task.id if task else None})
+
+    def lesson_closed(self, task, outcome: str) -> None:
+        if self.cfg.lessons:
+            self.lesson_queue.append({"why": f"{task.id} {outcome}", "outcome": outcome, "situation": self.situation(task), "task": task.id})
+
+    def lesson_query(self) -> str:
+        parts = [t.text for t in (self.tasks.working() or self.tasks.open())[-2:]]
+        if self.last_failure:
+            parts.append(self.last_failure)
+        s = ((self.obs or {}).get("surroundings") or {}).get("summary")
+        if s:
+            parts.append(s)
+        return " ".join(parts)
+
+    def lessons_block(self) -> str:
+        found = self.lessons.search(self.lesson_query(), self.cfg.lessons_k)
+        if not found:
+            return ""
+        lines = [f"- ({age(r.get('t'))}) {r['lesson']}" for r, _ in found]
+        return "LESSONS (from your own play; use them over your memory when they disagree)\n" + "\n".join(lines) + "\n\n"
+
+    def stuck_line(self) -> str:
+        s = self.stuck
+        if not s:
+            return ""
+        found = self.lessons.search(f"{s['cls']} {s['detail']}", self.cfg.lessons_k)
+        ls = "; ".join(f"\"{r['lesson']}\" ({age(r.get('t'))})" for r, _ in found) or "none yet"
+        return (f"\nSTUCK: \"{s['cls']}\" came back {s['n']}x in a row (last: {s['verb']} {s['args']} -> {one_line(s['detail'], 120)}). "
+                f"Lessons for it: {ls}. Your next action should be different in kind: a lookup, a different verb or target, "
+                "a lesson, or ask_player.\n")
+
+    async def store_lesson(self, text: str, situation: dict, outcome: str, why: str) -> None:
+        rec = self.lessons.add(text, situation, outcome)
+        self.recent.append(f"you learned: {rec['lesson']}")
+        self.log(f"[mind] lesson ({why}): {rec['lesson']}")
+        await self.send({"type": "trace", "v": V, "t": (self.obs or {}).get("t", 0), "kind": "lesson", "text": rec["lesson"],
+                         "data": {"situation": rec["situation"], "outcome": outcome, "why": why}})
+
+    async def run_lessons(self) -> None:
+        """One short model call per queued situation: {"lesson": "..."} or {"lesson": null}."""
+        while self.lesson_queue:
+            item = self.lesson_queue.pop(0)
+            task = self.tasks.get(item.get("task"))
+            happened = (self.tasks.render_journal(task) if task else []) or [f"    {x}" for x in list(self.recent)[-8:]]
+            sit = item["situation"]
+            user = (f"Time to write down a lesson ({item['why']}).\n"
+                    f"SITUATION: verb {sit.get('verb')}; failure {sit.get('failure_class')}; surroundings: {sit.get('surroundings_sentence')}; "
+                    f"task: {sit.get('task_text')}\nWHAT HAPPENED:\n" + "\n".join(happened) + "\n"
+                    "A lesson is one general sentence you'd want to remember next time in a situation like this "
+                    "(\"when a player is above me, goto surface first\"), not a transcript of what happened. "
+                    'If there is nothing worth keeping, say so. Reply with exactly {"lesson": "..."} or {"lesson": null}.')
+            msgs = [{"role": "system", "content": f"You are {self.cfg.bot_name}, a Minecraft player, keeping lessons from your own play."},
+                    {"role": "user", "content": user}]
+            try:
+                raw = await self.llm.complete(msgs)
+                obj = extract_json(str(raw))
+            except (LLMError, ActionError) as e:
+                self.log(f"[mind] lesson turn ({item['why']}): no usable reply ({e})")
+                continue
+            text = obj.get("lesson") if isinstance(obj, dict) else None
+            if isinstance(text, str) and text.strip():
+                await self.store_lesson(text, sit, item["outcome"], item["why"])
+            else:
+                self.log(f"[mind] lesson turn ({item['why']}): nothing to keep")
+
     def fuse_check(self, call: dict, failed: bool) -> None:
         """The fuse (not a guard: nothing is refused): the identical call failing fuse_count times in a
         row pauses the mind for fuse_s seconds, then it carries on as before."""
@@ -413,6 +511,7 @@ class Mind:
         if self.lookup and self.turns > self.lookup["turn"] and self.hint_alive(self.lookup):
             shown = self.lookup["ids"]  # not repeated under KNOWLEDGE
             out += f'LOOKUP "{self.lookup["query"]}" (from the wiki; use it over your memory)\n{self.lookup["text"]}\n\n'
+        out += self.lessons_block()
         q = self.rag_query()
         text, titles = self.retrieve(q, self.cfg.rag_tokens, exclude=shown)
         if text:
@@ -438,6 +537,7 @@ class Mind:
         extra = ""
         if self.asking:
             extra = f"\nWAITING for {self.asking['player']} to answer: {self.asking['text']}\n"
+        extra += self.stuck_line()
         fails = self.recent_failures()
         if fails:
             extra += "\nFAILED RECENTLY (don't repeat): " + "; ".join(
@@ -504,7 +604,7 @@ class Mind:
                 return True
             h = ((self.obs or {}).get("self") or {}).get("health")
             return verb == "goto" and isinstance(h, (int, float)) and h < self.cfg.retreat_health
-        if a["action"] in ("say", "note", "wait", "lookup"):  # lookup reads the wiki, it doesn't act
+        if a["action"] in ("say", "note", "wait", "lookup", "lesson"):  # lookup and lesson don't act in the world
             return True
         if a["action"] == "call":
             return call_ok(a["verb"])
@@ -634,6 +734,7 @@ class Mind:
                 self.tasks.said(task, a["text"])
                 if a.get("closes"):
                     self.tasks.close(task)
+                    self.lesson_closed(task, "done")
             await self.call("say", {"text": a["text"]})
         elif kind == "ask_player":
             if task:
@@ -644,9 +745,12 @@ class Mind:
         elif kind == "done":
             if task:
                 self.tasks.close(task)
+                self.lesson_closed(task, "done")
             self.recent.append(f"you closed {a['closes']}")
         elif kind == "lookup":
             await self.do_lookup(a)
+        elif kind == "lesson":
+            await self.store_lesson(a["text"], self.situation(task), "written", "written by the model")
         elif kind == "note" and task and a.get("about"):  # a "ruled out" line in the task's journal
             self.tasks.ruled_out(task, a["text"])
             self.recent.append(f"you ruled out for {task.id}: {a['text']}")
@@ -754,6 +858,8 @@ class Mind:
             pause = self.fuse_until - time.monotonic()
             if pause > 0:
                 await asyncio.sleep(pause)  # the fuse: wake reasons wait, then go on as usual
+            if self.lesson_queue:
+                await self.run_lessons()  # before the next decision, also on idle ticks
             if PLAN_NEXT in reason:
                 rest = [r for r in reason.split("; ") if r != PLAN_NEXT]
                 await self.plan_next()

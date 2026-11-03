@@ -10,7 +10,7 @@
     "type": {"const": "trace"},
     "v": {"const": "0.1"},
     "t": {"type": "integer", "description": "world age in ticks, from the latest obs the mind has"},
-    "kind": {"enum": ["plan", "decision", "rag", "verb_write", "advisor", "note"]},
+    "kind": {"enum": ["plan", "decision", "rag", "verb_write", "advisor", "note", "lesson"]},
     "text": {"type": "string"},
     "data": {"type": "object", "description": "optional structured detail", "default": {}}
   }

@@ -267,6 +267,9 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
 | `ATLAS_RAG_K` | `3` | excerpts per turn and per lookup |
 | `ATLAS_RAG_TOKENS` | `600` | KNOWLEDGE budget per turn |
 | `ATLAS_LOOKUP_TOKENS` | `900` | budget for a lookup's answer |
+| `ATLAS_LESSONS` | `1` | `0` turns lesson turns off |
+| `ATLAS_LESSONS_FILE` | `data/lessons.jsonl` | one lesson per line, at most `ATLAS_LESSONS_MAX` (2000), oldest pruned |
+| `ATLAS_FUSE_COUNT` / `ATLAS_FUSE_S` | `5` / `30` | the fuse: identical failures in a row, and the pause |
 | `ATLAS_MIND_DUMP_CONTEXT` | `0` | `1` writes the exact system and user text of every turn to `logs/context/<tick>.txt` (`-2`, `-3`… for more turns in one tick; a retry is appended to its turn's file) |
 | `ATLAS_MIND_DUMP_DIR` | `logs/context` | where the dumps go |
 
@@ -341,6 +344,20 @@ It decides on every recorded result and event, plus every 15th obs.
 - the task journal: three failures of one kind lead to a different approach, not `ask_player`; a task no verb can do may ask at once; the next call after a failure differs.
 
 `mind/tests/test_wiki.py` covers the wiki pipeline on two pages in the wiki's HTML (`mind/tests/fixtures/`): parsing (noise stripped, tables as rows), chunking, the BM25 index (`"iron ore y level"` finds `Iron Ore › Obtaining › Natural generation`; the subject beats a chunk dense with Y numbers; one chunk per page), `--eval`, the fetch and index scripts, and the mind's KNOWLEDGE block, `rag` traces and `lookup`.
+
+### Lessons
+
+The player learns from its own play; nothing here is a rule about Minecraft, and nothing is refused because of a lesson.
+
+- **Store:** `data/lessons.jsonl`, one line per lesson: `{t, server, situation: {verb, failure_class, surroundings_sentence, task_text}, lesson, outcome}`. At most 2,000; the oldest are pruned.
+- **Who writes them:** only the model.
+  - **On purpose:** the `lesson {text}` action (`note` stays for places and facts).
+  - **When a task closes** (done or stopped): one extra short model call that may answer only `{"lesson": "..."}` or `{"lesson": null}`.
+  - **When the same failure class comes back twice in a row:** the same short call. A failure class is the verb plus its reason with numbers and coordinates dropped, so `mine: no iron_ore in view within 32 blocks` and `… within 48 blocks` are one class.
+  - **Seen as:** a `trace` of kind `lesson`, shown on the dashboard in the "Notes & lessons" panel, and logged `[mind] lesson (…): …`.
+- **Retrieval:** BM25 over the lesson text and its situation fields, with the same retriever interface as the wiki. The query is the open task's text, the last failure and the surroundings sentence. The top 3 go into a `LESSONS` block above KNOWLEDGE, each with its age (`- (2 h ago) when a player is above me, goto surface first`).
+- **Stuck mode** (facts, not refusals): after two failures of one class in a row, the context carries `STUCK: "<class>" came back 2x in a row (last: <call> -> <detail>). Lessons for it: …` until something succeeds or a different failure comes. The prompt says the next action should be different in kind: a lookup, a different verb or target, a lesson, or ask_player.
+- **The fuse is separate:** stuck mode only informs; the fuse only pauses.
 
 ### Wiki knowledge
 

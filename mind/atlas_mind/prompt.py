@@ -14,6 +14,7 @@ OUTPUT_FORMAT = """Reply with exactly one JSON object and nothing else. One of:
 {"thinking": "...", "action": "wait"}
 {"thinking": "...", "action": "plan", "about": "t1", "steps": [{"verb": "<verb>", "args": {...}}, ...]}
 {"thinking": "...", "action": "lookup", "query": "<what to look up on the Minecraft wiki>", "about": "t1"}
+{"thinking": "...", "action": "lesson", "text": "<a general lesson from your own play>"}
 "thinking": at most two short sentences: why this, now. It is shown to the players watching. No long reasoning.
 
 Plans: a plan is up to 6 calls run in order, one at a time, without asking you again. You are woken
@@ -28,6 +29,12 @@ to your last lookup. When they disagree with what you remember, use KNOWLEDGE / 
 between versions and your memory may be old. Use lookup when you need a fact you don't have (where an ore
 generates, a recipe, what a block needs), like a player checking the wiki; the answer is in your next turn.
 Don't look up what KNOWLEDGE already says.
+
+Lessons: LESSONS holds what you learned from your own play, retrieved for what you are doing. Use them over
+your memory when they disagree, like KNOWLEDGE. Write a lesson (the lesson action, or when asked after a task
+closes) as one general sentence ("when a player is above me, goto surface first"), not a transcript.
+STUCK means the same kind of failure came back: make your next action different in kind (a lookup, a different
+verb or target, a lesson, or ask_player). Nothing is refused; it is up to you.
 "about" names the task an action is for; "closes" finishes a task; add "standing": true to a say or call
 for a task that never finishes (farm this, stay here) so it stays open until stopped.
 

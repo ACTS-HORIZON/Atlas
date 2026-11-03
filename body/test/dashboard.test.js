@@ -180,3 +180,10 @@ test('damaged_badly: a drop of 4+ in one update, or any drop below 10 health; no
   assert.equal(mind.got.filter(m => m.kind === 'damaged_badly').length, 3)
   mind.ws.close()
 })
+
+test('lessons: a lesson trace is a valid contract message and the dashboard has the notes & lessons panel', async (t) => {
+  assert.equal(check('trace', { type: 'trace', v: '0.1', t: 5, kind: 'lesson', text: 'when a player is above me, goto surface first', data: {} }), null)
+  const html = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'index.html'), 'utf8')
+  assert.match(html, /<h2>Notes &amp; lessons/)
+  assert.match(html, /m\.kind === 'note' \|\| m\.kind === 'lesson'/)
+})
