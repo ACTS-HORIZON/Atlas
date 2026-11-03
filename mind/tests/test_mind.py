@@ -338,6 +338,20 @@ class MindTest(unittest.IsolatedAsyncioTestCase):
         await until(lambda: self.body.calls())
         self.assertEqual(self.mind.error_streak, 0)
 
+    async def test_task_exists_before_the_turn_that_reacts_to_it(self):
+        seen = {}
+
+        def first(messages):
+            seen["task"] = self.mind.tasks.get("t1")
+            seen["context"] = messages[-1]["content"]
+            return {"thinking": "Confirm.", "action": "say", "text": "On it.", "about": "t1"}
+        await self.start([first])
+        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "bring me 8 spruce logs"})
+        await until(lambda: self.body.calls())
+        self.assertIsNotNone(seen["task"], "the task was created before the model was asked")
+        self.assertIn("t1 [new] from ACTS_HORIZON: bring me 8 spruce logs", seen["context"])
+        self.assertIn("WOKE BECAUSE: new task t1 from ACTS_HORIZON: bring me 8 spruce logs", seen["context"])
+
     async def test_low_health_wakes_it(self):
         await self.start([{"thinking": "Hurt; back off.", "action": "call", "verb": "goto", "args": {"pos": [-10, 64, -10]}}])
         await self.body.ws.send(json.dumps(make_obs(health=4)))
@@ -541,3 +555,55 @@ class ThinkingTest(unittest.TestCase):
         self.assertIn("[llm] turn 1: 748 completion tokens in 1 call(s) (with reasoning); mean 748 over 1 turns, 1 with reasoning", text)
         self.assertIn("[llm] turn 2: 12 completion tokens in 1 call(s); mean 380 over 2 turns, 1 with reasoning", text)
         self.assertIn("reasoning_content came back although ATLAS_LLM_THINKING=0", text)
+
+
+class TaskRefTest(unittest.TestCase):
+    """about/closes are resolved leniently and never make a decision unusable."""
+
+    def mind(self, *texts):
+        d = tempfile.mkdtemp()
+        logs = []
+        m = Mind(Config(notes_file=Path(d) / "n.md", verb_reference=ROOT / "docs" / "verbs.md"), FakeLLM([]), log=logs.append)
+        for t in texts:
+            m.tasks.add("ACTS_HORIZON", t)
+        return m, logs
+
+    def say(self, **kw):
+        return json.dumps({"thinking": "t", "action": "say", "text": "On it.", **kw})
+
+    def test_exact_id_any_case(self):
+        m, logs = self.mind("bring me 8 spruce logs", "how are you?")
+        self.assertEqual(m.check(self.say(about="t2"))["about"], "t2")
+        self.assertEqual(m.check(self.say(closes="T2"))["closes"], "t2")
+        self.assertEqual(logs[-1], '[mind] closes="T2" taken as t2 (id)')
+
+    def test_task_text_used_as_id(self):
+        m, logs = self.mind("bring me 8 spruce logs", "how are you?")
+        self.assertEqual(m.check(self.say(about="bring me 8 spruce logs"))["about"], "t1", "exact text")
+        self.assertEqual(m.check(self.say(about="8 spruce logs"))["about"], "t1", "substring")
+        self.assertEqual(m.check(self.say(closes="how are you"))["closes"], "t2")
+        self.assertEqual(m.check(self.say(about="bring me eight spruce logs"))["about"], "t1", "similar (>= 0.7)")
+        self.assertIn('[mind] about="bring me eight spruce logs" taken as t1 (text)', logs)
+
+    def test_only_open_task(self):
+        m, logs = self.mind("bring me 8 spruce logs")
+        a = m.check(self.say(about="t2"))  # t2 doesn't exist yet: the model guessed the next id
+        self.assertEqual(a["about"], "t1")
+        self.assertIn('[mind] about="t2" taken as t1 (only open task)', logs)
+
+    def test_nothing_resolves_drop_and_warn(self):
+        m, logs = self.mind("bring me 8 spruce logs", "how are you?")
+        a = m.check(self.say(about="t9"))
+        self.assertNotIn("about", a)
+        self.assertEqual(a["action"], "say", "the decision is kept")
+        self.assertIn('[mind] warning: about="t9" matches no task; dropped it (tasks: t1, t2)', logs)
+        m2, logs2 = self.mind()  # no tasks at all
+        a = m2.check(json.dumps({"thinking": "t", "action": "done", "closes": "t1"}))
+        self.assertEqual(a["action"], "wait", "a done for nothing becomes a wait, not an error")
+        self.assertTrue(any("matches no task; dropped it (tasks: none)" in x for x in logs2))
+
+    def test_closed_tasks_are_not_matched_by_text(self):
+        m, _ = self.mind("bring me 8 spruce logs", "how are you?")
+        m.tasks.close(m.tasks.get("t1"))
+        a = m.check(self.say(about="spruce logs"))  # matches only the closed t1's text; t2 is the only open task
+        self.assertEqual(a["about"], "t2")

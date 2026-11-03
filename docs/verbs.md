@@ -83,7 +83,7 @@ The nearest known place of `type` in this dimension. `near` defaults to the bot'
 - **Results:**
   - `done`: `mined <n> <block>`
   - `partial`: `mined <n> of <count> <block>; none left in view within <r> blocks` or `…; strip-mining stopped: <reason>`. When targets in protected regions were skipped, it adds `; <k> inside protected regions left alone`.
-  - `failed`: `mine: <block> needs one of: <tools>; none in inventory` (checked before moving); `mine: no <block> in view within <r> blocks` (a type other than ore), plus `; <block> the item drops from <blocks>. Use mine <block>` when other blocks drop it; `mine: <item> is an item, not a block; it drops from <blocks>. Use mine <block>`; `mine: unknown block <x>`; `mine: box is not supported yet`; `mine: cannot dig in adventure mode`.
+  - `failed`: `mine: <block> needs one of: <tools>; none in inventory` (checked before moving); `mine: no <block> in view within <r> blocks` (a type other than ore), plus `; <block> the item drops from <blocks>. Use mine <block>` when other blocks drop it; `mine: <item> is an item, not a block; it drops from <blocks>. Use mine <block>`; for crafted things (stick, planks, crafting_table) `… is crafted from <ingredients>. Use craft <item>`; `mine: unknown block <x>`; `mine: box is not supported yet`; `mine: cannot dig in adventure mode`.
   - `refused`: every target in view is protected: `house rules: …; no other <block> in view`.
   - `done` and `partial` carry `data: {block, mined, requested, tunnel}`.
 

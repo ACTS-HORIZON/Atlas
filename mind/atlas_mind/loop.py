@@ -37,6 +37,7 @@ Guards that don't rely on the model:
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import re
 import time
@@ -232,19 +233,60 @@ class Mind:
         user = context(self.tasks.render(), render_obs(self.obs), list(self.recent), self.notes.render(), wake, extra)
         return [{"role": "system", "content": self.system}, {"role": "user", "content": user}]
 
+    def resolve_task_ref(self, value: str):
+        """A task for an "about"/"closes" value, leniently: the exact id (any
+        case); else an open task whose text matches the value (substring
+        either way, or similarity >= 0.7; models sometimes use the task's
+        text as its id); else the only open task. (task, how) or (None, None)."""
+        v = str(value).strip()
+        t = self.tasks.get(v) or self.tasks.get(v.lower())
+        if t:
+            return t, "id"
+        open_ = self.tasks.open()
+        low = v.lower()
+        scored = []
+        for t in open_:
+            text = t.text.lower()
+            if low and (low in text or text in low):
+                scored.append((1.0, t))
+            else:
+                r = difflib.SequenceMatcher(None, low, text).ratio()
+                if r >= 0.7:
+                    scored.append((r, t))
+        if scored:
+            return max(scored, key=lambda x: x[0])[1], "text"
+        if len(open_) == 1:
+            return open_[0], "only open task"
+        return None, None
+
+    def resolve_refs(self, a: dict) -> None:
+        """Rewrite "about"/"closes" to real task ids, or drop them with a warning.
+        A decision is never rejected over these fields."""
+        for k in ("about", "closes"):
+            if k not in a:
+                continue
+            t, how = self.resolve_task_ref(a[k])
+            if t is None:
+                self.log(f'[mind] warning: {k}="{a[k]}" matches no task; dropped it (tasks: {", ".join(x.id for x in self.tasks.tasks) or "none"})')
+                del a[k]
+            elif how != "id" or t.id != a[k]:
+                self.log(f'[mind] {k}="{a[k]}" taken as {t.id} ({how})')
+                a[k] = t.id
+        if a["action"] == "done" and "closes" not in a:
+            a.clear()
+            a.update({"action": "wait", "thinking": "done for a task that doesn't exist; waiting"})
+
     def task_for(self, a: dict):
-        """The task an action is for: "closes", "about", or the one task being worked on."""
+        """The task an action is for: "closes", "about" (already resolved), or the one task being worked on."""
         tid = a.get("closes") or a.get("about")
         if tid:
-            t = self.tasks.get(tid)
-            if not t:
-                raise ActionError(f'there is no task "{tid}"; tasks: {", ".join(x.id for x in self.tasks.tasks) or "none"}')
-            return t
+            return self.tasks.get(tid)
         working = self.tasks.working()
         return working[0] if len(working) == 1 and a["action"] in ("call", "plan") else None
 
     def check(self, raw: str) -> dict:
         a = parse(raw, self.verbs)
+        self.resolve_refs(a)
         if a["action"] == "call" and self.last_failed and (a["verb"], canon(a["args"])) == self.last_failed[:2]:
             raise ActionError(f"that exact call ({a['verb']} {canon(a['args'])}) just failed with: {self.last_failed[2]}. "
                               "Choose a different action that deals with the reason.")

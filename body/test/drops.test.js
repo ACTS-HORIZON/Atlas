@@ -29,6 +29,16 @@ test('hints', () => {
   assert.equal(mineHint(registry, 'iron_ingot'), 'iron_ingot is an item, not a block, and no block drops it (it is crafted, smelted or found)')
   assert.equal(mineHint(registry, 'stone'), null)
   assert.equal(mineHint(registry, 'oak_log'), null)
+  // crafted items point at craft, not at a leaf block; storage-block "recipes" don't count
+  assert.equal(mineHint(registry, 'stick'), 'stick is an item, not a block; it is crafted from planks of any kind, or bamboo, not mined. Use craft stick')
+  assert.equal(mineHint(registry, 'oak_planks'), 'oak_planks is crafted from oak_log. Use craft oak_planks')
+  assert.equal(mineHint(registry, 'oak_planks', { inView: true }), null, 'planks in view: mine them')
+  assert.equal(mineHint(registry, 'crafting_table'), 'crafting_table is crafted from planks of any kind. Use craft crafting_table')
+  assert.match(mineHint(registry, 'raw_iron'), /drops from iron_ore/, 'raw_iron <- raw_iron_block is unpacking, not crafting')
+  assert.match(mineHint(registry, 'coal'), /drops from coal_ore/)
+  assert.match(mineHint(registry, 'diamond'), /Use mine diamond_ore$/)
+  // placed-from-item blocks (no hardness) come after natural ones
+  assert.match(mineHint(registry, 'redstone'), /Use mine redstone_ore$/)
   assert.equal(collectHint(registry, 'iron_ore'), 'mining iron_ore drops raw_iron, not iron_ore; collect raw_iron')
   assert.equal(collectHint(registry, 'oak_log'), null)
 })
