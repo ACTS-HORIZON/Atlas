@@ -217,7 +217,7 @@ test('equip, dig, eat: precise failures, otherwise done', async () => {
   r = await run('dig', s.act, { pos: [0, 9, 2] }) // the ground in front: visible stone, no pickaxe
   assert.equal(r.status, 'done')
   assert.equal(r.detail, 'dug stone at [0, 9, 2] by hand (stone drops nothing without the right tool)')
-  assert.deepEqual(r.data, { pos: [0, 9, 2], block: 'stone', dropped: false })
+  assert.deepEqual(r.data, { pos: [0, 9, 2], block: 'stone', dropped: false, drops: [] })
   assert.equal((await run('dig', s.act, { pos: [0, 9, 2] })).detail, 'dig: [0, 9, 2] is already empty (air)')
 
   s = setup(world(), { food: 20 })

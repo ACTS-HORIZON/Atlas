@@ -7,6 +7,8 @@ const { buildObs, recheckKnown } = require('../src/fairplay/observe')
 const { KnownPlaces } = require('../src/places')
 const { VerbApi } = require('../src/api')
 const { VERBS } = require('../src/verbs')
+const { mineHint, collectHint, dropsOf } = require('../src/drops')
+const REG = require('prismarine-registry')('26.1')
 
 // Flat stone ground at y<=9, bot standing at (0.5, 10, 0.5) facing south (+Z).
 function world () { return new FakeWorld().box([-32, 0, -32], [31, 9, 31], 'stone') }
@@ -97,7 +99,13 @@ function setup (w, opt = {}) {
     observe,
     places,
     sight: () => { const v = viewNow(); return { classAt: v.classAt, eye: v.self.eye, sightRadius: v.sightRadius } },
-    registry: { isBlock: n => /^[a-z_]+$/.test(n) && !n.startsWith('not_'), isItem: n => /^[a-z_]+$/.test(n) && !n.startsWith('not_') }
+    registry: {
+      isBlock: n => !!REG.blocksByName[n],
+      isItem: n => !!REG.itemsByName[n],
+      mineHint: (n, o) => mineHint(REG, n, o),
+      collectHint: n => collectHint(REG, n),
+      dropsOf: n => dropsOf(REG, n)
+    }
   })
   const progress = []
   const act = {

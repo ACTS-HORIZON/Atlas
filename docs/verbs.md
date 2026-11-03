@@ -69,6 +69,8 @@ The nearest known place of `type` in this dimension. `near` defaults to the bot'
   - Both carry `data: {direction, walked, seen: {type: count}, new_places}`.
 
 ### mine {block, count = 1, radius = 32}
+- **Blocks, not items:** mine takes block names; items come from blocks (cobblestone ← stone, raw_iron ← iron_ore, coal ← coal_ore, dirt ← grass_block). Asking for an item fails with the block to mine instead.
+- **Finding stone:** stone is usually under 1–4 blocks of dirt/grass, or exposed on hillsides and in caves. If none is in view, dig down a few blocks (`mine dirt`, `dig`) or into a slope rather than exploring the surface.
 - **Limits:** `count` 1–512, `radius` 1–128.
 - **Targets:** notable types (ores, logs, …) come from `blocks_seen` and known places within `radius`. Any type, stone included, also counts when visible in the terrain around the bot, looked for up to 24 blocks out.
 - **For each target, nearest first:** walk until a face is in reach (the path may dig and pillar), dig it with the best tool, then pick up drops within 4 blocks.
@@ -81,7 +83,7 @@ The nearest known place of `type` in this dimension. `near` defaults to the bot'
 - **Results:**
   - `done`: `mined <n> <block>`
   - `partial`: `mined <n> of <count> <block>; none left in view within <r> blocks` or `…; strip-mining stopped: <reason>`. When targets in protected regions were skipped, it adds `; <k> inside protected regions left alone`.
-  - `failed`: `mine: <block> needs one of: <tools>; none in inventory` (checked before moving); `mine: no <block> in view within <r> blocks` (a type other than ore); `mine: unknown block <x>`; `mine: box is not supported yet`; `mine: cannot dig in adventure mode`.
+  - `failed`: `mine: <block> needs one of: <tools>; none in inventory` (checked before moving); `mine: no <block> in view within <r> blocks` (a type other than ore), plus `; <block> the item drops from <blocks>. Use mine <block>` when other blocks drop it; `mine: <item> is an item, not a block; it drops from <blocks>. Use mine <block>`; `mine: unknown block <x>`; `mine: box is not supported yet`; `mine: cannot dig in adventure mode`.
   - `refused`: every target in view is protected: `house rules: …; no other <block> in view`.
   - `done` and `partial` carry `data: {block, mined, requested, tunnel}`.
 
@@ -89,7 +91,7 @@ The nearest known place of `type` in this dimension. `near` defaults to the bot'
 Digs one observed block: one visible now, or a known place. It walks within reach first (the path may dig and pillar) and digs with the best tool, or by hand if it has none.
 - **Progress:** `going to <block> at [x, y, z]`, then `digging …`.
 - **Results:**
-  - `done`: `dug <block> at [x, y, z]`, with ` by hand (<block> drops nothing without the right tool)` when it had no tool; `data: {pos, block, dropped}`
+  - `done`: `dug <block> at [x, y, z]`, with ` (drops <items>)` when it drops something else, or ` by hand (<block> drops nothing without the right tool)` when it had no tool; `data: {pos, block, dropped, drops}`
   - `failed`: `dig: <block> cannot be dug`; `dig: [x, y, z] is already empty (air)`; `dig: could not get within reach of [x, y, z] (<why>)`
   - `refused`: `fair play: the block at [x, y, z] has not been observed`, or house rules
 
@@ -97,7 +99,7 @@ Digs one observed block: one visible now, or a known place. It walks within reac
 Walks onto visible drops of `item` until none are left in sight. This is how it receives tossed items.
 - **Progress:** `<n> <item> so far; <k> in sight, going to [x, y, z]`.
 - **Results:**
-  - `done`: `collected <n> <item>; none left in sight`, or `no <item> drops in sight`
+  - `done`: `collected <n> <item>; none left in sight`, or `no <item> drops in sight`, plus ` (mining <block> drops <item>, not <block>; collect <item>)` when it named a block that drops something else
   - `partial`: `collected <n> <item>; <k> drop(s) in sight could not be reached`
   - Both carry `data: {item, collected, unreachable}`.
 

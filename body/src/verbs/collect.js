@@ -30,7 +30,8 @@ async function run (act, args) {
   const n = got()
   const data = { item, collected: n, unreachable: unreachable.size }
   if (unreachable.size) return { status: 'partial', detail: `collected ${n} ${item}; ${unreachable.size} drop(s) in sight could not be reached`, data }
-  return { status: 'done', detail: n ? `collected ${n} ${item}; none left in sight` : `no ${item} drops in sight`, data }
+  const hint = n ? null : api.collectHint(item) // e.g. iron_ore: "mining iron_ore drops raw_iron …"
+  return { status: 'done', detail: n ? `collected ${n} ${item}; none left in sight` : `no ${item} drops in sight${hint ? ` (${hint})` : ''}`, data }
 }
 
 module.exports = { run, file: __filename }

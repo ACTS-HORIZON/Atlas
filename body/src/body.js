@@ -14,6 +14,7 @@ const { HouseRules } = require('./house')
 const { Locator } = require('./locator')
 const { classifyChat } = require('./chat')
 const { ChestAllowlist, CONTAINERS } = require('./chests')
+const { mineHint, collectHint, dropsOf } = require('./drops')
 const { Runner } = require('./runner')
 const { Tap } = require('./tap')
 const { Dashboard, parseBind, verbLibrary, tailFile } = require('./dashboard')
@@ -258,7 +259,13 @@ class Body {
       locator: this.locator,
       chests: this.chests,
       sight: () => this.view.sight(),
-      registry: { isBlock: n => !!reg?.blocksByName[n], isItem: n => !!reg?.itemsByName[n] }
+      registry: {
+        isBlock: n => !!reg?.blocksByName[n],
+        isItem: n => !!reg?.itemsByName[n],
+        mineHint: (n, o) => mineHint(reg, n, o),
+        collectHint: n => collectHint(reg, n),
+        dropsOf: n => dropsOf(reg, n)
+      }
     })
   }
 

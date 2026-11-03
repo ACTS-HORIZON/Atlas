@@ -32,8 +32,9 @@ async function run (act, args) {
   if (act.signal.aborted) return null
   if (r.refused) return refused(r.reason)
   if (!r.ok) return failed(`dig: ${r.reason}`)
-  const note = tool.needsTool ? ` by hand (${name} drops nothing without the right tool)` : ''
-  return { status: 'done', detail: `dug ${name} at [${pos.join(', ')}]${note}`, data: { pos, block: name, dropped: !tool.needsTool } }
+  const drops = tool.needsTool ? [] : api.dropsOf(name)
+  const note = tool.needsTool ? ` by hand (${name} drops nothing without the right tool)` : drops.length && !(drops.length === 1 && drops[0] === name) ? ` (drops ${drops.join(', ')})` : ''
+  return { status: 'done', detail: `dug ${name} at [${pos.join(', ')}]${note}`, data: { pos, block: name, dropped: !tool.needsTool, drops } }
 }
 
 module.exports = { run, file: __filename }

@@ -90,6 +90,10 @@ class VerbApi {
   facing () { return this.motor.facing() }
   isBlock (name) { return this.registry.isBlock(name) }
   isItem (name) { return this.registry.isItem(name) }
+  /** Game knowledge from the loot tables (src/drops.js): where an item comes from, what a block drops. */
+  mineHint (name, opts) { return this.registry.mineHint ? this.registry.mineHint(name, opts) : null }
+  collectHint (item) { return this.registry.collectHint ? this.registry.collectHint(item) : null }
+  dropsOf (block) { return this.registry.dropsOf ? this.registry.dropsOf(block) : [] }
   isObservableType (name) { return classify(name).notable }
 
   /**

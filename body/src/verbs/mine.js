@@ -34,7 +34,10 @@ async function run (act, args) {
   if (err) return failed(err)
   const api = act.api
   const { block, count, radius } = args
-  if (!api.isBlock(block)) return failed(`mine: unknown block ${block}`)
+  if (!api.isBlock(block)) {
+    const hint = api.mineHint(block) // e.g. raw_iron: "an item, not a block; it drops from iron_ore …"
+    return failed(`mine: ${hint || `unknown block ${block}`}`)
+  }
   const no = cannotAct(api, 'mine')
   if (no) return no
   if (api.gamemode() === 'adventure') return failed('mine: cannot dig in adventure mode')
@@ -46,7 +49,10 @@ async function run (act, args) {
   const notable = api.isObservableType(block)
   const ore = /_ore$/.test(block) || block === 'ancient_debris'
   const initial = api.targetsOfType(block, radius)
-  if (!initial.length && !ore) return failed(`mine: no ${block} in view within ${notable ? radius : Math.min(radius, 24)} blocks`)
+  if (!initial.length && !ore) {
+    const hint = api.mineHint(block, { inView: false }) // e.g. cobblestone: "the item drops from stone …"
+    return failed(`mine: no ${block} in view within ${notable ? radius : Math.min(radius, 24)} blocks${hint ? `; ${hint}` : ''}`)
+  }
   const strip = { allowed: ore && initial.length === 0, dug: 0, stopped: null }
   let mined = 0
   const progress = note => act.progress(`${mined}/${count} ${block}${strip.dug ? `, tunnel ${strip.dug}` : ''}${note ? ': ' + note : ''}`)
