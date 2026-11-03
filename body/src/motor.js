@@ -483,7 +483,14 @@ class Motor {
   }
 
   /** Craft with what's in the inventory, at a crafting table at tablePos if given. */
-  async craft (item, count, tablePos) {
+  /**
+   * Craft with what's in the inventory, at a crafting table at tablePos if
+   * given. The count crafted is the inventory delta of the item once the
+   * window has settled (the result slot often lands after bot.craft
+   * resolves): polled every 100 ms for up to settleMs; failed only if nothing
+   * arrived by then. {ok, crafted, reason?}
+   */
+  async craft (item, count, tablePos, { settleMs = 1500 } = {}) {
     const bot = this.bot
     const def = bot.registry.itemsByName[item]
     let table = null
@@ -495,12 +502,22 @@ class Motor {
     const recipe = recipes.find(r => !r.requiresTable) || recipes[0]
     if (!recipe) return { ok: false, reason: 'ingredients no longer in the inventory' }
     const before = this.inventory()[item] || 0
+    const want = Math.ceil(count / recipe.result.count) * recipe.result.count
+    let error = null
     try {
       await bot.craft(recipe, Math.ceil(count / recipe.result.count), recipe.requiresTable ? table : null)
     } catch (err) {
-      return { ok: false, reason: err.message }
+      error = err.message // the items may still arrive: the delta decides
     }
-    return { ok: true, crafted: (this.inventory()[item] || 0) - before }
+    const delta = () => (this.inventory()[item] || 0) - before
+    const until = Date.now() + settleMs
+    let last = delta()
+    while (Date.now() < until && last < want) {
+      await new Promise(resolve => setTimeout(resolve, 100))
+      last = delta()
+    }
+    if (last > 0) return { ok: true, crafted: last }
+    return { ok: false, crafted: 0, reason: error || `nothing came out: no ${item} arrived in the inventory` }
   }
 
   // ---- placing, equipping, eating ----------------------------------------

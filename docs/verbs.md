@@ -71,6 +71,7 @@ The nearest known place of `type` in this dimension. `near` defaults to the bot'
 - **Results:**
   - `done`: `walked <n> blocks <dir>; saw <type> <count>, …; <k> new known places`
   - `partial`: `… then blocked|no way on|took too long`, with what stood in front when it saw it: `(ahead south 2 blocks: stone at feet, oak_leaves at head)`
+  - **Can't take a single step the asked way** (a cave wall, a pit): it tries the other three directions, turned right, left, then back, and explores the first that moves: `couldn't go north (ahead north 2 blocks: stone at feet, stone at head), so went east: walked …`, with `data.asked` and `data.blocked`. With none: `partial`, `walked 0 of <n> blocks: no way on in any direction: north (…); east (…); …`.
   - Both carry `data: {direction, walked, seen: {type: count}, new_places}`.
 
 ### mine {block, count = 1, radius = 32, y?}
@@ -135,13 +136,14 @@ Walks onto visible drops of `item` until none are left in sight. This is how it 
 `count` (1–576) is the number of items wanted. It uses a 2×2 inventory recipe if one works. Otherwise it uses a crafting table it has observed (in `blocks_seen` or known places, within 48 blocks), walking to it first without digging or placing. It never places a table itself.
 - **Progress:** `going to the crafting table at [x, y, z]`, then `crafting <n> <item>`.
 - **Results:**
-  - `done`: `crafted <n> <item>[ at the crafting_table at [x, y, z]]`, `data: {item, crafted, table}`
+  - `done`: `crafted <n> <item>[ at the crafting_table at [x, y, z]]`, `data: {item, crafted, table}`. `<n>` is how many arrived in the inventory (before/after, read once the window has settled, up to 1.5 s), not what the recipe call returned.
   - `failed`:
     - `craft: missing <what> for <count> <item>[ — <hint>]`. `<what>` lists what the cheapest recipe still needs, e.g. `1 oak_log`, `2 planks (any kind)`, or `3 of cobbled_deepslate, blackstone or cobblestone, 2 stick`. An ingredient any variant fills (planks, logs, wool…) is never named as one variant. The hint says what the inventory can make it from: `— you have spruce_log 3: craft spruce_planks`.
     - `craft: <item> needs crafting_table nearby (none seen or known within 48 blocks)`
     - `craft: <item> has no crafting recipe` (smelting is not crafting)
     - `craft: could not reach the crafting_table at …`
     - `craft: unknown item <x>`
+    - `craft: nothing came out: no <item> arrived in the inventory` (nothing arrived within 1.5 s), or the game's own error
 
 ### place {block, pos?}
 Places an inventory block at `pos`, which must be an empty cell (air, water, grass, …) that the bot can see and reach from where it stands (4.5 blocks), with a solid neighbour to place against. It does not walk; `goto` first.

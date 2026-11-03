@@ -216,7 +216,8 @@ test('explore: walks in legs, reports what it saw and new known places', async (
   const p = await run('explore', s.act, { direction: 'forward', distance: 30 })
   assert.equal(p.status, 'partial')
   assert.equal(p.data.direction, 'south', 'forward = the way the bot faces')
-  assert.match(p.detail, /then blocked; saw/)
+  assert.match(p.detail, /no way on in any direction: south \(blocked, nothing seen in front\); west/)
+  assert.equal(p.data.direction, "south")
 })
 
 test('explore: dig defaults on (it tunnels through what is in front, never places); "no way on" names what blocked it', async () => {
@@ -225,7 +226,8 @@ test('explore: dig defaults on (it tunnels through what is in front, never place
   const r = await run('explore', s.act, { direction: 'south', distance: 20 })
   const g = s.motor.calls.find(c => c[0] === 'goto')[1]
   assert.deepEqual([g.dig, g.scaffold], [true, false])
-  assert.match(r.detail, /^walked 0 of 20 blocks south, then no way on \(ahead south 2 blocks: stone at feet, oak_leaves at head\); saw/)
+  assert.match(r.detail, /^walked 0 of 20 blocks: no way on in any direction: south \(ahead south 2 blocks: stone at feet, oak_leaves at head\); west \(no way on, nothing seen in front\); east \(no way on, nothing seen in front\); north \(no way on, nothing seen in front\); saw/)
+  assert.equal(s.motor.calls.filter(c => c[0] === 'goto').length, 4, 'all four directions tried')
   s = setup(world(), { walk: true })
   await run('explore', s.act, { direction: 'north', distance: 5, dig: false })
   assert.equal(s.motor.calls.find(c => c[0] === 'goto')[1].dig, false)
@@ -315,4 +317,14 @@ test('api.peek: reads a block only if the bot can see it', () => {
   assert.equal(api.peek([0, 9, 2]), 'stone', 'the ground in front')
   assert.equal(api.peek([0, 10, 2]), 'air', 'open air in front')
   assert.equal(api.peek([0, 8, 2]), null, 'under the ground')
+})
+
+test('explore in a cave: the asked way is a wall, so it tries right, left and back, and goes the first way that moves', async () => {
+  const w = world().box([-31, 10, -2], [31, 11, -2], 'stone') // a wall just north
+  const s = setup(w, { walk: true, goto: o => (o.pos[2] < 0 ? { status: 'no_path', remaining: 16, moved: 0 } : o.pos[0] > 1 ? { status: 'reached', remaining: 0, moved: 16 } : { status: 'no_path', remaining: 16, moved: 0 }) })
+  const r = await run('explore', s.act, { direction: 'north', distance: 16 })
+  assert.equal(r.status, 'done')
+  assert.match(r.detail, /^couldn't go north \(ahead north 2 blocks: stone at feet, stone at head\), so went east: walked 16 blocks east; saw/)
+  assert.deepEqual([r.data.direction, r.data.asked], ['east', 'north'])
+  assert.deepEqual(s.motor.calls.filter(c => c[0] === 'goto').map(c => [Math.round(c[1].pos[0]), Math.round(c[1].pos[2])]), [[1, -15], [17, 1]])
 })

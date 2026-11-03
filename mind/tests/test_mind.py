@@ -119,7 +119,7 @@ class MindTest(MindHarness, unittest.IsolatedAsyncioTestCase):
             {"thinking": "Two oak logs are in view; mine them.", "action": "call", "verb": "mine", "args": {"block": "oak_log", "count": 3}, "about": "t1"},
             {"thinking": "Mined 3; report and close the task.", "action": "say", "text": "Done: 3 oak logs.", "closes": "t1"},
         ], respond=lambda c: ("done", "mined 3 oak_log", {"block": "oak_log", "mined": 3, "requested": 3, "tunnel": 0}) if c["verb"] == "mine" else ("done", "said", None))
-        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "get me 3 oak logs"})
+        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "mine 3 oak logs"})
         await until(lambda: len(self.body.calls()) >= 3)
         calls = [(c["verb"], c["args"]) for c in self.body.calls()[:3]]
         self.assertEqual(calls, [("say", {"text": "On it: 3 oak logs."}), ("mine", {"block": "oak_log", "count": 3}), ("say", {"text": "Done: 3 oak logs."})])
@@ -131,11 +131,11 @@ class MindTest(MindHarness, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seq[0]["v"], "0.1")
         self.assertEqual(self.mind.tasks.get("t1").state, "done")
         # the first prompt carried the task, the compact obs and the verb reference
-        self.assertIn("new task t1 from ACTS_HORIZON: get me 3 oak logs", self.prompt_text(0))
+        self.assertIn("new task t1 from ACTS_HORIZON: mine 3 oak logs", self.prompt_text(0))
         self.assertIn("blocks seen: oak_log x2", self.prompt_text(0))
         self.assertIn("### mine {block", self.llm.prompts[0][0]["content"])
         self.assertIn("result m2 (mine): done", self.prompt_text(2))
-        self.assertIn('t1 [running] from ACTS_HORIZON: get me 3 oak logs\n    you said: "On it: 3 oak logs."', self.prompt_text(2))
+        self.assertIn('t1 [running] from ACTS_HORIZON: mine 3 oak logs\n    you said: "On it: 3 oak logs."', self.prompt_text(2))
         await asyncio.sleep(0.6)
         self.assertEqual(len(self.llm.prompts), 3, "closed: no more turns without new input")
 
@@ -225,6 +225,7 @@ class MindTest(MindHarness, unittest.IsolatedAsyncioTestCase):
     async def test_a_delivered_request_in_obs_chat_is_not_shown_again(self):
         await self.start([
             {"thinking": "Confirm.", "action": "say", "text": "On it: an iron pickaxe.", "about": "t1"},
+            {"thinking": "Hand it over.", "action": "call", "verb": "give", "args": {"item": "iron_pickaxe", "player": "Rook"}, "about": "t1"},
             {"thinking": "Done.", "action": "say", "text": "Here you go.", "closes": "t1"},
             {"thinking": "Nothing to do.", "action": "wait"},
             {"thinking": "w", "action": "wait"},
@@ -234,9 +235,10 @@ class MindTest(MindHarness, unittest.IsolatedAsyncioTestCase):
         await until(lambda: len(self.llm.prompts) >= 1)
         self.assertIn("chat <Rook> @Atlas get me an iron pickaxe (-> t1 new)", self.prompt_text(0))
         await until(lambda: self.mind.tasks.get("t1").state == "done" and not self.mind.pending)
+        n = len(self.llm.prompts)
         await self.body.event("player_said", {"from": "Rook", "text": "thanks!"}, obs=make_obs(t=400, chat=[line]))  # still in the buffer
-        await until(lambda: len(self.llm.prompts) >= 3)
-        later = self.llm.prompts[-1][-1]["content"]
+        await until(lambda: len(self.llm.prompts) > n)
+        later = self.llm.prompts[n][-1]["content"]
         self.assertNotIn("get me an iron pickaxe", later.split("TASKS")[1].split("RECENT")[0].replace("t1 [done] from Rook: get me an iron pickaxe", ""),
                          "the delivered request is not in the observation's chat")
         self.assertEqual(len(self.mind.tasks.tasks), 1, "no new task")
@@ -974,3 +976,57 @@ class OldChatTest(MindHarness, unittest.IsolatedAsyncioTestCase):
         await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "get me 3 logs"})
         await until(lambda: len(self.llm.prompts) >= 1)
         self.assertEqual([t.text for t in self.mind.tasks.tasks], ["get me 3 logs"])
+
+
+class DeliveryTest(MindHarness, unittest.IsolatedAsyncioTestCase):
+    async def test_a_bring_me_task_closes_only_after_give(self):
+        await self.start([
+            {"thinking": "Confirm.", "action": "say", "text": "On it: an iron pickaxe.", "about": "t1"},
+            {"thinking": "Craft it.", "action": "call", "verb": "craft", "args": {"item": "iron_pickaxe"}, "about": "t1"},
+            {"thinking": "Crafted: report.", "action": "say", "text": "I have crafted the iron pickaxe.", "closes": "t1"},
+            {"thinking": "Right, hand it over.", "action": "call", "verb": "give", "args": {"item": "iron_pickaxe", "player": "Rook"}, "about": "t1"},
+            {"thinking": "Delivered.", "action": "say", "text": "Here's your iron pickaxe.", "closes": "t1"},
+        ], respond=lambda c: ("done", "crafted 1 iron_pickaxe", None) if c["verb"] == "craft" else
+           ("done", "gave 1 iron_pickaxe to Rook", {"item": "iron_pickaxe", "given": 1}) if c["verb"] == "give" else ("done", "said", None))
+        await self.body.event("task_from_chat", {"from": "Rook", "text": "get me an iron pickaxe"})
+        await until(lambda: self.mind.tasks.get("t1") and self.mind.tasks.get("t1").state == "done")
+        verbs = [(c["verb"], c["args"].get("text") or c["args"].get("item")) for c in self.body.calls()]
+        self.assertEqual(verbs, [("say", "On it: an iron pickaxe."), ("craft", "iron_pickaxe"), ("give", "iron_pickaxe"),
+                                 ("say", "Here's your iron pickaxe.")], "the early close was refused, never said")
+        retry = next(m[-1]["content"] for m in self.llm.prompts if m[-1]["content"].startswith("That reply was not usable"))
+        self.assertIn("the player doesn't have it yet — give it to them first", retry)
+
+    async def test_saying_it_cant_be_done_may_close(self):
+        await self.start([
+            {"thinking": "Confirm.", "action": "say", "text": "On it.", "about": "t1"},
+            {"thinking": "No diamonds anywhere near; give up honestly.", "action": "say", "text": "Sorry, I can't find any diamonds.", "closes": "t1"},
+        ])
+        await self.body.event("task_from_chat", {"from": "Rook", "text": "bring me a diamond"})
+        await until(lambda: self.mind.tasks.get("t1") and self.mind.tasks.get("t1").state == "done")
+
+    async def test_the_retry_shows_failed_recently_last(self):
+        fail = "craft: missing 2 planks (any kind) for 4 stick"
+        await self.start([
+            {"thinking": "Sticks.", "action": "call", "verb": "craft", "args": {"item": "stick", "count": 4}},
+            {"thinking": "Again.", "action": "call", "verb": "craft", "args": {"item": "stick", "count": 4}},
+            {"thinking": "Planks first.", "action": "call", "verb": "craft", "args": {"item": "oak_planks"}},
+        ], respond=lambda c: ("failed", fail, None) if c["args"].get("item") == "stick" else ("done", "crafted 4 oak_planks", None))
+        t = self.mind.tasks.add("Rook", "make sticks")
+        t.state = "running"
+        self.mind.wake("go")
+        await until(lambda: len(self.body.calls()) >= 2)
+        retry = self.llm.prompts[2][-1]["content"]
+        lines = retry.splitlines()
+        self.assertIn(f"failed recently: {fail}", lines[0], "the exact detail")
+        self.assertEqual(lines[1], 'FAILED RECENTLY (don\'t repeat): craft {"count":4,"item":"stick"} -> ' + fail)
+        self.assertEqual(lines[2], "Reply again with exactly one valid JSON object, one of:")
+        self.assertTrue(lines[-1].startswith('{"thinking": "...", "action": '), "the action format is the last thing it reads")
+
+
+class DeliveryPhrasingTest(unittest.TestCase):
+    def test_delivery_phrasing(self):
+        from atlas_mind.loop import is_delivery
+        for t in ("get me an iron pickaxe", "bring me 8 logs", "fetch me some coal", "give me a bucket", "I need 3 torches", "can I have a bed"):
+            self.assertTrue(is_delivery(t), t)
+        for t in ("mine 3 oak logs", "come here", "how are you?", "build a wall"):
+            self.assertFalse(is_delivery(t), t)

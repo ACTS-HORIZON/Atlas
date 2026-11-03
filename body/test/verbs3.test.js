@@ -262,3 +262,24 @@ test('place without pos: the nearest free, visible spot next to the bot, skippin
   assert.deepEqual(await run('place', b.act, { block: 'furnace' }), { status: 'failed', detail: 'place: no free spot next to Atlas for furnace (every side is occupied or not visible)' })
   assert.deepEqual(await run('place', b.act, { block: 'crafting_table' }), { status: 'failed', detail: 'place: no crafting_table in inventory' })
 })
+
+test('motor.craft: the count comes from the inventory once the window settles, not from the craft call', async () => {
+  const items = [{ name: 'oak_planks', count: 2, type: registry.itemsByName.oak_planks.id }]
+  const bot = {
+    registry,
+    on () {},
+    inventory: { items: () => items },
+    recipesFor: () => [{ requiresTable: false, result: { count: 4 } }],
+    // the real window: the call resolves, the result slot lands ~300 ms later
+    craft: async () => { setTimeout(() => { items[0].count = 0; items.push({ name: 'stick', count: 4 }) }, 300) }
+  }
+  const m = new Motor(bot)
+  const t0 = Date.now()
+  assert.deepEqual(await m.craft('stick', 4), { ok: true, crafted: 4 })
+  assert.ok(Date.now() - t0 >= 250, 'it waited for the items')
+  bot.craft = async () => { throw new Error('Server rejected transaction') } // and they never come
+  const r = await m.craft('stick', 4, null, { settleMs: 300 })
+  assert.deepEqual(r, { ok: false, crafted: 0, reason: 'Server rejected transaction' })
+  bot.craft = async () => { setTimeout(() => items.push({ name: 'stick', count: 4 }), 100); throw new Error('timeout') } // the call errs, the items arrive
+  assert.deepEqual(await m.craft('stick', 4), { ok: true, crafted: 4 })
+})

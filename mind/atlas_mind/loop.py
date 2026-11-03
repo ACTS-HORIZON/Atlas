@@ -62,7 +62,7 @@ from .actions import ActionError, parse
 from .config import Config
 from .llm import LLMError
 from .notes import Notes
-from .prompt import context, load_verb_reference, system_prompt
+from .prompt import OUTPUT_FORMAT, context, load_verb_reference, system_prompt
 from .render import history_line, render_inventory, render_obs, render_surroundings
 from .tasks import OPEN, TaskList, fine_key, one_line, place_cell
 
@@ -95,6 +95,23 @@ class Recent(deque):
 NOISE_RE = re.compile(r"\[[^\]]*\]|-?\b\d+(\.\d+)?\b|\bm\d+\b")  # coordinates, numbers, call ids
 SAY_REPEAT_WINDOW_S = 60  # a say matching one of the last 3 says within this window is dropped
 STUCK_RE = re.compile(r"\b(stuck|gave up)\b")  # a partial with this in its detail counts as failed
+
+
+DELIVERY_RE = re.compile(r"\b(get|bring|fetch|give|grab|hand|find|make|craft)\s+(me|us)\b|\bi\s+need\b|\bcan\s+i\s+(have|get)\b|\bi\s+want\b", re.I)
+GAVE_UP_RE = re.compile(r"\b(can't|cannot|can not|couldn't|could not|unable|won't be able|sorry)\b", re.I)
+
+
+def is_delivery(text: str) -> bool:
+    """A request that is done only when the player has the thing: get/bring/fetch/give me X, I need X."""
+    return bool(DELIVERY_RE.search(text or ""))
+
+
+def delivered(task) -> bool:
+    """Has a give or deposit for this task succeeded (done, or partial with something handed over)?"""
+    for e in task.journal:
+        if e.get("kind") == "call" and e.get("status") in ("done", "partial") and re.match(r"(give|deposit)\b", e.get("text", "")):
+            return True
+    return False
 
 
 def norm_request(text: str) -> str:
@@ -518,6 +535,10 @@ class Mind:
             why = self.tasks.ask_blocked(t)
             if why:
                 raise ActionError(why)
+        if t and a.get("closes") and t.state in OPEN and is_delivery(t.text) and not delivered(t) and not GAVE_UP_RE.search(a.get("text", "")):
+            raise ActionError(f"{t.id} asks for something to be brought ({t.text!r}): the player doesn't have it yet — give it to them "
+                              f"first (give {{item, count, player: \"{t.by}\"}}, or deposit into the chest they named), then close it. "
+                              "If it can't be done, say so plainly (\"I can't …\") when you close it.")
         if t and a["action"] in ("say", "ask_player", "call", "done") and t.state in ("done", "stopped"):
             raise ActionError(f"{t.id} is already {t.state}; leave it alone")
         if t and a["action"] == "say" and "closes" not in a and t.state == "confirmed":
@@ -545,6 +566,17 @@ class Mind:
             if t and t.state == "new" and any(st["verb"] not in QUIET_VERBS for st in a["steps"]):
                 raise ActionError(f"{t.id} is new: confirm it in chat first (a say with \"about\": \"{t.id}\"), then plan the work.")
         return a
+
+    def retry_text(self, err: Exception) -> str:
+        """What the model reads after an unusable reply: the reason (with the failed call's exact detail),
+        then FAILED RECENTLY, then the action format, last, right before it answers."""
+        fails = self.recent_failures()
+        lines = [f"That reply was not usable: {err}"]
+        if fails:
+            lines.append("FAILED RECENTLY (don't repeat): " + "; ".join(f"{f['verb']} {f['args']} -> {f['detail']}" for f in fails[-4:]))
+        lines.append("Reply again with exactly one valid JSON object, one of:")
+        lines += [ln for ln in OUTPUT_FORMAT.splitlines() if ln.startswith("{")]
+        return "\n".join(lines)
 
     def dump_context(self, msgs: list[dict], path: Path | None = None) -> Path | None:
         """ATLAS_MIND_DUMP_CONTEXT=1: the exact text the model gets, one file per turn,
@@ -591,7 +623,7 @@ class Mind:
         except ActionError as e:
             self.unusable("first try", e, raw)
             retry = msgs + [{"role": "assistant", "content": str(raw)},
-                            {"role": "user", "content": f"That reply was not usable: {e} Reply again with exactly one valid JSON object."}]
+                            {"role": "user", "content": self.retry_text(e)}]
             self.dump_context(retry[-2:], dump)
             raw2 = ""
             try:

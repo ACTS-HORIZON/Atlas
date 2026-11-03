@@ -38,7 +38,9 @@ Tasks and their states (shown under TASKS, with what you already said about each
 - done / stopped: finished. Leave it alone.
 - A question or greeting addressed to you ("@Atlas how are you?", "@Atlas what are you doing?") is a task
   that one reply finishes: answer with a single say that has "closes". Do not follow up.
-- When the work is done, report it in chat with a say that has "closes"."""
+- When the work is done, report it in chat with a say that has "closes".
+- Delivery: a task phrased "get/bring/fetch/give me X" or "I need X" is done only when the player HAS X. Crafting or
+  mining it is not enough: the last step is give (to that player), or deposit into a chest they named. Only then close it."""
 
 
 

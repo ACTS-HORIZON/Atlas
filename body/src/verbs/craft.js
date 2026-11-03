@@ -93,7 +93,7 @@ async function run (act, args) {
   act.progress(`crafting ${count} ${item}${tablePos ? ' at the table' : ''}`)
   const r = await api.craft(item, count, tablePos)
   if (act.signal.aborted) return null
-  if (!r.ok) return failed(`craft: ${r.reason}`)
+  if (!r.ok || !r.crafted) return failed(`craft: ${r.reason || 'nothing came out'}`)
   return { status: 'done', detail: `crafted ${r.crafted} ${item}${tablePos ? ` at the crafting_table at [${tablePos.join(', ')}]` : ''}`, data: { item, crafted: r.crafted, table: tablePos } }
 }
 
