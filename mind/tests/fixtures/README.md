@@ -11,11 +11,11 @@ History/Gallery/References sections that the parser must drop.
 The ore numbers in them are written from memory (Java Edition 1.18+ generation)
 and are what `docs/verbs.md` marks as unverified until checked on atlas.
 
-To replace them with the real pages (on atlas, after `scripts/wiki_fetch.py`):
-
-    python3 scripts/wiki_fetch.py --fixtures
-
-copies `data/wiki/raw/Iron_Ore.html` and `data/wiki/raw/Ore.html` here; the
-tests are written to pass on either.
+They mirror the real pages' structure as indexed on atlas: Iron Ore keeps its
+generation text as prose ("most common around level 16") under
+"Obtaining › Natural generation" (an h3 under Obtaining, after "Breaking"); the
+Ore page has "Ore › Usage" and "Ore › Distribution". The parser-only tests use
+these; tests on the real pages read `data/wiki/raw/` (and the real index) and
+are skipped where those don't exist.
 
 Wiki text is CC BY-NC-SA 3.0 (minecraft.wiki); personal use.

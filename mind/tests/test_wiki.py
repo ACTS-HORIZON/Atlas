@@ -46,18 +46,23 @@ class ParseTest(unittest.TestCase):
             self.assertNotIn("For the item obtained by smelting", text)
 
     def test_tables_are_text_rows(self):
-        gen = next(s for s in sections("Iron_Ore") if s.title == "Natural generation")
-        self.assertIn("Main | Y -24 to 56 | Y 16 | all biomes", gen.text)
-        self.assertIn("Table: Iron ore distribution", gen.text)
+        brk = next(s for s in sections("Iron_Ore") if s.title == "Breaking")
+        self.assertIn("Iron Ore | 15 | 7.5 | 1.15 | 0.75 | 0.6", brk.text)
         dist = next(s for s in sections("Ore") if s.title == "Distribution")
         self.assertIn("Diamond Ore | Y -64 to 16 | Y -59 | rarely exposed to air", dist.text)
         smelt = next(s for s in sections("Iron_Ore") if s.title == "Smelting ingredient")
         self.assertIn("Raw Iron Coal Iron Ingot", smelt.text, "UI parts are separate words")
 
-    def test_subsection_path(self):
-        brk = next(s for s in sections("Iron_Ore") if s.title == "Breaking")
-        self.assertEqual(brk.path, ["Obtaining", "Breaking"])
-        self.assertEqual(brk.level, 3)
+    def test_every_heading_level_is_in_the_path(self):
+        secs = sections("Iron_Ore")
+        brk = next(s for s in secs if s.title == "Breaking")
+        self.assertEqual((brk.path, brk.level), (["Obtaining", "Breaking"], 3))
+        gen = next(s for s in secs if s.title == "Natural generation")
+        self.assertEqual(gen.path, ["Obtaining", "Natural generation"], "an h3 after another h3 under the same h2")
+        self.assertIn("most common around level 16", gen.text)
+        html = ('<div class="mw-parser-output"><h2 id="A">A</h2><p>a</p><h3 id="B">B</h3><p>b</p><h4 id="C">C</h4><p>c</p>'
+                '<h3 id="D">D</h3><p>d</p><h2 id="E">E</h2><p>e</p></div>')
+        self.assertEqual([" › ".join(s.path) for s in wiki.parse_html(html)], ["A", "A › B", "A › B › C", "A › D", "E"])
 
     def test_lists_and_keep_all(self):
         html = '<div class="mw-parser-output"><p>Intro.</p><h2><span class="mw-headline">Uses</span></h2><ul><li>Fuel</li><li>Torches</li></ul><h2><span class="mw-headline">History</span></h2><p>old</p></div>'
@@ -68,44 +73,92 @@ class ParseTest(unittest.TestCase):
 
 
 class ChunkTest(unittest.TestCase):
-    def test_chunks_carry_page_and_section(self):
+    def test_chunks_carry_the_full_heading_path(self):
         ch = fixture_chunks()
         titles = [c.title for c in ch]
-        self.assertIn("Iron Ore › Natural generation", titles)
-        self.assertIn("Ore › Distribution", titles)
-        self.assertIn("Iron Ore › Obtaining › Breaking", titles, "a section without its own text keeps its name in the path")
+        self.assertEqual(titles, ["Iron Ore", "Iron Ore › Obtaining › Breaking", "Iron Ore › Obtaining › Natural generation",
+                                  "Iron Ore › Usage › Smelting ingredient", "Ore", "Ore › Usage", "Ore › Distribution",
+                                  "Ore › Distribution › Deepslate variants"])
         self.assertEqual(len({c.id for c in ch}), len(ch), "ids are unique")
         for c in ch:
             self.assertLessEqual(wiki.tokens(c.text), 600)
 
-    def test_long_sections_split_evenly(self):
+    def test_long_sections_split_evenly_and_continue_with_an_ellipsis(self):
         para = "Iron ore generates in veins in stone and deepslate; a stone pickaxe mines it. " * 6
         secs = [wiki.Section("Big", 2, ["Big"], "\n".join(para for _ in range(30)))]
         ch = wiki.chunk_page("P", secs)
         sizes = [wiki.tokens(c.text) for c in ch]
         self.assertGreater(len(ch), 1)
-        self.assertTrue(all(300 <= n <= 600 for n in sizes), sizes)
-        self.assertTrue(all(c.section == "Big" for c in ch))
+        self.assertTrue(all(300 <= n <= 602 for n in sizes), sizes)
+        self.assertTrue(all(c.title == "P › Big" for c in ch))
+        self.assertFalse(ch[0].text.startswith("…"))
+        self.assertTrue(all(c.text.startswith("… ") for c in ch[1:]))
 
-    def test_small_subsections_stay_with_their_section(self):
+    def test_each_subsection_is_its_own_chunk(self):
         secs = [wiki.Section("A", 2, ["A"], "alpha text"), wiki.Section("B", 3, ["A", "B"], "beta text"),
                 wiki.Section("C", 2, ["C"], "gamma text")]
         ch = wiki.chunk_page("P", secs)
-        self.assertEqual([c.title for c in ch], ["P › A", "P › C"])
-        self.assertEqual(ch[0].text, "alpha text\nB:\nbeta text")
+        self.assertEqual([(c.title, c.text) for c in ch], [("P › A", "alpha text"), ("P › A › B", "beta text"), ("P › C", "gamma text")])
+
+
+def dense_index():
+    """The real failure: Diamond Ore's generation chunk is dense with Y= tokens and beat every other ore."""
+    C = wiki.Chunk
+    y = " ".join(f"Y={v}" for v in range(-63, 17)) + " level altitude"
+    return wiki.BM25Index.build([
+        C("d1", "Diamond Ore", "Obtaining › Natural generation", f"Diamond ore generates from Y=16 to Y=-63. {y} {y}"),
+        C("d2", "Diamond Ore", "Obtaining › Breaking", "Diamond ore needs an iron pickaxe. level"),
+        C("i1", "Iron Ore", "Obtaining › Breaking", "Iron ore needs a stone pickaxe."),
+        C("i2", "Iron Ore", "Obtaining › Natural generation", "Iron ore is most common around level 16, and common in mountains."),
+        C("i3", "Iron Ore", "Usage", "Iron ore is smelted into iron ingots."),
+        C("o1", "Overworld", "Environment", f"Ores by level: {y}"),
+        C("a1", "Altitude", "Natural resources", f"Each ore has a level: {y}"),
+        C("c1", "Coal", "Usage", "Coal is a fuel. Coal ore drops coal."),
+        C("c2", "Coal Ore", "Obtaining › Natural generation", "Coal ore generates from level 0 to 192, most common at 96."),
+        C("e1", "Emerald Ore", "Natural generation", "Emerald ore generates in mountains, from -16 to 320."),
+    ])
 
 
 class IndexTest(unittest.TestCase):
-    def test_iron_ore_y_level_finds_the_distribution_chunk(self):
+    def test_iron_ore_y_level_finds_the_iron_generation_chunk(self):
         hits = fixture_index().search("iron ore y level", 3)
-        self.assertIn(hits[0].section, ("Distribution", "Natural generation"), [h.title for h in hits])
-        self.assertIn("16", hits[0].text)
-        self.assertEqual({h.title for h in hits[:2]}, {"Ore › Distribution", "Iron Ore › Natural generation"})
+        self.assertEqual(hits[0].title, "Iron Ore › Obtaining › Natural generation", [h.title for h in hits])
+        self.assertIn("most common around level 16", hits[0].text)
+        self.assertEqual([h.page for h in hits], ["Iron Ore", "Ore"], "one chunk per page")
+
+    def test_the_subject_beats_a_chunk_dense_with_y_numbers(self):
+        ix = dense_index()
+        self.assertEqual(ix.subject("iron ore y level")[0], "iron ore")
+        self.assertEqual(ix.subject("coal ore y level")[1], {"Coal Ore"})
+        hits = ix.search("iron ore y level", 3)
+        self.assertEqual(hits[0].title, "Iron Ore › Obtaining › Natural generation")
+        self.assertEqual(len({h.page for h in hits}), 3, "at most one chunk per page")
+        self.assertEqual(ix.search("coal ore y level", 1)[0].page, "Coal Ore", "the exact title beats Coal")
+        self.assertEqual(ix.search("emerald ore y level", 1)[0].page, "Emerald Ore")
+        self.assertEqual(ix.search("diamond ore y level", 1)[0].title, "Diamond Ore › Obtaining › Natural generation")
+        self.assertEqual(ix.search("what y level", 1)[0].page in ("Diamond Ore", "Overworld", "Altitude"), True, "no subject: plain BM25")
+
+    def test_title_field_counts_three_times_the_body(self):
+        C = wiki.Chunk
+        ix = wiki.BM25Index.build([C("a", "Furnace", "Fuel", "burns items"), C("b", "Torch", "Usage", "a furnace is not a torch")])
+        self.assertEqual(ix.search("furnace", 1)[0].page, "Furnace")
+        self.assertEqual(ix.title_weight, 3)
+
+    def test_eval_passes_on_the_dense_index(self):
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import wiki_index
+        lines = []
+        cases = [(f"{o} y level", t) for o, t in (("iron ore", "Iron Ore"), ("coal ore", "Coal Ore"), ("emerald ore", "Emerald Ore"), ("diamond ore", "Diamond Ore"))]
+        self.assertEqual(wiki_index.evaluate(dense_index(), cases, out=lines.append), 0, lines)
+        self.assertEqual(lines[-1], "4/4 passed")
+        self.assertEqual(wiki_index.evaluate(dense_index(), [("gold ore y level", "Gold Ore")], out=lines.append), 1)
+        self.assertTrue(lines[-2].startswith("FAIL  'gold ore y level'"))
+        self.assertEqual(len(wiki_index.EVAL), 8)
 
     def test_other_questions(self):
         ix = fixture_index()
         self.assertEqual(ix.search("how do I smelt raw iron", 1)[0].title, "Iron Ore › Usage › Smelting ingredient")
-        self.assertEqual(ix.search("minimum pickaxe for diamond ore", 1)[0].title, "Ore › Mining")
+        self.assertEqual(ix.search("which ore needs which pickaxe; ore usage drops", 1)[0].title, "Ore › Usage")
         self.assertEqual(ix.search("the and of", 3), [], "stop words only: nothing")
 
     def test_save_load_round_trip(self):
@@ -124,13 +177,47 @@ class IndexTest(unittest.TestCase):
         ix = fixture_index()
         q = "iron ore y level"
         pairs = wiki.excerpts(ix.search(q, 3), q, 600)
-        self.assertEqual(len(pairs), 3)
+        self.assertEqual(len(pairs), 2)
         total = sum(wiki.tokens(h.title) + 2 + wiki.tokens(t) for h, t in pairs)
         self.assertLessEqual(total, 600)
-        small = wiki.excerpts(ix.search(q, 3), q, 150)
-        self.assertLessEqual(sum(wiki.tokens(h.title) + 2 + wiki.tokens(t) for h, t in small), 150)
+        small = wiki.excerpts(ix.search(q, 3), q, 120)
+        self.assertLessEqual(sum(wiki.tokens(h.title) + 2 + wiki.tokens(t) for h, t in small), 120)
         top = small[0][1]
         self.assertTrue("Iron" in top or "iron" in top, "a cut excerpt keeps the matching line")
+
+
+RAW = ROOT / "data" / "wiki" / "raw"
+INDEX = ROOT / "data" / "wiki" / "index.json"
+
+
+@unittest.skipUnless((RAW / "Iron_Ore.html").exists() and (RAW / "Ore.html").exists(), "real pages not fetched (data/wiki/raw/)")
+class RealPagesTest(unittest.TestCase):
+    """On atlas, after scripts/wiki_fetch.py: the real Iron Ore and Ore pages."""
+
+    def chunks(self, name, title):
+        return wiki.chunk_page(title, wiki.parse_html((RAW / f"{name}.html").read_text(encoding="utf-8")))
+
+    def test_iron_ore_generation_has_its_own_chunk(self):
+        ch = {c.title: c for c in self.chunks("Iron_Ore", "Iron Ore")}
+        self.assertIn("Iron Ore › Obtaining › Natural generation", ch, sorted(ch))
+        self.assertRegex(ch["Iron Ore › Obtaining › Natural generation"].text.lower(), r"most common around level 16")
+
+    def test_ore_distribution(self):
+        titles = [c.title for c in self.chunks("Ore", "Ore")]
+        self.assertIn("Ore › Distribution", titles)
+
+    def test_iron_ore_y_level_on_the_two_pages(self):
+        ix = wiki.BM25Index.build(self.chunks("Iron_Ore", "Iron Ore") + self.chunks("Ore", "Ore"))
+        self.assertEqual(ix.search("iron ore y level", 1)[0].title, "Iron Ore › Obtaining › Natural generation")
+
+
+@unittest.skipUnless(INDEX.exists(), "no real index (data/wiki/index.json)")
+class RealIndexTest(unittest.TestCase):
+    def test_eval(self):
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import wiki_index
+        lines = []
+        self.assertEqual(wiki_index.evaluate(wiki.load_retriever(INDEX), out=lines.append), 0, "\n".join(lines))
 
 
 class ScriptsTest(unittest.TestCase):

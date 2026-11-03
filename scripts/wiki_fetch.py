@@ -10,7 +10,6 @@ data/wiki/raw/_missing.txt.
 
     python3 scripts/wiki_fetch.py              # fetch what's missing
     python3 scripts/wiki_fetch.py --refresh    # fetch everything again
-    python3 scripts/wiki_fetch.py --fixtures   # copy Iron_Ore/Ore into mind/tests/fixtures
 
 Then build the index: python3 scripts/wiki_index.py
 
@@ -19,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sys
 import time
 import urllib.error
@@ -77,18 +75,7 @@ def main(argv=None) -> int:
     ap.add_argument("--out", type=Path, default=ROOT / "data" / "wiki" / "raw")
     ap.add_argument("--refresh", action="store_true", help="fetch pages again even if cached")
     ap.add_argument("--delay", type=float, default=1.0, help="seconds between requests (default 1)")
-    ap.add_argument("--fixtures", action="store_true", help="copy the cached Iron_Ore and Ore pages into mind/tests/fixtures")
     a = ap.parse_args(argv)
-
-    if a.fixtures:
-        for name in ("Iron_Ore", "Ore"):
-            src = a.out / f"{name}.html"
-            if not src.exists():
-                print(f"{src} not fetched yet", file=sys.stderr)
-                return 1
-            shutil.copy(src, ROOT / "mind" / "tests" / "fixtures" / f"{name}.html")
-            print(f"copied {src.name}")
-        return 0
 
     a.out.mkdir(parents=True, exist_ok=True)
     titles = read_titles(a.pages)

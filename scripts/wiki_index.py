@@ -5,6 +5,7 @@ plain text by section -> chunks (~300-600 tokens) -> BM25 -> data/wiki/index.jso
     python3 scripts/wiki_index.py                         # build
     python3 scripts/wiki_index.py --query "iron ore y level"
     python3 scripts/wiki_index.py --check-ores            # the ore table in docs/verbs.md vs. the wiki
+    python3 scripts/wiki_index.py --eval                  # "<ore> y level" must find that ore's page first
 
 Standard library only (the parser, chunker and BM25 live in mind/atlas_mind/wiki.py)."""
 from __future__ import annotations
@@ -20,6 +21,21 @@ sys.path.insert(0, str(ROOT / "mind"))
 from atlas_mind import wiki  # noqa: E402
 
 ORES = ["coal", "copper", "iron", "gold", "redstone", "lapis lazuli", "diamond", "emerald"]
+# (query, the page that must come first)
+EVAL = [(f"{ore} ore y level", f"{ore.title()} Ore") for ore in ORES]
+
+
+def evaluate(retriever, cases=EVAL, out=print) -> int:
+    """Run the retrieval checks; prints PASS/FAIL per query, returns the number failed."""
+    failed = 0
+    for query, want in cases:
+        hits = retriever.search(query, 3)
+        got = hits[0].title if hits else "(nothing)"
+        ok = bool(hits) and hits[0].page == want
+        failed += not ok
+        out(f"{'PASS' if ok else 'FAIL'}  {query!r}: first {got}" + ("" if ok else f" (want page {want}); then " + ", ".join(h.title for h in hits[1:])))
+    out(f"{len(cases) - failed}/{len(cases)} passed")
+    return failed
 
 
 def page_title(html_path: Path) -> str:
@@ -36,14 +52,18 @@ def build(raw: Path, out: Path, min_tokens: int, max_tokens: int) -> wiki.BM25In
     chunks: list[wiki.Chunk] = []
     pages = sorted(raw.glob("*.html"))
     t0 = time.monotonic()
+    seen = set()
     for p in pages:
         title = page_title(p)
+        if title in seen:  # two listed titles that redirect to one page
+            continue
+        seen.add(title)
         sections = wiki.parse_html(p.read_text(encoding="utf-8"))
         chunks += wiki.chunk_page(title, sections, min_tokens, max_tokens)
     ix = wiki.BM25Index.build(chunks)
     ix.save(out)
     sizes = sorted(wiki.tokens(c.text) for c in chunks) or [0]
-    print(f"{len(pages)} pages -> {len(chunks)} chunks (tokens: median {sizes[len(sizes) // 2]}, max {sizes[-1]}) "
+    print(f"{len(seen)} pages ({len(pages) - len(seen)} duplicate redirects skipped) -> {len(chunks)} chunks (tokens: median {sizes[len(sizes) // 2]}, max {sizes[-1]}) "
           f"in {time.monotonic() - t0:.1f} s -> {out} ({out.stat().st_size // 1024} KiB)")
     return ix
 
@@ -65,10 +85,11 @@ def main(argv=None) -> int:
     ap.add_argument("--max-tokens", type=int, default=600)
     ap.add_argument("--query", action="append", help="search the existing index instead of building (repeatable)")
     ap.add_argument("--check-ores", action="store_true", help="print the wiki's distribution text for each ore in docs/verbs.md's table")
+    ap.add_argument("--eval", action="store_true", help='check that "<ore> ore y level" finds that ore\'s page first (exit 1 on a failure)')
     ap.add_argument("-k", type=int, default=3)
     ap.add_argument("--budget", type=int, default=600)
     a = ap.parse_args(argv)
-    if a.query or a.check_ores:
+    if a.query or a.check_ores or a.eval:
         ix = wiki.load_retriever(a.index)
         if ix is None:
             print(f"no index at {a.index}; build it first", file=sys.stderr)
@@ -77,7 +98,9 @@ def main(argv=None) -> int:
             show(ix, q, a.k, a.budget)
         if a.check_ores:
             for ore in ORES:
-                show(ix, f"{ore} ore natural generation altitude y", 2, 500)
+                show(ix, f"{ore} ore y level", 1, 500)
+        if a.eval:
+            return 1 if evaluate(ix) else 0
         return 0
     if not a.raw.exists() or not any(a.raw.glob("*.html")):
         print(f"no pages in {a.raw}; run scripts/wiki_fetch.py first", file=sys.stderr)

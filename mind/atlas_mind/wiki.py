@@ -247,46 +247,19 @@ def _split(text: str, max_tokens: int) -> list[str]:
 
 
 def chunk_page(page: str, sections: list[Section], min_tokens: int = 300, max_tokens: int = 600) -> list[Chunk]:
-    """Chunks by section: a top-level section with its subsections is one chunk
-    when it fits max_tokens; otherwise each subsection is its own chunk, split
-    evenly when longer than max_tokens. Small neighbouring subsections of one
-    section are merged up to min_tokens. Chunks never span two top-level
-    sections."""
-    groups: list[list[Section]] = []
-    for s in sections:  # the lead, then one group per top-level section
-        if groups and (groups[-1][0].path[:1] == s.path[:1]):
-            groups[-1].append(s)
-        else:
-            groups.append([s])
+    """One chunk per section, every heading level kept in its title
+    ("Iron Ore › Obtaining › Natural generation"), so a subsection is never
+    folded under its neighbour's name. A section longer than max_tokens is
+    split evenly on line/sentence boundaries; the pieces after the first start
+    with "… " and carry the same title. (min_tokens is the size a split aims
+    for; small sections stay small.)"""
     out: list[Chunk] = []
-
-    def emit(section: str, text: str):
+    for s in sections:
+        section = " › ".join(s.path)
         sid = re.sub(r"\W+", "_", f"{page} {section}").strip("_")
-        for piece in _split(text, max_tokens):
-            out.append(Chunk(f"{sid}#{len(out)}", page, section, piece))
-
-    for g in groups:
-        head = g[0]
-        whole = "\n".join(_with_heading(s, head) for s in g)
-        if tokens(whole) <= max_tokens:
-            emit(" › ".join(head.path), whole)
-            continue
-        # too big: subsections on their own, small neighbours merged
-        acc: list[Section] = []
-        for s in g:
-            if acc and tokens("\n".join(_with_heading(x, head) for x in acc + [s])) > max(min_tokens, 1) \
-                    and tokens("\n".join(_with_heading(x, head) for x in acc)) >= min_tokens // 2:
-                emit(" › ".join(acc[0].path), "\n".join(_with_heading(x, acc[0]) for x in acc))
-                acc = []
-            acc.append(s)
-        if acc:
-            emit(" › ".join(acc[0].path), "\n".join(_with_heading(x, acc[0]) for x in acc))
+        for i, piece in enumerate(_split(s.text, max_tokens)):
+            out.append(Chunk(f"{sid}#{len(out)}", page, section, piece if i == 0 else "… " + piece))
     return out
-
-
-def _with_heading(s: Section, first: Section) -> str:
-    """A subsection's text with its own heading, when it's not the chunk's first section."""
-    return s.text if s is first else f"{s.title}:\n{s.text}"
 
 
 # ---- BM25 -----------------------------------------------------------------------
@@ -295,7 +268,8 @@ STOP = set("""a an and are as at be by can do does for from has have how i if in
 that the their then there these this to was what when where which while who will with you your me my""".split())
 # A tiny query expansion for how players ask vs. how the wiki words it.
 SYNONYMS = {
-    "level": ["altitude", "height", "y"], "levels": ["altitude", "height", "y"], "depth": ["altitude", "y"],
+    "level": ["altitude", "height", "y", "generation", "generate"], "levels": ["altitude", "height", "y", "generation"],
+    "depth": ["altitude", "y", "generation"],
     "find": ["generation", "found", "generates"], "where": ["generation", "found"], "spawn": ["spawning"],
     "make": ["crafting", "recipe"], "craft": ["crafting", "recipe"], "recipe": ["crafting"],
     "smelt": ["smelting", "furnace"], "cook": ["smelting", "furnace"], "fuel": ["fuel", "burn"],
@@ -340,16 +314,26 @@ class Retriever(Protocol):
     def search(self, query: str, k: int = 3) -> list[Hit]: ...
 
 
+def _words(text: str) -> list[str]:
+    """Every word, stemmed, stop words kept: for matching a query run against a page title."""
+    return [stem(w) for w in re.findall(r"[a-z0-9]+", text.lower().replace("_", " "))]
+
+
 @dataclass
 class BM25Index:
+    """BM25 over two fields, the chunk's title (page + section path) weighted
+    title_weight x and its body, plus two ranking rules on top:
+    - subject first: the longest run of query words that is (part of) a page
+      title, e.g. "iron ore" in "iron ore y level", is the subject; chunks of
+      pages titled exactly that rank above pages that merely contain it, and
+      those above every other page;
+    - one chunk per page in the results."""
     chunks: list[Chunk] = field(default_factory=list)
     k1: float = 1.5
     b: float = 0.75
-    title_weight: int = 3  # page and section title tokens count this many times
-    _tf: list[Counter] = field(default_factory=list, repr=False)
-    _len: list[int] = field(default_factory=list, repr=False)
-    _df: Counter = field(default_factory=Counter, repr=False)
-    _avg: float = 1.0
+    title_weight: float = 3.0
+    _fields: dict = field(default_factory=dict, repr=False)  # name -> (tfs, lens, df, avg)
+    _titles: dict = field(default_factory=dict, repr=False)  # page -> its title words
 
     @classmethod
     def build(cls, chunks: list[Chunk], **kw) -> "BM25Index":
@@ -357,37 +341,72 @@ class BM25Index:
         ix._prepare()
         return ix
 
-    def _doc_terms(self, c: Chunk) -> list[str]:
-        return tokenize(c.page + " " + c.section) * self.title_weight + tokenize(c.text)
-
     def _prepare(self) -> None:
-        self._tf = [Counter(self._doc_terms(c)) for c in self.chunks]
-        self._len = [sum(tf.values()) for tf in self._tf]
-        self._df = Counter(t for tf in self._tf for t in tf)
-        self._avg = (sum(self._len) / len(self._len)) if self._len else 1.0
+        def field_of(texts):
+            tfs = [Counter(tokenize(t)) for t in texts]
+            lens = [sum(tf.values()) for tf in tfs]
+            df = Counter(t for tf in tfs for t in tf)
+            return tfs, lens, df, (sum(lens) / len(lens)) if lens else 1.0
+        self._fields = {"title": field_of([c.page + " " + c.section for c in self.chunks]),
+                        "body": field_of([c.text for c in self.chunks])}
+        self._titles = {c.page: tuple(_words(c.page)) for c in self.chunks}
+
+    def _bm25(self, name: str, q: Counter, i: int) -> float:
+        tfs, lens, df, avg = self._fields[name]
+        n = len(self.chunks)
+        s = 0.0
+        for t, qn in q.items():
+            f = tfs[i].get(t)
+            if f:
+                idf = math.log(1 + (n - df[t] + 0.5) / (df[t] + 0.5))
+                s += qn * idf * f * (self.k1 + 1) / (f + self.k1 * (1 - self.b + self.b * lens[i] / avg))
+        return s
+
+    def subject(self, query: str) -> tuple[str, set, set]:
+        """(subject words, pages titled exactly that, pages whose title contains it); ("", ∅, ∅) if none."""
+        words = _words(query)
+        for n in range(len(words), 0, -1):
+            best = None
+            for i in range(len(words) - n + 1):
+                run = tuple(words[i:i + n])
+                if all(w in STOP or w.isdigit() or len(w) < 2 for w in run):
+                    continue
+                exact = {p for p, t in self._titles.items() if t == run}
+                within = {p for p, t in self._titles.items() if any(t[j:j + n] == run for j in range(len(t) - n + 1))}
+                if not within:
+                    continue
+                rank = (bool(exact), -len(within))
+                if best is None or rank > best[0]:
+                    best = (rank, " ".join(run), exact, within)
+            if best:
+                return best[1], best[2], best[3]
+        return "", set(), set()
 
     def search(self, query: str, k: int = 3) -> list[Hit]:
         q = Counter(query_terms(query))
         if not q or not self.chunks:
             return []
-        n = len(self.chunks)
-        scores = []
-        for i, tf in enumerate(self._tf):
-            s = 0.0
-            for t, qn in q.items():
-                f = tf.get(t)
-                if not f:
-                    continue
-                idf = math.log(1 + (n - self._df[t] + 0.5) / (self._df[t] + 0.5))
-                s += qn * idf * f * (self.k1 + 1) / (f + self.k1 * (1 - self.b + self.b * self._len[i] / self._avg))
+        _, exact, within = self.subject(query)
+        scored = []
+        for i, c in enumerate(self.chunks):
+            s = self.title_weight * self._bm25("title", q, i) + self._bm25("body", q, i)
             if s > 0:
-                scores.append((s, i))
-        scores.sort(key=lambda x: (-x[0], x[1]))
-        return [Hit(self.chunks[i].page, self.chunks[i].section, self.chunks[i].text, round(s, 3), self.chunks[i].id)
-                for s, i in scores[:k]]
+                tier = 2 if c.page in exact else 1 if c.page in within else 0
+                scored.append((tier, s, i))
+        scored.sort(key=lambda x: (-x[0], -x[1], x[2]))
+        out, pages = [], set()
+        for tier, s, i in scored:
+            c = self.chunks[i]
+            if c.page in pages:
+                continue
+            pages.add(c.page)
+            out.append(Hit(c.page, c.section, c.text, round(s, 3), c.id))
+            if len(out) >= k:
+                break
+        return out
 
     def to_json(self) -> dict:
-        return {"backend": "bm25", "version": 1, "k1": self.k1, "b": self.b, "title_weight": self.title_weight,
+        return {"backend": "bm25", "version": 2, "k1": self.k1, "b": self.b, "title_weight": self.title_weight,
                 "chunks": [asdict(c) for c in self.chunks]}
 
     def save(self, path: Path) -> None:

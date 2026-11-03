@@ -1,5 +1,7 @@
 # Pages scripts/wiki_fetch.py fetches from minecraft.wiki, one title per line.
 # Blank lines and lines starting with # are ignored. Redirects are followed.
+# Tutorials live under "Tutorials/…" (not "Tutorial:…"); the old Tutorial: names that still
+# redirect are kept. Two titles that redirect to one page are indexed once.
 # Wiki text is CC BY-NC-SA 3.0: fetched for personal use only.
 
 # --- Ores, minerals and their distribution
@@ -140,14 +142,12 @@ Ingot
 
 # --- Survival basics
 Tutorial:Beginner's guide
-Tutorial:The first day
-Tutorial:Mining
-Tutorial:Strip mining
-Tutorial:Caving
+Tutorials/Your first day
+Tutorials/Mining
+Tutorials/Diamonds
+Tutorials/Caving
 Tutorial:Shelters
 Tutorial:Navigation
-Tutorial:Food
-Tutorial:Light
 Health
 Hunger
 Food
@@ -316,6 +316,7 @@ Hero of the Village
 The Nether
 Nether portal
 Tutorial:Nether survival
+Tutorials/Nether portal
 Nether Fortress
 Bastion Remnant
 Nether Wastes
@@ -338,8 +339,8 @@ Stronghold
 End Portal
 End Portal Frame
 The End
-Tutorial:Defeating the Ender Dragon
-Tutorial:Finding a stronghold
+Tutorials/Defeating the Ender Dragon
+Tutorials/Finding a stronghold
 End Crystal
 End Stone
 Dragon Egg

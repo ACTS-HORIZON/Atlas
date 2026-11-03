@@ -339,7 +339,7 @@ It decides on every recorded result and event, plus every 15th obs.
 - replay;
 - the task journal: three failures of one kind lead to a different approach, not `ask_player`; a task no verb can do may ask at once; the next call after a failure differs.
 
-`mind/tests/test_wiki.py` covers the wiki pipeline on two pages in the wiki's HTML (`mind/tests/fixtures/`): parsing (noise stripped, tables as rows), chunking, the BM25 index (`"iron ore y level"` finds the ore distribution chunk), the fetch and index scripts, and the mind's KNOWLEDGE block, `rag` traces and `lookup`.
+`mind/tests/test_wiki.py` covers the wiki pipeline on two pages in the wiki's HTML (`mind/tests/fixtures/`): parsing (noise stripped, tables as rows), chunking, the BM25 index (`"iron ore y level"` finds `Iron Ore › Obtaining › Natural generation`; the subject beats a chunk dense with Y numbers; one chunk per page), `--eval`, the fetch and index scripts, and the mind's KNOWLEDGE block, `rag` traces and `lookup`.
 
 ### Wiki knowledge
 
@@ -362,8 +362,11 @@ cd /opt/atlas && python3 scripts/wiki_fetch.py
 cd /opt/atlas && python3 scripts/wiki_index.py
 ```
 
-- **What it does:** parses each page to plain text by section. Infoboxes, navboxes, the table of contents, edit links, references and the History/Trivia/Gallery sections are dropped; tables are kept as `a | b | c` rows. It then chunks by section (about 300–600 tokens) and writes a BM25 index to `data/wiki/index.json`.
-- **Output:** a line like `400 pages -> 1900 chunks (tokens: median 310, max 600) in 20 s`.
+- **What it does:** parses each page to plain text by section. Infoboxes, navboxes, the table of contents, edit links, references and the History/Trivia/Gallery sections are dropped; tables are kept as `a | b | c` rows. Every section is its own chunk, titled with its full heading path (`Iron Ore › Obtaining › Natural generation`); one longer than 600 tokens is split, and the pieces after the first start with `… `. Two listed titles that redirect to the same page are indexed once. It writes a BM25 index to `data/wiki/index.json`.
+- **Output:** a line like `394 pages (2 duplicate redirects skipped) -> 3300 chunks (tokens: median 120, max 600) in 20 s`.
+- **Ranking:** BM25 over two fields, the chunk title (page and section path, weighted 3×) and the body. On top of that:
+  - **Subject first:** the longest run of query words that is (part of) a page title is the subject, e.g. "iron ore" in "iron ore y level". Pages titled exactly that rank above pages whose title merely contains it, and both rank above every other page.
+  - **One chunk per page** in the results.
 - **No extra packages:** both scripts use only the standard library, and so does the mind's retriever. Restart the mind to load a new index.
 
 To check what the mind would get:
@@ -376,8 +379,14 @@ cd /opt/atlas && python3 scripts/wiki_index.py --query "iron ore y level" --quer
 cd /opt/atlas && python3 scripts/wiki_index.py --check-ores
 ```
 
-- **`--check-ores`:** prints the wiki's generation text for each ore, to verify the ore table in `docs/verbs.md`.
-- **`--fixtures`:** `python3 scripts/wiki_fetch.py --fixtures` copies the real `Iron_Ore` and `Ore` pages over the hand-written test fixtures in `mind/tests/fixtures/`. Run the tests after, and commit if they pass.
+- **`--check-ores`:** prints the top chunk for `<ore> ore y level` for each ore, to verify the ore table in `docs/verbs.md`.
+
+```bash
+cd /opt/atlas && python3 scripts/wiki_index.py --eval
+```
+
+- **`--eval`:** for each overworld ore, `<ore> ore y level` must return that ore's own page first. It prints `PASS`/`FAIL` per query and `n/8 passed`, and exits 1 on any failure.
+- **Tests on the real pages:** `mind/tests/test_wiki.py` also runs `RealPagesTest` (the real Iron Ore and Ore pages from `data/wiki/raw/`) and `RealIndexTest` (`--eval` on `data/wiki/index.json`). They are skipped where those files don't exist, so in the sandbox only the hand-written fixtures are used. The fixtures are no longer overwritten (`--fixtures` is gone).
 
 **Swapping the retriever:** the mind only calls `search(query, k)` on whatever `wiki.load_retriever` returns, picked by the index file's `"backend"` field. An embedding backend registers a loader in `wiki.BACKENDS`; nothing else changes.
 

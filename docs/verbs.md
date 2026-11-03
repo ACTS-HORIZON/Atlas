@@ -98,18 +98,18 @@ The nearest known place of `type` in this dimension. `near` defaults to the bot'
   - `refused`: every target in view is protected: `house rules: …; no other <block> in view`.
   - `done` and `partial` carry `data: {block, mined, requested, tunnel}`, plus `{y, stairs, at_y}` when `y` was given.
 
-**Where ores generate** (overworld, Java 1.18+; "peak" is the most common level). Not yet checked against the fetched wiki: verify with `scripts/wiki_index.py --check-ores` on atlas and fix this table if they differ.
+**Where ores generate** (overworld; "peak" is the most common level). "wiki" rows are confirmed against the fetched minecraft.wiki pages; "unverified" rows are not yet: check them with `scripts/wiki_index.py --check-ores` on atlas.
 
-| Ore | Levels | Peak | Also |
-|---|---|---|---|
-| coal_ore | 0 … 192 | 96 | 136 … 320 on high terrain |
-| copper_ore | −16 … 112 | 48 | more in dripstone caves |
-| iron_ore | −24 … 56 | 16 | mountains above 80 (peak 232); small veins −64 … 72 |
-| gold_ore | −64 … 32 | −16 | badlands 32 … 256 |
-| redstone_ore | −64 … 15 | lowest levels | |
-| lapis_ore | −64 … 64 | 0 | |
-| diamond_ore | −64 … 16 | −59 | rarely exposed to air |
-| emerald_ore | mountains only | 232 | −16 … 320 |
+| Ore | Levels | Peak | Also | Source |
+|---|---|---|---|---|
+| iron_ore | −24 … 56 (range unverified) | around 16 | also common in mountains above ~80 | wiki (peak, mountains) |
+| diamond_ore | 16 … −63 | −58 / −59 | rarely exposed to air | wiki |
+| lapis_ore | −32 … 32 | 0 | also −64 … 64 where not exposed to air | wiki |
+| emerald_ore | −16 … 320 | around 90 in practice | mountain biomes only | wiki |
+| coal_ore | 0 … 192 | 96 | 136 … 320 on high terrain | unverified |
+| copper_ore | −16 … 112 | 48 | more in dripstone caves | unverified |
+| gold_ore | −64 … 32 | −16 | badlands 32 … 256 | unverified |
+| redstone_ore | −64 … 15 | lowest levels | | unverified |
 
 Below y 0 ores are the `deepslate_*` variant (same drops, slower to mine). Strip-mine where the peak is: iron at y 16, diamonds near y −59 (watch for lava below y −54).
 
