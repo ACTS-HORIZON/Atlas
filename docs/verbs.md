@@ -131,15 +131,45 @@ Eats `item`, or the best food in the inventory. Harmful foods (rotten_flesh, spi
   - `done`: `ate <item>; food <before> → <after>`, `data: {item, food_before, food_after}`
   - `failed`: `eat: not hungry (food 20/20)`; `eat: no food in inventory`; `eat: only harmful food in inventory (<list>); name it to eat it anyway`; `eat: <item> is not food`; `eat: no <item> in inventory`
 
+### give {item, count = 1, player}
+Walks to an observed player and tosses the items at their feet. The player may be in sight, or out of sight on the Locator Bar (then it follows the bearing until they are in sight, as `goto` does). It stops within 2 blocks. `count` is 1–2304. Giving is always allowed.
+- **Progress:** as `goto`, then `tossing <n> <item> to <player>`.
+- **Results:**
+  - `done`: `gave <n> <item> to <player>`
+  - `partial`: `gave <n> of <count> <item> to <player>; only had <n>`
+  - `failed`: `give: no <item> in inventory` (checked before walking); `give: could not reach <player>: <goto detail>`; `give: <player> is not in sight any more`
+  - `refused`: `fair play: <player> has not been observed …`
+  - Results with something given carry `data: {item, given}`.
+
+### deposit {item, count?, chest}
+Walks to an observed chest, trapped chest or barrel at `chest` [x, y, z] (visible now, or a known place) and puts the item in. `count` defaults to all of that item. Depositing is always allowed.
+- **Progress:** `going to the <chest> at [x, y, z]`, then `putting <n> <item> in the <chest>`.
+- **Results:**
+  - `done`: `put <n> <item> in the <chest> at [x, y, z]`
+  - `partial`: `put <n> of <count> <item> …; the chest is full`
+  - `failed`: `deposit: no <item> in inventory`; `deposit: [x, y, z] is <block>, not a chest or barrel`; `deposit: could not reach the <chest> at … (<why>)`
+  - `refused`: `fair play: no chest has been observed at [x, y, z]`
+  - Results carry `data: {item, deposited}`.
+
+### withdraw {item, count = 1, chest}
+Takes from an observed chest, but only from one that has been given to Atlas (house rules). A chest is given through `ATLAS_CHESTS`, or by an allowlisted player looking at it and saying `@<bot> that chest is yours`.
+- **Progress:** `going to the <chest> at [x, y, z]`, then `taking <n> <item> from the <chest>`.
+- **Results:**
+  - `done`: `took <n> <item> from the <chest> at [x, y, z]`
+  - `partial`: `took <n> of <count> <item> …; the chest had only <n>`, or `…; the inventory is full`
+  - `failed`: `withdraw: no <item> in the chest`; not a chest; could not reach it
+  - `refused`: `house rules: the <chest> at [x, y, z] has not been given to Atlas (…)`, or fair play (not observed)
+  - Results carry `data: {item, withdrawn}`.
+
 ## Not implemented yet
-`inspect`, `build`, `smelt`, `give`, `deposit`, `withdraw`, `fight`, `flee` and the Later list in CONTRACT.md. Calling one gives `failed` with `verb not implemented yet: <verb>`.
+`inspect`, `build`, `smelt`, `fight`, `flee` and the Later list in CONTRACT.md. Calling one gives `failed` with `verb not implemented yet: <verb>`.
 
 ## Chat the body handles itself
 From players on `ATLAS_PLAYERS` only:
 - `@<bot> stop` stops the running verb, replies in chat and sends event `stop_requested {from, detail}`.
 - `@<bot> status` replies `status: <verb> (<progress>) | health <h> food <f> | at x y z`.
-- `@<bot> come here` runs `goto {target: <player>}`, then sends event `verb_done {id: "chat-<n>", verb, args, status, detail, by: "chat"}` and says in chat if it couldn't get there.
-- Any other `@<bot> <text>` sends event `task_from_chat {from, text}`.
+- `@<bot> that chest is yours` (house rules): the chest the player is looking at, and the bot can see, joins the withdraw allowlist, with the other half of a double chest next to it. The bot replies in chat. Grants persist per server in `data/chests.<host>_<port>.json`.
+- Any other `@<bot> <text>` sends event `task_from_chat {from, text}`. That includes `come here`, which is the mind's to decide.
 - Their other chat sends event `player_said {from, text}`.
 
 Chat from anyone else only appears in `obs.chat`.

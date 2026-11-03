@@ -1,45 +1,80 @@
 """The model's output: exactly one JSON object per turn.
 
-{"thinking": "...", "action": "call", "verb": "mine", "args": {...}}
-{"thinking": "...", "action": "say", "text": "..."}
-{"thinking": "...", "action": "ask_player", "player": "Name", "text": "..."}
+{"thinking": "...", "action": "call", "verb": "mine", "args": {...}, "about": "t1"}
+{"thinking": "...", "action": "say", "text": "...", "about": "t1"}            # e.g. confirming t1
+{"thinking": "...", "action": "say", "text": "...", "closes": "t1"}           # the reply that finishes t1
+{"thinking": "...", "action": "ask_player", "player": "Name", "text": "...", "about": "t1"}
 {"thinking": "...", "action": "note", "text": "..."}
+{"thinking": "...", "action": "done", "closes": "t1"}                         # finish t1 without chat
 {"thinking": "...", "action": "wait"}
 
-Any action may also carry "task": {"id": "t1", "state": "active|done|dropped|waiting",
-"standing": true|false} to update the task list."""
+"about" ties an action to a task; "closes" finishes one; "standing": true
+marks the task it is about as standing (re-planned until stopped).
+The reply may be wrapped in prose or code fences: the first complete JSON
+object with an "action" is used."""
 from __future__ import annotations
 
 import json
-import re
 
-ACTIONS = ("call", "say", "ask_player", "note", "wait")
-TASK_STATES = ("active", "done", "dropped", "waiting")
+ACTIONS = ("call", "say", "ask_player", "note", "done", "wait")
 
 
 class ActionError(ValueError):
     pass
 
 
+def _objects(text: str):
+    """Yield (start, end) of every balanced {...} in text, outermost first (string-aware)."""
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] != "{":
+            i += 1
+            continue
+        depth, in_str, esc = 0, False, False
+        for j in range(i, n):
+            ch = text[j]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+            elif ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    yield i, j + 1
+                    break
+        else:
+            i += 1  # never closed from here: try the next brace
+            continue
+        i = j + 1
+
+
 def extract_json(text: str) -> dict:
-    """Parse the reply; tolerate a ```json fence or prose around one object."""
-    t = text.strip()
-    fence = re.search(r"```(?:json)?\s*(\{.*\})\s*```", t, re.S)
-    if fence:
-        t = fence.group(1)
-    try:
-        obj = json.loads(t)
-    except json.JSONDecodeError:
-        start, end = t.find("{"), t.rfind("}")
-        if start < 0 or end <= start:
-            raise ActionError("no JSON object in the reply")
+    """The first complete JSON object in the reply that has an "action" (or
+    else the first complete object). Prose, code fences and trailing text
+    around it are ignored."""
+    first = None
+    for a, b in _objects(text):
         try:
-            obj = json.loads(t[start:end + 1])
-        except json.JSONDecodeError as e:
-            raise ActionError(f"invalid JSON: {e}") from None
-    if not isinstance(obj, dict):
-        raise ActionError("the reply must be one JSON object")
-    return obj
+            obj = json.loads(text[a:b])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            if "action" in obj:
+                return obj
+            first = first or obj
+    if first is not None:
+        return first
+    if "{" in text:
+        raise ActionError("the reply was cut off before its JSON object closed")
+    raise ActionError("no JSON object in the reply")
 
 
 def validate(obj: dict, verbs: set[str] | None = None) -> dict:
@@ -71,15 +106,20 @@ def validate(obj: dict, verbs: set[str] | None = None) -> dict:
         if not isinstance(player, str) or not player or not isinstance(text, str) or not text.strip():
             raise ActionError('"ask_player" needs "player" and "text"')
         out.update(player=player, text=text.strip())
-    task = obj.get("task")
-    if task is not None:
-        if not isinstance(task, dict) or not isinstance(task.get("id"), str):
-            raise ActionError('"task" must be {"id": "t1", "state": ..., "standing": ...}')
-        if "state" in task and task["state"] not in TASK_STATES:
-            raise ActionError(f'task "state" must be one of {", ".join(TASK_STATES)}')
-        if "standing" in task and not isinstance(task["standing"], bool):
-            raise ActionError('task "standing" must be true or false')
-        out["task"] = {k: task[k] for k in ("id", "state", "standing") if k in task}
+    for k in ("about", "closes"):
+        v = obj.get(k)
+        if v is not None:
+            if not isinstance(v, str) or not v:
+                raise ActionError(f'"{k}" must be a task id like "t1"')
+            out[k] = v
+    if a == "done" and "closes" not in out:
+        raise ActionError('"done" needs "closes": the task id it finishes')
+    if "closes" in out and a not in ("say", "done"):
+        raise ActionError('"closes" goes on a say (the reply that finishes the task) or a done')
+    if "standing" in obj:
+        if not isinstance(obj["standing"], bool):
+            raise ActionError('"standing" must be true or false')
+        out["standing"] = obj["standing"]
     return out
 
 

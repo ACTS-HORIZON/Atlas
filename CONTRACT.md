@@ -147,7 +147,7 @@ Kinds: `task_from_chat`, `player_said` (any chat from an allowlisted player that
 * A message starting with `@<botname>` from an allowlisted player becomes a `task_from_chat` event.
 * The mind turns it into a plan. If the ask is unclear (which box, which chest, how many), it asks in chat and waits. Then it confirms ("on it: 64 iron, I'll bring it to the chest by spawn") and reports progress and questions in chat.
 * Regions can be given as coordinates, by standing at the corners and saying "here", or by pointing at the corner blocks. The mind reads the box back and confirms before digging or building.
-* `stop`, `status` and `come here` are handled by the body directly, so they work even if the mind is busy or down.
+* Only `stop` and `status` are handled by the body directly, so they work even if the mind is busy or down. Everything else, including "come here", is a normal `task_from_chat` for the mind. (The house-rules chest grant, "@Atlas that chest is yours", is also enforced by the body.)
 * The dev-world dragon run is started the same way ("@Atlas beat the game").
 
 ## Open questions

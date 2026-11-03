@@ -14,7 +14,10 @@ test('classifyChat: allowlist, @botname, body commands', () => {
   assert.deepEqual(c('ACTS_HORIZON', '@Atlas stop!'), { kind: 'stop' })
   assert.deepEqual(c('ACTS_HORIZON', '@Atlas stop mining'), { kind: 'task', text: 'stop mining' }, 'stop <task> is for the mind')
   assert.deepEqual(c('ACTS_HORIZON', '@Atlas status'), { kind: 'status' })
-  assert.deepEqual(c('ACTS_HORIZON', '@Atlas: come here.'), { kind: 'come' })
+  assert.deepEqual(c('ACTS_HORIZON', '@Atlas: come here.'), { kind: 'task', text: 'come here.' }, 'come here is a task for the mind now')
+  assert.deepEqual(c('ACTS_HORIZON', '@Atlas that chest is yours!'), { kind: 'chest' })
+  assert.deepEqual(c('ACTS_HORIZON', '@Atlas  this chest is for you'), { kind: 'chest' })
+  assert.deepEqual(c('Stranger', '@Atlas that chest is yours'), { kind: 'ignore' }, 'only allowlisted players grant chests')
   assert.deepEqual(c('ACTS_HORIZON', 'nice work'), { kind: 'said', text: 'nice work' })
   assert.deepEqual(c('ACTS_HORIZON', '@Atlasbot hi'), { kind: 'said', text: '@Atlasbot hi' }, 'a different name')
   assert.deepEqual(c('Stranger', '@Atlas stop'), { kind: 'ignore' })
@@ -55,15 +58,24 @@ test('chat through the body: events for the mind, stop/status/come here handled 
   await new Promise(resolve => setTimeout(resolve, 50))
   assert.match(bot.said.at(-1), /^status: idle \| health 20 food 20 \| at 0 64 0$/)
 
-  // come here: not visible -> refused and said; visible -> a goto issued by the body (verb_done event)
+  // come here: a normal task for the mind, the body does not move
   bot.emit('chat', 'ACTS_HORIZON', '@Atlas come here')
-  e = await ev('verb_done')
-  assert.deepEqual([e.detail.verb, e.detail.args, e.detail.status, e.detail.by], ['goto', { target: 'ACTS_HORIZON' }, 'refused', 'chat'])
-  assert.equal(bot.said.at(-1), "I can't see you, ACTS_HORIZON")
-  bot.entities[7] = { id: 7, type: 'player', username: 'ACTS_HORIZON', position: new Vec3(4.5, 64, 0.5), height: 1.8, eyeHeight: 1.62, yaw: 0, pitch: 0 }
-  bot.emit('chat', 'ACTS_HORIZON', '@Atlas come here')
-  e = await mind.wait(m => m.type === 'event' && m.kind === 'verb_done' && m.detail.id === 'chat-2')
-  assert.equal(e.detail.status, 'failed', 'fake bot has no pathfinder: no path')
-  assert.match(bot.said.at(-1), /^couldn't get to you: no path to player ACTS_HORIZON/)
+  e = await mind.wait(m => m.type === 'event' && m.kind === 'task_from_chat' && m.detail.text === 'come here')
+  assert.deepEqual(e.detail, { from: 'ACTS_HORIZON', text: 'come here' })
+  assert.equal(body.runner.task(), null)
+  assert.ok(!mind.got.some(m => m.type === 'event' && m.kind === 'verb_done'))
+
+  // the chest grant: the chest the player looks at (and the bot sees) joins the withdraw allowlist
+  bot.world.set(3, 65, 0, 'chest')
+  bot.entities[7] = { id: 7, type: 'player', username: 'ACTS_HORIZON', position: new Vec3(6.5, 64, 0.5), height: 1.8, eyeHeight: 1.62, yaw: 0, headYaw: Math.PI / 2, pitch: 0 }
+  bot.emit('chat', 'ACTS_HORIZON', '@Atlas that chest is yours')
+  await new Promise(resolve => setTimeout(resolve, 50))
+  assert.equal(bot.said.at(-1), "ok, I'll take from the chest at 3 65 0 when asked")
+  assert.equal(body.chests.has('overworld', [3, 65, 0]), true)
+  assert.equal(body.chests.has('overworld', [3, 64, 0]), false)
+  bot.entities[7].headYaw = -Math.PI / 2 // looking east, at nothing the bot sees
+  bot.emit('chat', 'ACTS_HORIZON', '@Atlas that chest is yours')
+  await new Promise(resolve => setTimeout(resolve, 50))
+  assert.match(bot.said.at(-1), /^I can't see what you're looking at|^that's .*, not a chest$/)
   mind.ws.close()
 })

@@ -9,6 +9,7 @@ const envFile = process.env.ATLAS_ENV_FILE || path.join(ROOT, 'atlas.env')
 if (fs.existsSync(envFile)) process.loadEnvFile(envFile)
 
 const { parseRegions } = require('./house')
+const { parseChests } = require('./chests')
 
 const env = (k, d) => (process.env[k] === undefined || process.env[k] === '' ? d : process.env[k])
 const int = (k, d) => {
@@ -59,6 +60,9 @@ module.exports = {
   stripMax: positive('ATLAS_STRIP_MAX', 256),
   // House rules: protected regions, a JSON list of boxes (see src/house.js)
   protectedRegions: parseRegions(env('ATLAS_PROTECTED_REGIONS', '')),
+  // House rules: chests the bot may take from (more are granted in chat); grants persist per server
+  chests: parseChests(env('ATLAS_CHESTS', '')),
+  chestsFile: path.resolve(ROOT, env('ATLAS_CHESTS_FILE', placesFileFor(env('ATLAS_MC_HOST', 'localhost'), int('ATLAS_MC_PORT', 25565)).replace('known-places.', 'chests.'))),
   // Players whose chat the bot listens to ("@<botname> …" tasks, stop, status, come here)
   players: env('ATLAS_PLAYERS', '').split(',').map(s => s.trim()).filter(Boolean),
   // Dashboard bind address, "host:port"; "off" disables it.

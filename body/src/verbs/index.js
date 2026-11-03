@@ -1,6 +1,6 @@
 'use strict'
 // Built-in verbs: say, recall, goto, explore, mine, collect, craft, place,
-// equip, dig, eat (stop is the
+// equip, dig, eat, give, deposit, withdraw (stop is the
 // Runner's own). Everything else answers failed. Verbs get `act` and never
 // touch the backend:
 //   act.connected() -> bool, act.chat(text), act.halt(),
@@ -50,5 +50,8 @@ VERBS.place = require('./place')
 VERBS.equip = require('./equip')
 VERBS.dig = require('./dig')
 VERBS.eat = require('./eat')
+VERBS.give = require('./give')
+VERBS.deposit = require('./deposit')
+VERBS.withdraw = require('./withdraw')
 
 module.exports = { VERBS }

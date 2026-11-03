@@ -69,6 +69,24 @@ const SCHEMAS = {
     additionalProperties: false,
     properties: { pos: { type: 'array', items: { type: 'integer' }, minItems: 3, maxItems: 3 } }
   },
+  give: {
+    type: 'object',
+    required: ['item', 'player'],
+    additionalProperties: false,
+    properties: { item: { type: 'string', minLength: 1 }, count: { type: 'integer', minimum: 1, maximum: 2304, default: 1 }, player: { type: 'string', minLength: 1 } }
+  },
+  deposit: {
+    type: 'object',
+    required: ['item', 'chest'],
+    additionalProperties: false,
+    properties: { item: { type: 'string', minLength: 1 }, count: { type: 'integer', minimum: 1, maximum: 2304 }, chest: { type: 'array', items: { type: 'integer' }, minItems: 3, maxItems: 3 } }
+  },
+  withdraw: {
+    type: 'object',
+    required: ['item', 'chest'],
+    additionalProperties: false,
+    properties: { item: { type: 'string', minLength: 1 }, count: { type: 'integer', minimum: 1, maximum: 2304, default: 1 }, chest: { type: 'array', items: { type: 'integer' }, minItems: 3, maxItems: 3 } }
+  },
   eat: {
     type: 'object',
     additionalProperties: false,

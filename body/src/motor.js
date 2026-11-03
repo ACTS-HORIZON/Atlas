@@ -363,6 +363,61 @@ class Motor {
 
   isFood (name) { return !!this.bot.registry.foodsByName?.[name] }
 
+  // ---- giving and containers ---------------------------------------------
+
+  /** Look at a point and toss up to count of an item there. {ok, tossed} */
+  async toss (item, count, at) {
+    const bot = this.bot
+    const def = bot.registry.itemsByName[item]
+    const have = this.inventory()[item] || 0
+    const n = Math.min(count, have)
+    if (!def || n <= 0) return { ok: false, tossed: 0, reason: `no ${item} in inventory` }
+    try {
+      if (at) await bot.lookAt(new Vec3(at[0], at[1], at[2]), true)
+      await bot.toss(def.id, null, n)
+    } catch (err) {
+      return { ok: false, tossed: have - (this.inventory()[item] || 0), reason: err.message }
+    }
+    return { ok: true, tossed: have - (this.inventory()[item] || 0) }
+  }
+
+  async _withContainer (pos, fn) {
+    const bot = this.bot
+    const block = bot.blockAt(new Vec3(pos[0], pos[1], pos[2]))
+    if (!block) return { ok: false, reason: 'not loaded' }
+    let c
+    try { c = await bot.openContainer(block) } catch (err) { return { ok: false, reason: `could not open the ${block.name}: ${err.message}` } }
+    try { return await fn(c) } finally { try { c.close() } catch {} }
+  }
+
+  /** Put up to count (default: all) of an item into the container at pos. {ok, moved, reason?} */
+  deposit (pos, item, count) {
+    const def = this.bot.registry.itemsByName[item]
+    return this._withContainer(pos, async c => {
+      const before = this.inventory()[item] || 0
+      const n = Math.min(count ?? before, before)
+      if (n <= 0) return { ok: false, moved: 0, reason: `no ${item} in inventory` }
+      let reason = null
+      try { await c.deposit(def.id, null, n) } catch (err) { reason = /full|space|destination/i.test(err.message) ? 'the chest is full' : err.message }
+      const moved = before - (this.inventory()[item] || 0)
+      return { ok: moved > 0, moved, reason }
+    })
+  }
+
+  /** Take up to count of an item from the container at pos. {ok, moved, available, reason?} */
+  withdraw (pos, item, count) {
+    const def = this.bot.registry.itemsByName[item]
+    return this._withContainer(pos, async c => {
+      const available = c.containerItems().filter(i => i.name === item).reduce((a, i) => a + i.count, 0)
+      if (!available) return { ok: false, moved: 0, available, reason: `no ${item} in the chest` }
+      const before = this.inventory()[item] || 0
+      let reason = null
+      try { await c.withdraw(def.id, null, Math.min(count, available)) } catch (err) { reason = /full|space/i.test(err.message) ? 'the inventory is full' : err.message }
+      const moved = (this.inventory()[item] || 0) - before
+      return { ok: moved > 0, moved, available, reason }
+    })
+  }
+
   async eat (item) {
     const bot = this.bot
     const it = bot.inventory.items().find(i => i.name === item)

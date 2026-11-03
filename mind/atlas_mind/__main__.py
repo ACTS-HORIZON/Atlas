@@ -26,13 +26,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--show-prompt", action="store_true", help="replay: print each context before the decision")
     ap.add_argument("--print-prompt", action="store_true", help="print the system prompt and exit")
     a = ap.parse_args(argv)
+    try:  # unbuffered output, so a log file (mind.out) shows every line as it happens
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
+    except AttributeError:
+        pass
     cfg = Config.from_env()
-    llm = OpenAICompatLLM(cfg.llm_url, cfg.llm_model, cfg.llm_key, cfg.llm_temperature, cfg.llm_max_tokens, cfg.llm_json_mode, cfg.llm_timeout_s)
+    llm = OpenAICompatLLM(cfg.llm_url, cfg.llm_model, cfg.llm_key, cfg.llm_temperature, cfg.llm_max_tokens, cfg.llm_json_mode,
+                          cfg.llm_timeout_s, stop_after_object=cfg.llm_stop)
     mind = Mind(cfg, llm)
     if a.print_prompt:
         print(mind.system)
         return 0
-    print(f"[mind] model {cfg.llm_model} at {cfg.llm_url}; notes {cfg.notes_file}; verbs: {', '.join(sorted(mind.verbs))}", file=sys.stderr)
+    print(f"[mind] model {cfg.llm_model} at {cfg.llm_url} (max_tokens {cfg.llm_max_tokens}); notes {cfg.notes_file}; verbs: {', '.join(sorted(mind.verbs))}", file=sys.stderr)
     try:
         if a.replay:
             asyncio.run(replay(mind, a.replay, a.every, a.limit, a.show_prompt))

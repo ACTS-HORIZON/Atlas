@@ -128,7 +128,7 @@ test('dashboard read-only api: page, places, verbs, config (masked), log tail', 
   assert.deepEqual(places.nearest.map(p => p.type), ['iron_ore'])
 
   const verbs = (await get('/api/verbs')).body
-  assert.deepEqual(verbs.map(v => `${v.name}:${v.kind}`).sort(), ['collect:built-in', 'craft:built-in', 'dig:built-in', 'eat:built-in', 'equip:built-in', 'explore:built-in', 'goto:built-in', 'mine:built-in', 'pillar:live', 'place:built-in', 'recall:built-in', 'say:built-in', 'stop:built-in'])
+  assert.deepEqual(verbs.map(v => `${v.name}:${v.kind}`).sort(), [...Object.keys(require('../src/verbs').VERBS).map(n => `${n}:built-in`), 'stop:built-in', 'pillar:live'].sort())
   assert.match((await get('/api/verbs/say')).body.source, /act\.chat\(text\)/)
   assert.match((await get('/api/verbs/mine')).body.source, /strip-mines/)
   assert.match((await get('/api/verbs/pillar')).body.source, /function pillar/)

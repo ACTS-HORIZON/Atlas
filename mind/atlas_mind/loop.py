@@ -1,17 +1,30 @@
 """The mind loop (CONTRACT.md, "Mind loop"):
 
-1. Wake on a result, an event, or the idle timer.
-2. Build the context: tasks, the latest obs (compact), recent calls / results /
-   events, notes.
-3. Ask the model for exactly one action: call, say, ask_player, note or wait.
-   Its "thinking" goes to the body as a trace (kind "decision") first.
+1. Wake on a long-verb result, an event (task_from_chat, player_said, stop…),
+   or the idle timer.
+2. Build the context: tasks (with their state and what the bot already said),
+   the latest obs (compact), recent calls / results / events, notes.
+3. Ask the model for exactly one action: call, say, ask_player, note, done or
+   wait. Its "thinking" goes to the body as a trace (kind "decision") first.
+
+Wake policy (no model call is wasted):
+- results of say, recall and stop, and of calls nothing is waiting on, don't
+  wake a turn (a recall's or a failed say's result is still new input for
+  the next turn);
+- an idle tick runs a turn only if something changed since the last turn:
+  a new event, a task change, new input, or a meaningful obs change
+  (health, food, position, inventory, entities); otherwise no model call;
+- idle ticks are skipped while a long verb runs or an ask_player question
+  is open (until the answer or the timeout).
 
 Guards that don't rely on the model:
-- an invalid reply is retried once with the error shown, then it waits;
-- the exact call that just failed or was refused is not sent again; the
-  model is told so and asked once more;
-- idle wakes are skipped while a verb runs or while waiting for an answer
-  to ask_player (until it arrives or times out).
+- an unusable reply is logged (raw text, finish_reason) and retried once
+  with the error shown, then the mind waits;
+- the exact call that just failed or was refused is not sent again;
+- a task that is already confirmed is not confirmed again, and work on a
+  new task starts with confirming it;
+- after a turn that only talked while a task is open, one follow-up turn
+  carries on (at most 3 in a row without new input).
 """
 from __future__ import annotations
 
@@ -31,6 +44,8 @@ from .render import history_line, render_obs
 from .tasks import TaskList
 
 V = CONTRACT_VERSION
+QUIET_VERBS = {"say", "recall", "stop"}  # their results don't wake a turn
+MAX_FOLLOW_UPS = 3
 
 
 def canon(args) -> str:
@@ -42,8 +57,24 @@ def verbs_in_reference(text: str) -> set[str]:
     return names or {"say", "stop", "recall", "goto", "explore", "mine", "collect", "craft", "place", "equip", "dig", "eat"}
 
 
+def fingerprint(o: dict | None):
+    """What counts as a meaningful change in the obs for an idle turn."""
+    if not o:
+        return None
+    s = o["self"]
+    pos = tuple(int(v // 2) for v in s["pos"])  # 2-block cells: no jitter
+    inv = tuple(sorted((o.get("inventory") or {}).items()))
+    ents = tuple(sorted((e["type"], e["hostile"]) for e in o.get("entities") or []))
+    players = tuple(sorted(p["name"] for p in o.get("players") or []))
+    return (s["health"], s["food"], pos, s["dim"], inv, ents, players)
+
+
+def default_log(*a):
+    print(*a, flush=True)
+
+
 class Mind:
-    def __init__(self, cfg: Config, llm, *, log=print):
+    def __init__(self, cfg: Config, llm, *, log=default_log):
         self.cfg = cfg
         self.llm = llm
         self.log = log
@@ -60,8 +91,13 @@ class Mind:
         self.last_failed: tuple[str, str, str] | None = None
         self.low_health = False
         self.decisions: list[dict] = []
+        self.turns = 0
         self.ws = None
         self._n = 0
+        self.dirty = False  # new input since the last turn (besides the obs)
+        self.turn_fp = None  # obs fingerprint at the last turn (or the first obs)
+        self.turn_tasks = 0  # task list version at the last turn
+        self.follow_ups = 0
 
     # ---- link -----------------------------------------------------------------
     async def send(self, msg: dict) -> None:
@@ -69,7 +105,12 @@ class Mind:
             await self.ws.send(json.dumps(msg))
 
     def wake(self, reason: str) -> None:
+        self.dirty = True
+        self.follow_ups = 0  # real input: follow-ups may start over
         self.wakes.put_nowait(reason)
+
+    def long_pending(self) -> bool:
+        return any(c["verb"] not in QUIET_VERBS for c in self.pending.values())
 
     def handle(self, m: dict) -> None:
         """Update state from one body message (also used by --replay)."""
@@ -81,9 +122,16 @@ class Mind:
         elif t == "result":
             call = self.pending.pop(m["id"], None)
             self.recent.append(history_line("result", m))
-            if call and m["status"] in ("failed", "refused") and m["detail"] != "busy":
+            if not call:
+                return  # nothing was waiting on it
+            failed = m["status"] in ("failed", "refused")
+            if failed and m["detail"] != "busy":
                 self.last_failed = (call["verb"], canon(call.get("args")), m["detail"])
-            self.wake(f"result {m['id']} ({call['verb'] if call else '?'}): {m['status']}")
+            if call["verb"] in QUIET_VERBS:
+                if call["verb"] == "recall" or failed:
+                    self.dirty = True  # new information for the next turn, no turn of its own
+                return
+            self.wake(f"result {m['id']} ({call['verb']}): {m['status']}")
         elif t == "event":
             self.recent.append(history_line("event", m))
             kind, d = m["kind"], m.get("detail") or {}
@@ -97,14 +145,16 @@ class Mind:
                 else:
                     self.wake(f"{d.get('from')} said: {d.get('text')}")
             elif kind == "stop_requested":
-                stopped = self.tasks.stop_active()
+                stopped = self.tasks.stop_working()
                 self.asking = None
-                self.wake(f"stop requested by {d.get('from', 'someone')}" + (f"; task {stopped.id} stopped" if stopped else ""))
+                self.wake(f"stop requested by {d.get('from', 'someone')}" + (f"; {', '.join(t.id for t in stopped)} stopped" if stopped else ""))
             else:
                 self.wake(f"event {kind}")
 
     def set_obs(self, o: dict) -> None:
         self.obs = o
+        if self.turn_fp is None:
+            self.turn_fp = fingerprint(o)  # the baseline: nothing has changed yet
         h = o.get("self", {}).get("health")
         if isinstance(h, (int, float)):
             if h < self.cfg.retreat_health and not self.low_health:
@@ -112,6 +162,9 @@ class Mind:
                 self.wake(f"health is low ({h}/20)")
             elif h >= self.cfg.retreat_health:
                 self.low_health = False
+
+    def changed_since_turn(self) -> bool:
+        return self.dirty or self.tasks.version != self.turn_tasks or fingerprint(self.obs) != self.turn_fp
 
     # ---- thinking -------------------------------------------------------------
     def messages(self, wake: str) -> list[dict]:
@@ -123,12 +176,37 @@ class Mind:
         user = context(self.tasks.render(), render_obs(self.obs), list(self.recent), self.notes.render(), wake, extra)
         return [{"role": "system", "content": self.system}, {"role": "user", "content": user}]
 
+    def task_for(self, a: dict):
+        """The task an action is for: "closes", "about", or the one task being worked on."""
+        tid = a.get("closes") or a.get("about")
+        if tid:
+            t = self.tasks.get(tid)
+            if not t:
+                raise ActionError(f'there is no task "{tid}"; tasks: {", ".join(x.id for x in self.tasks.tasks) or "none"}')
+            return t
+        working = self.tasks.working()
+        return working[0] if len(working) == 1 and a["action"] == "call" else None
+
     def check(self, raw: str) -> dict:
         a = parse(raw, self.verbs)
         if a["action"] == "call" and self.last_failed and (a["verb"], canon(a["args"])) == self.last_failed[:2]:
             raise ActionError(f"that exact call ({a['verb']} {canon(a['args'])}) just failed with: {self.last_failed[2]}. "
                               "Choose a different action that deals with the reason.")
+        t = self.task_for(a)
+        if t and a["action"] in ("say", "ask_player", "call", "done") and t.state in ("done", "stopped"):
+            raise ActionError(f"{t.id} is already {t.state}; leave it alone")
+        if t and a["action"] == "say" and "closes" not in a and t.state == "confirmed":
+            said = f' (you said: "{t.said[-1]}")' if t.said else ""
+            raise ActionError(f"{t.id} is already confirmed{said}. Don't confirm it again: start it with a call (about {t.id}), "
+                              f'or finish it with a say that has "closes": "{t.id}".')
+        if t and a["action"] == "call" and a["verb"] not in QUIET_VERBS and t.state == "new":
+            raise ActionError(f"{t.id} is new: confirm it in chat first (a say with \"about\": \"{t.id}\"), then start it.")
         return a
+
+    def unusable(self, attempt: str, err: Exception, raw) -> None:
+        finish = getattr(raw, "finish_reason", None)
+        self.log(f"[llm] unusable reply ({attempt}, finish_reason={finish}): {err}")
+        self.log(f"[llm] raw reply: {str(raw)[:500]!r}")
 
     async def decide(self, wake: str) -> dict:
         msgs = self.messages(wake)
@@ -140,34 +218,49 @@ class Mind:
         try:
             return self.check(raw)
         except ActionError as e:
-            self.log(f"[llm] unusable reply ({e}); retrying once")
-            retry = msgs + [{"role": "assistant", "content": raw},
+            self.unusable("first try", e, raw)
+            retry = msgs + [{"role": "assistant", "content": str(raw)},
                             {"role": "user", "content": f"That reply was not usable: {e} Reply again with exactly one valid JSON object."}]
+            raw2 = ""
             try:
                 raw2 = await self.llm.complete(retry)
                 return self.check(raw2)
-            except (ActionError, LLMError) as e2:
-                self.log(f"[llm] unusable again ({e2}); waiting")
+            except LLMError as e2:
+                self.log(f"[llm] {e2}")
+                return {"action": "wait", "thinking": f"model unavailable: {e2}"[:200], "error": True}
+            except ActionError as e2:
+                self.unusable("retry", e2, raw2)
                 return {"action": "wait", "thinking": f"no usable decision ({e2})"[:300], "error": True}
 
     async def act(self, a: dict) -> None:
         self.decisions.append(a)
         t = (self.obs or {}).get("t", 0)
-        summary = {k: a[k] for k in ("action", "verb", "args", "text", "player", "task") if k in a}
+        summary = {k: a[k] for k in ("action", "verb", "args", "text", "player", "about", "closes", "standing") if k in a}
         await self.send({"type": "trace", "v": V, "t": t, "kind": "decision", "text": a["thinking"], "data": summary})
-        if a.get("task"):
-            err = self.tasks.update(a["task"]["id"], a["task"].get("state"), a["task"].get("standing"))
-            if err:
-                self.recent.append(f"task update failed: {err}")
+        task = None if a.get("error") else self.task_for(a)
+        if task and "standing" in a:
+            self.tasks.set_standing(task, a["standing"])
         kind = a["action"]
         if kind == "call":
+            if task and a["verb"] not in QUIET_VERBS:
+                self.tasks.started(task)
             await self.call(a["verb"], a["args"])
         elif kind == "say":
+            if task:
+                self.tasks.said(task, a["text"])
+                if a.get("closes"):
+                    self.tasks.close(task)
             await self.call("say", {"text": a["text"]})
         elif kind == "ask_player":
+            if task:
+                task.said.append(a["text"])
             await self.call("say", {"text": a["text"]})
             self.asking = {"player": a["player"], "text": a["text"], "deadline": time.monotonic() + self.cfg.ask_timeout_s}
             self.recent.append(f"you asked {a['player']}: {a['text']}")
+        elif kind == "done":
+            if task:
+                self.tasks.close(task)
+            self.recent.append(f"you closed {a['closes']}")
         elif kind == "note":
             self.notes.append(a["text"])
             self.recent.append(f"you noted: {a['text']}")
@@ -195,6 +288,26 @@ class Mind:
             reasons.append(self.wakes.get_nowait())
         return "; ".join(reasons)
 
+    async def turn(self, reason: str) -> None:
+        self.turns += 1
+        # the baseline for "changed since the last turn" is what this turn sees;
+        # anything arriving while the model thinks still counts as new
+        self.dirty = False
+        self.turn_fp = fingerprint(self.obs)
+        a = await self.decide(reason)
+        self.log(f"[mind] {a['action']}: {a['thinking']}")
+        await self.act(a)
+        self.turn_tasks = self.tasks.version  # what this turn did itself is not news
+        # A turn that only talked (confirmed a task, reported, noted) while a
+        # task is still open and no verb runs gets a follow-up turn to carry
+        # on, at most MAX_FOLLOW_UPS in a row before it needs real input.
+        if a["action"] == "call" and a["verb"] not in QUIET_VERBS:
+            self.follow_ups = 0
+        elif a["action"] in ("say", "note", "done") and not a.get("error") and self.tasks.working() and not self.long_pending():
+            if self.follow_ups < MAX_FOLLOW_UPS:
+                self.follow_ups += 1
+                self.wakes.put_nowait(f"carry on with {', '.join(t.id for t in self.tasks.working())}")
+
     async def think_forever(self) -> None:
         while True:
             reason = await self.next_wake()
@@ -205,13 +318,15 @@ class Mind:
                     reason = f"no answer from {self.asking['player']} after {self.cfg.ask_timeout_s:g} s"
                     self.recent.append(f"no answer from {self.asking['player']}")
                     self.asking = None
-                elif self.pending:
+                elif self.long_pending():
                     continue  # a verb is running: its result will wake us
+                elif not self.changed_since_turn():
+                    continue  # nothing new: no model call
+                else:
+                    reason = "idle, something changed since your last turn"
             if self.obs is None:
                 continue
-            a = await self.decide(reason)
-            self.log(f"[mind] {a['action']}: {a['thinking']}")
-            await self.act(a)
+            await self.turn(reason)
 
     async def run(self) -> None:
         from websockets.asyncio.client import connect

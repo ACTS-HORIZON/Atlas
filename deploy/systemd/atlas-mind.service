@@ -12,7 +12,8 @@ Type=simple
 User=atlas
 WorkingDirectory=/opt/atlas/mind
 EnvironmentFile=-/opt/atlas/atlas.env
-ExecStart=/opt/atlas/mind/.venv/bin/python -m atlas_mind
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/atlas/mind/.venv/bin/python -u -m atlas_mind
 Restart=always
 RestartSec=5
 

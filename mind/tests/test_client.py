@@ -47,6 +47,10 @@ class ParseTest(unittest.TestCase):
         self.assertTrue(parse_command("dig 3 x -2", nid).startswith("usage"))
         self.assertEqual(parse_command("eat", nid)["args"], {})
         self.assertEqual(parse_command("eat bread", nid)["args"], {"item": "bread"})
+        self.assertEqual(parse_command("give spruce_log 8 ACTS_HORIZON", nid)["args"], {"item": "spruce_log", "count": 8, "player": "ACTS_HORIZON"})
+        self.assertEqual(parse_command("deposit cobblestone 3 64 -2", nid)["args"], {"item": "cobblestone", "chest": [3, 64, -2]})
+        self.assertEqual(parse_command("withdraw iron_ingot 3 64 -2 5", nid)["args"], {"item": "iron_ingot", "chest": [3, 64, -2], "count": 5})
+        self.assertTrue(parse_command("give spruce_log ACTS_HORIZON", nid).startswith("usage"))
 
     def test_trace(self):
         nid = lambda: "c1"  # noqa: E731

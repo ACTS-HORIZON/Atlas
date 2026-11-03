@@ -22,7 +22,8 @@ data/      known places file (gitignored)
   - `sounds`: type, bearing and near/mid/far only.
 - **Known places** (`body/src/places.js`): every notable block that has appeared in `blocks_seen` is remembered with position, dimension and last-seen game tick, saved at most every 10 s and on shutdown, and reloaded on start. The file is named after the configured server, `data/known-places.<host>_<port>.json` (e.g. `data/known-places.localhost_25565.json`), so the dev world and the co-op server never share one; `ATLAS_PLACES_FILE` overrides the name. The name comes from `ATLAS_MC_HOST` as written, so `localhost` and `127.0.0.1` give two files for the same server: pick one spelling and keep it. Nothing else can enter it. An entry is dropped when Atlas can see the spot again and the block is gone. `recall {type, near?}` returns the nearest one as `data: {type, pos, dist, age}`, or `failed` with detail `unknown`.
 - **Chat:** only players on `ATLAS_PLAYERS` are listened to.
-  - `@Atlas stop`, `@Atlas status` and `@Atlas come here` are handled by the body itself, so they work even with the mind busy or down.
+  - `@Atlas stop` and `@Atlas status` are handled by the body itself, so they work even with the mind busy or down. So is the house-rules chest grant, `@Atlas that chest is yours` (said while looking at the chest).
+  - Everything else, `come here` included, is a task for the mind.
   - Any other `@Atlas …` becomes a `task_from_chat` event, and their other chat a `player_said` event.
   - Everyone else's chat only appears in `obs.chat`.
 - **House rules:** protected regions (`ATLAS_PROTECTED_REGIONS`, a JSON list of boxes, empty by default). Nothing is dug or placed inside one.
@@ -30,7 +31,7 @@ data/      known places file (gitignored)
 - **Logs**: every contract message in or out is appended to `logs/link-YYYY-MM-DD.jsonl` as `{"ts", "dir": "in"|"out", "msg"}`.
 - **Verbs** run one at a time (`body/src/runner.js`), and the running one shows as `task` in the obs. `say`, `recall`, `inspect` and `stop` run alongside it. Any other call while a verb runs is `refused` with detail `busy`: it is not queued, and the running verb keeps going. `stop` aborts the running verb, so it returns `interrupted`, and releases every movement control.
 - **Dashboard** at `http://<atlas>:8080/` (see below).
-- **Mind** (brain v0): `python -m atlas_mind` is the loop. It wakes on results, events and a 10 s timer, asks an OpenAI-compatible model for one action per turn, keeps a task list and a notes file, and sends its reasoning as `trace`. See [Mind (brain v0)](#mind-brain-v0).
+- **Mind** (brain v0): `python -m atlas_mind` is the loop. It wakes on long-verb results, events, and a 10 s timer (only when something changed), asks an OpenAI-compatible model for one action per turn, keeps a task list and a notes file, and sends its reasoning as `trace`. See [Mind (brain v0)](#mind-brain-v0).
 - **Terminal client:** `python -m atlas_mind.client` prints every message and takes typed verb commands (`say`, `goto`, `mine`, `craft`, …).
 
 ### Contract notes
@@ -140,7 +141,7 @@ You should see `[link] listening…`, `[bot] spawned in overworld at … gamemod
 **Mind** (tmux window 2, `Ctrl-b c`), once the `ATLAS_LLM_*` settings are in `atlas.env` (see [Mind (brain v0)](#mind-brain-v0)):
 
 ```bash
-cd /opt/atlas/mind && .venv/bin/python -m atlas_mind
+cd /opt/atlas/mind && .venv/bin/python -u -m atlas_mind 2>&1 | tee -a /opt/atlas/logs/mind.out
 ```
 
 It prints one line per decision (`[mind] call: <thinking>`). The dashboard's Trace feed shows the same reasoning.
@@ -186,7 +187,11 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
 `python -m atlas_mind` runs the loop from CONTRACT.md's Mind loop.
 
 **What it does each turn:**
-- **Wakes** on a result, an event, or the idle timer (`ATLAS_IDLE_S`, 10 s). Idle wakes are skipped while a verb runs, and while it waits for an answer to `ask_player`.
+- **Wakes** on a long verb's result, an event (`task_from_chat`, `player_said`, `stop_requested`, …), or the idle timer (`ATLAS_IDLE_S`, 10 s).
+  - **Quiet results:** results of `say`, `recall` and `stop` don't wake a turn. A recall's result, or a failed say, is new input for the next turn.
+  - **Idle ticks** call the model only if something changed since the last turn: an event, a task change, new input, or a meaningful obs change (health, food, a 2-block move, inventory, the set of entities or players). Otherwise there is no model call at all.
+  - **Skipped:** idle ticks while a verb runs, or while an `ask_player` question is open.
+  - **Follow-up turns:** a turn that only talked (say, note, done) while a task is open gets one follow-up turn to carry on, at most 3 in a row without new input.
 - **Builds the context:**
   - a **system prompt**: who Atlas is, fair play, house rules, no fighting, no smelting yet, and the output format, plus `docs/verbs.md` loaded from the repo at start, so it is never stale;
   - the **task list**;
@@ -194,16 +199,23 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
   - the **last 15** calls, results and events;
   - the **notes**.
 - **Asks the model for one JSON object:**
-  - **`call`**: `{verb, args}`
-  - **`say`**: `{text}`
-  - **`ask_player`**: `{player, text}`. It says the question, then waits for that player's `player_said` (or `ASK_TIMEOUT`), then decides again.
+  - **`call`**: `{verb, args, about?}`
+  - **`say`**: `{text, about? | closes?}`
+  - **`ask_player`**: `{player, text, about?}`. It says the question, then waits for that player's `player_said` (or `ASK_TIMEOUT`), then decides again.
   - **`note`**: `{text}`, appended to `data/notes.md`.
+  - **`done`**: `{closes}`
   - **`wait`**
-  Every action carries `thinking`, sent first as a `trace` (kind `decision`).
-- **Updates tasks:** any action may also carry `task: {id, state, standing}`. Tasks come from `task_from_chat` events, and the model decides order and interleaving. It's told to confirm a task in chat before starting it and to report when it's done. Standing tasks stay until stopped. `@Atlas stop` (the body's stop) marks the active task `stopped`, and `@Atlas stop <task>` lets the model drop that task.
+  - Every action carries `thinking`, sent first as a `trace` (kind `decision`). The reply may be wrapped in prose or code fences: the first complete JSON object with an `action` is used.
+- **Tracks task state:** `new → confirmed → running → done | stopped`.
+  - **Moving between states:** tasks come from `task_from_chat`. A `say` about a task confirms it, a call for it makes it running, and a `say` or `done` with `closes` finishes it. `@Atlas stop` stops the confirmed and running ones.
+  - **Conversation:** a question or greeting (`@Atlas how are you?`) is a task that one reply with `closes` finishes.
+  - **In the context:** each task's state and the last things the bot said about it.
+  - **Standing tasks** (`"standing": true`) stay open until stopped. `@Atlas stop <task>` is for the model to close.
 
 **Guards in code, not left to the model:**
-- **Invalid replies:** a reply that isn't one valid JSON object (or names an unknown verb, or a bad task state) is retried once, with the error shown to the model; after that it waits.
+- **Invalid replies:** a reply with no complete JSON object (or an unknown verb or task) is retried once, with the error shown to the model; after that it waits. Every unusable reply is logged with the server's `finish_reason` and the raw text (first 500 characters), e.g. `[llm] unusable reply (first try, finish_reason=length): the reply was cut off …`.
+- **Truncation:** `max_tokens` defaults to 2000. In JSON mode, generation stops at the closing brace of the top-level object (stop sequence `"\n}"`, brace restored) instead of running on (`ATLAS_LLM_STOP=0` to turn that off).
+- **Task discipline:** a confirmed task is never confirmed again, and work on a new task starts with confirming it.
 - **No repeating a failure:** the exact call that just failed or was refused is not sent again; the model is told so and asked once more.
 - **No fighting:** the prompt forbids it (there are no combat verbs). When health falls below `ATLAS_RETREAT_HEALTH` (6), the mind is woken with "health is low", and may retreat with `goto`.
 
@@ -215,7 +227,8 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
 | `ATLAS_LLM_MODEL` | `gemma` | model name sent in the request |
 | `ATLAS_LLM_KEY` | — | sent as `Authorization: Bearer …` if set |
 | `ATLAS_LLM_TEMPERATURE` | `0.4` | |
-| `ATLAS_LLM_MAX_TOKENS` | `600` | |
+| `ATLAS_LLM_MAX_TOKENS` | `2000` | |
+| `ATLAS_LLM_STOP` | `1` | in JSON mode, stop at the end of the action object |
 | `ATLAS_LLM_JSON_MODE` | `1` | sends `response_format: {"type": "json_object"}`; set `0` if the server rejects it |
 | `ATLAS_LLM_TIMEOUT_S` | `120` | |
 | `ATLAS_IDLE_S` | `10` | idle wake |
@@ -371,9 +384,9 @@ Restart the body after changing either.
    - `@Atlas hello there`: the dashboard Events feed shows `task_from_chat {"from":"ACTS_HORIZON","text":"hello there"}`.
    - Plain `hi` shows `player_said`.
    - A second, non-allowlisted account's chat shows only in the Chat panel, with no event.
-2. **`@Atlas come here`** in view: Atlas walks to you, and Events shows `verb_done {…"by":"chat"}`.
-   - **Out of view but on the bar** (behind a hill, not sneaking): the Players panel shows `ACTS_HORIZON  out of sight  bearing …`, and `come here` follows the bearing. The Task panel shows `following ACTS_HORIZON's bearing (…°)`; it ends `done` once you're in sight.
-   - **Sneaking:** you disappear from the Players panel, and `come here` gives `I can't see you`.
+2. **`goto ACTS_HORIZON`** from the terminal client, in view: Atlas walks to you. (Since session 4, `@Atlas come here` is a task for the mind; see the session 4 checklist.)
+   - **Out of view but on the bar** (behind a hill, not sneaking): the Players panel shows `ACTS_HORIZON  out of sight  bearing …`, and `goto ACTS_HORIZON` follows the bearing. The Task panel shows `following ACTS_HORIZON's bearing (…°)`; it ends `done` once you're in sight.
+   - **Sneaking:** you disappear from the Players panel, and `goto ACTS_HORIZON` gives `refused — fair play`.
    - **Check the bearing far away**, where the server sends only an angle. Stand about 300 blocks due east of Atlas (`/tp ACTS_HORIZON ~300 ~ ~`) and make Atlas face north. The Players panel should say `bearing right`. If it says `left`, the azimuth sign is flipped; tell me.
 3. **`@Atlas stop`** during a long `goto`: Atlas halts and replies `stopped goto`, and Events shows `stop_requested`.
 4. **`goto` with digging and pillaring.**
@@ -422,6 +435,25 @@ Restart the body after changing either.
 - **Stop:** `@Atlas stop` mid-chain. Atlas halts, and the next trace mentions the stop, with task t1 `stopped`.
 - **Notes:** it may `note` things like where it put the table. They're in `data/notes.md` and in the next turns' context.
 - **Cost:** while idle with no tasks, expect a `wait` decision about every 10 s (one model call each).
+
+## Session 4 live checklist (atlas)
+
+Start the mind with `python -u … | tee -a logs/mind.out` (see Run) and keep the dashboard open.
+
+1. **The mind's output is visible.** `tail -f /opt/atlas/logs/mind.out` shows `[mind] …` lines as they happen. If a decision is ever unusable, you see `[llm] unusable reply (…, finish_reason=…)` and the raw reply. In llama-swap, completions should stop well short of 2000 tokens (they end at the action's closing brace).
+2. **A question gets exactly one reply.** `@Atlas how are you?` gets one chat line.
+   - **Trace feed:** a single decision (`say … closes t1`).
+   - **Afterwards:** wait a minute. No further decisions appear while nothing changes (no `wait` traces every 10 s either).
+3. **`@Atlas bring me 8 spruce logs`**, standing near spruce trees. It confirms once (`On it …`, task t1 confirmed), then:
+   - `mine spruce_log 8` (running; Task panel `n/8 spruce_log`);
+   - `give spruce_log 8 ACTS_HORIZON`: it walks to you and tosses them at your feet;
+   - a closing report (`…closes t1`).
+   The logs end up at your feet, and in your inventory once you walk over them. No second "on it" appears at any point.
+4. **`@Atlas come here` at low health.** Get Atlas hurt first: fall damage, until health is below 6 (3 hearts). Then `@Atlas come here`. The Trace feed shows the mind deciding: it weighs the low health, then either comes carefully, says why it won't, or eats first. It is not a blind walk, and there is no `verb_done` from the body any more.
+5. **Chests.** Look at a chest Atlas can see and say `@Atlas that chest is yours`. It replies `ok, I'll take from the chest at x y z when asked`, and the grant survives a body restart (`data/chests.<host>_<port>.json`).
+   - `withdraw` from that chest works.
+   - From another chest: `refused — house rules: … has not been given to Atlas …`.
+   - `deposit` into any chest it can see works.
 
 ## Development
 

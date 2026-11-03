@@ -107,9 +107,9 @@ class MindTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_task_confirm_chain_done(self):
         await self.start([
-            {"thinking": "Collin wants logs; confirm first.", "action": "say", "text": "On it: 3 oak logs.", "task": {"id": "t1", "state": "active"}},
-            {"thinking": "Two oak logs are in view; mine them.", "action": "call", "verb": "mine", "args": {"block": "oak_log", "count": 3}},
-            {"thinking": "Mined 3; report and close the task.", "action": "say", "text": "Done: 3 oak logs.", "task": {"id": "t1", "state": "done"}},
+            {"thinking": "Collin wants logs; confirm first.", "action": "say", "text": "On it: 3 oak logs.", "about": "t1"},
+            {"thinking": "Two oak logs are in view; mine them.", "action": "call", "verb": "mine", "args": {"block": "oak_log", "count": 3}, "about": "t1"},
+            {"thinking": "Mined 3; report and close the task.", "action": "say", "text": "Done: 3 oak logs.", "closes": "t1"},
         ], respond=lambda c: ("done", "mined 3 oak_log", {"block": "oak_log", "mined": 3, "requested": 3, "tunnel": 0}) if c["verb"] == "mine" else ("done", "said", None))
         await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "get me 3 oak logs"})
         await until(lambda: len(self.body.calls()) >= 3)
@@ -127,33 +127,35 @@ class MindTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("blocks seen: oak_log x2", self.prompt_text(0))
         self.assertIn("### mine {block", self.llm.prompts[0][0]["content"])
         self.assertIn("result m2 (mine): done", self.prompt_text(2))
+        self.assertIn('t1 [running] from ACTS_HORIZON: get me 3 oak logs\n    you said: "On it: 3 oak logs."', self.prompt_text(2))
+        await asyncio.sleep(0.6)
+        self.assertEqual(len(self.llm.prompts), 3, "closed: no more turns without new input")
 
     async def test_failed_call_is_not_repeated(self):
         fail = "mine: iron_ore needs one of: stone_pickaxe, iron_pickaxe; none in inventory"
         await self.start([
-            {"thinking": "Iron is needed.", "action": "call", "verb": "mine", "args": {"block": "iron_ore", "count": 3}},
-            {"thinking": "Try again.", "action": "call", "verb": "mine", "args": {"count": 3, "block": "iron_ore"}},
-            {"thinking": "I need a stone pickaxe first.", "action": "call", "verb": "craft", "args": {"item": "stone_pickaxe"}},
+            {"thinking": "Confirm.", "action": "say", "text": "On it.", "about": "t1"},
+            {"thinking": "Iron is needed.", "action": "call", "verb": "mine", "args": {"block": "iron_ore", "count": 3}, "about": "t1"},
+            {"thinking": "Try again.", "action": "call", "verb": "mine", "args": {"count": 3, "block": "iron_ore"}, "about": "t1"},
+            {"thinking": "I need a stone pickaxe first.", "action": "call", "verb": "craft", "args": {"item": "stone_pickaxe"}, "about": "t1"},
         ], respond=lambda c: ("failed", fail, None) if c["verb"] == "mine" else ("failed", "craft: missing 3 cobblestone for 1 stone_pickaxe", None))
         await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "get iron"})
-        await until(lambda: len(self.body.calls()) >= 2)
-        self.assertEqual([c["verb"] for c in self.body.calls()[:2]], ["mine", "craft"], "the failed mine was not sent again")
-        retry = self.llm.prompts[2][-1]["content"]
+        await until(lambda: len(self.body.calls()) >= 3)
+        self.assertEqual([c["verb"] for c in self.body.calls()[:3]], ["say", "mine", "craft"], "the failed mine was not sent again")
+        retry = self.llm.prompts[3][-1]["content"]
         self.assertIn("just failed with: " + fail, retry)
-        self.assertIn("LAST FAILED CALL: mine", self.prompt_text(1))
+        self.assertIn("LAST FAILED CALL: mine", self.prompt_text(2))
 
     async def test_ask_player_round_trip(self):
         await self.start([
-            {"thinking": "Which chest is unclear; ask.", "action": "ask_player", "player": "ACTS_HORIZON", "text": "Which chest, the one by spawn?"},
-            {"thinking": "He answered; confirm.", "action": "say", "text": "OK, the chest by spawn."},
+            {"thinking": "Which chest is unclear; ask.", "action": "ask_player", "player": "ACTS_HORIZON", "text": "Which chest, the one by spawn?", "about": "t1"},
+            {"thinking": "He answered; confirm.", "action": "say", "text": "OK, the chest by spawn.", "about": "t1"},
         ])
         await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "put the iron in the chest"})
         await until(lambda: len(self.body.calls()) >= 1)
         self.assertEqual(self.body.calls()[0]["args"], {"text": "Which chest, the one by spawn?"})
-        await asyncio.sleep(0.4)  # say's result wakes it once; then idle wakes are skipped while waiting for the answer
-        n = len(self.llm.prompts)
-        await asyncio.sleep(0.7)
-        self.assertEqual(len(self.llm.prompts), n, "no model calls while waiting for the answer")
+        await asyncio.sleep(1.0)
+        self.assertEqual(len(self.llm.prompts), 1, "no model calls while waiting for the answer")
         await self.body.event("player_said", {"from": "ACTS_HORIZON", "text": "yes, the one by spawn"})
         await until(lambda: any("answered your question: yes, the one by spawn" in p[-1]["content"] for p in self.llm.prompts))
         self.assertIsNone(self.mind.asking)
@@ -165,17 +167,17 @@ class MindTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_stop_clears_the_task(self):
         await self.start([
-            {"thinking": "Confirm.", "action": "say", "text": "On it.", "task": {"id": "t1", "state": "active", "standing": True}},
-            {"thinking": "Mine.", "action": "call", "verb": "mine", "args": {"block": "coal_ore", "count": 64}},
+            {"thinking": "Confirm.", "action": "say", "text": "On it.", "about": "t1", "standing": True},
+            {"thinking": "Mine.", "action": "call", "verb": "mine", "args": {"block": "coal_ore", "count": 64}, "about": "t1"},
         ], respond=lambda c: None if c["verb"] == "mine" else ("done", "said", None))
         await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "keep mining coal"})
         await until(lambda: self.body.held)
         self.assertTrue(self.mind.tasks.get("t1").standing)
         await self.body.event("stop_requested", {"from": "ACTS_HORIZON", "detail": "stopped mine"})
         await self.body.result(self.body.held[0]["id"], "interrupted", "mine: stopped by ACTS_HORIZON in chat (at: 2/64 coal_ore)")
-        await until(lambda: any("stop requested by ACTS_HORIZON; task t1 stopped" in p[-1]["content"] for p in self.llm.prompts))
+        await until(lambda: any("stop requested by ACTS_HORIZON; t1 stopped" in p[-1]["content"] for p in self.llm.prompts))
         self.assertEqual(self.mind.tasks.get("t1").state, "stopped")
-        self.assertIsNone(self.mind.tasks.active())
+        self.assertEqual(self.mind.tasks.working(), [])
 
     async def test_parse_failure_retry(self):
         await self.start(["Sure! I will mine some wood.", {"thinking": "Say hi.", "action": "say", "text": "hi"}])
@@ -194,6 +196,71 @@ class MindTest(unittest.IsolatedAsyncioTestCase):
         trace = next(m for m in self.body.received if m["type"] == "trace")
         self.assertIn('"action" must be one of', trace["text"])
 
+    async def test_question_gets_exactly_one_reply(self):
+        await self.start([{"thinking": "A greeting; answer once.", "action": "say", "text": "Doing well, thanks!", "closes": "t1"}], idle_s=0.1)
+        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "how are you?"})
+        await until(lambda: self.body.calls())
+        for _ in range(10):  # the say's result and its obs come back; idle ticks pass
+            await self.body.ws.send(json.dumps(make_obs()))
+            await asyncio.sleep(0.15)
+        self.assertEqual(len(self.llm.prompts), 1, "exactly one decision")
+        self.assertEqual([c["verb"] for c in self.body.calls()], ["say"])
+        self.assertEqual(self.mind.tasks.get("t1").state, "done")
+
+    async def test_confirmed_task_is_never_reconfirmed(self):
+        await self.start([
+            {"thinking": "Confirm.", "action": "say", "text": "On it: 8 spruce logs.", "about": "t1"},
+            {"thinking": "Confirm again.", "action": "say", "text": "Sure, on it!", "about": "t1"},
+            {"thinking": "Start: mine spruce.", "action": "call", "verb": "mine", "args": {"block": "spruce_log", "count": 8}, "about": "t1"},
+        ], respond=lambda c: None if c["verb"] == "mine" else ("done", "said", None))
+        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "bring me 8 spruce logs"})
+        await until(lambda: len(self.body.calls()) >= 2)
+        self.assertEqual([c["verb"] for c in self.body.calls()], ["say", "mine"])
+        self.assertIn('t1 is already confirmed (you said: "On it: 8 spruce logs.")', self.llm.prompts[2][-1]["content"])
+        self.assertEqual(self.mind.tasks.get("t1").state, "running")
+
+    async def test_work_on_a_new_task_starts_with_confirming(self):
+        await self.start([
+            {"thinking": "Just go.", "action": "call", "verb": "mine", "args": {"block": "spruce_log", "count": 8}, "about": "t1"},
+            {"thinking": "Confirm first.", "action": "say", "text": "On it.", "about": "t1"},
+        ])
+        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "bring me 8 spruce logs"})
+        await until(lambda: self.body.calls())
+        self.assertEqual(self.body.calls()[0]["verb"], "say")
+        self.assertIn("t1 is new: confirm it in chat first", self.llm.prompts[1][-1]["content"])
+
+    async def test_idle_with_nothing_changed_makes_no_model_calls(self):
+        await self.start([{"thinking": "Inventory changed; note it.", "action": "wait"}], idle_s=0.05)
+        for _ in range(60):  # 60 idle ticks (10 minutes at the default 10 s), the same obs every few
+            await self.body.ws.send(json.dumps(make_obs()))
+            await asyncio.sleep(0.05)
+        self.assertEqual(len(self.llm.prompts), 0)
+        await self.body.ws.send(json.dumps(make_obs(inventory={"spruce_log": 8})))  # a meaningful change
+        await until(lambda: len(self.llm.prompts) == 1)
+        self.assertIn("WOKE BECAUSE: idle, something changed since your last turn", self.prompt_text(0))
+        await asyncio.sleep(0.6)
+        self.assertEqual(len(self.llm.prompts), 1, "one turn per change")
+
+    async def test_truncated_reply_logs_raw_and_finish_reason(self):
+        logs = []
+        await self.start([('{"thinking": "I will go and get the wood from the forest to the', "length"),
+                          ('```json\n{"thinking": "Still going on and on', "length")])
+        self.mind.log = logs.append
+        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "get wood"})
+        await until(lambda: self.mind.decisions)
+        self.assertEqual(self.mind.decisions[0]["action"], "wait")
+        text = "\n".join(logs)
+        self.assertIn("unusable reply (first try, finish_reason=length): the reply was cut off before its JSON object closed", text)
+        self.assertIn("raw reply: '{\"thinking\": \"I will go and get the wood from the forest to the'", text)
+        self.assertIn("unusable reply (retry, finish_reason=length)", text)
+
+    async def test_prose_and_fenced_json_is_used(self):
+        await self.start(['Sure! Here is my decision:\n```json\n{"thinking": "Answer.", "action": "say", "text": "hi", "closes": "t1"}\n```\nLet me know!'])
+        await self.body.event("task_from_chat", {"from": "ACTS_HORIZON", "text": "hello"})
+        await until(lambda: self.body.calls())
+        self.assertEqual(self.body.calls()[0]["args"], {"text": "hi"})
+        self.assertEqual(len(self.llm.prompts), 1, "parsed on the first try")
+
     async def test_low_health_wakes_it(self):
         await self.start([{"thinking": "Hurt; back off.", "action": "call", "verb": "goto", "args": {"pos": [-10, 64, -10]}}])
         await self.body.ws.send(json.dumps(make_obs(health=4)))
@@ -209,7 +276,8 @@ class UnitTest(unittest.TestCase):
         self.assertEqual(a, {"action": "call", "thinking": "t", "verb": "mine", "args": {"block": "stone"}})
         for bad, msg in [('{"action": "call", "thinking": "t"}', "needs \"verb\""), ('{"action": "fly", "thinking": "t"}', "must be one of"),
                          ('{"action": "say"}', '"thinking"'), ('{"action": "call", "thinking": "t", "verb": "smelt"}', 'unknown verb "smelt"'),
-                         ('[1, 2]', "one JSON object"), ('{"thinking": "t", "action": "wait", "task": {"id": "t1", "state": "finished"}}', 'task "state"')]:
+                         ('[1, 2]', "no JSON object"), ('{"thinking": "t", "action": "call", "verb": "mine", "closes": "t1"}', '"closes" goes on a say'),
+                         ('{"thinking": "t", "action": "done"}', '"done" needs "closes"'), ('{"thinking": "I will go and get the wo', "cut off")]:
             with self.assertRaises(ActionError) as cm:
                 parse(bad, verbs)
             self.assertIn(msg, str(cm.exception))
@@ -268,7 +336,14 @@ class LLMClientTest(unittest.TestCase):
                 seen["path"] = self.path
                 seen["auth"] = self.headers.get("authorization")
                 seen["body"] = json.loads(self.rfile.read(int(self.headers["content-length"])))
-                code, reply = (500, b"boom") if seen["body"]["model"] == "broken" else (200, json.dumps({"choices": [{"message": {"content": '{"action": "wait", "thinking": "ok"}'}}]}).encode())
+                model = seen["body"]["model"]
+                if model == "broken":
+                    code, reply = 500, b"boom"
+                elif model == "cut":  # pretty JSON, generation stopped on "\n}" (not included)
+                    content = '{\n  "thinking": "hi",\n  "action": "say",\n  "text": "x",\n  "about": "t1"\n'
+                    code, reply = 200, json.dumps({"choices": [{"message": {"content": content}, "finish_reason": "stop"}]}).encode()
+                else:
+                    code, reply = 200, json.dumps({"choices": [{"message": {"content": '{"action": "wait", "thinking": "ok"}'}, "finish_reason": "stop"}]}).encode()
                 self.send_response(code)
                 self.end_headers()
                 self.wfile.write(reply)
@@ -283,10 +358,16 @@ class LLMClientTest(unittest.TestCase):
             llm = OpenAICompatLLM(base, "gemma-3-12b", key="k123", temperature=0.2, max_tokens=99)
             out = asyncio.run(llm.complete([{"role": "user", "content": "hi"}]))
             self.assertEqual(out, '{"action": "wait", "thinking": "ok"}')
+            self.assertEqual(out.finish_reason, "stop")
             self.assertEqual(seen["path"], "/v1/chat/completions")
             self.assertEqual(seen["auth"], "Bearer k123")
             self.assertEqual(seen["body"], {"model": "gemma-3-12b", "messages": [{"role": "user", "content": "hi"}], "temperature": 0.2,
-                                            "max_tokens": 99, "response_format": {"type": "json_object"}})
+                                            "max_tokens": 99, "response_format": {"type": "json_object"}, "stop": ["\n}"]})
+            # stopped on the closing brace: the brace is put back and the object parses
+            cut = OpenAICompatLLM(base, "cut")
+            r = asyncio.run(cut.complete([]))
+            self.assertEqual(seen["body"]["max_tokens"], 2000, "the default")
+            self.assertEqual(parse(r), {"action": "say", "thinking": "hi", "text": "x", "about": "t1"})
             with self.assertRaises(LLMError):
                 asyncio.run(OpenAICompatLLM(base, "broken").complete([]))
             with self.assertRaises(LLMError):

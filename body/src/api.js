@@ -28,6 +28,7 @@ const DIRS = {
   'north-east': [Math.SQRT1_2, -Math.SQRT1_2], 'north-west': [-Math.SQRT1_2, -Math.SQRT1_2],
   'south-east': [Math.SQRT1_2, Math.SQRT1_2], 'south-west': [-Math.SQRT1_2, Math.SQRT1_2]
 }
+const { CONTAINERS } = require('./chests')
 const AIRLIKE = new Set(['air', 'cave_air', 'void_air'])
 const REPLACEABLE = new Set(['air', 'cave_air', 'void_air', 'water', 'lava', 'short_grass', 'tall_grass', 'fern', 'large_fern', 'snow', 'vine', 'dead_bush', 'seagrass', 'tall_seagrass'])
 
@@ -58,8 +59,9 @@ class VerbApi {
    * registry: {isBlock(name), isItem(name)}; house: HouseRules;
    * locator: Locator Bar waypoints (src/locator.js)
    */
-  constructor ({ motor, observe, places, sight, registry, house = null, locator = null }) {
+  constructor ({ motor, observe, places, sight, registry, house = null, locator = null, chests = null }) {
     this.motor = motor
+    this.chests = chests
     this.house = house
     this.locator = locator
     this._observe = observe
@@ -284,6 +286,26 @@ class VerbApi {
     }
     return { ok: false, reason: `nothing solid next to [${pos.join(', ')}] to place against` }
   }
+
+  /**
+   * An observed container at pos (visible now or a known place): its type,
+   * or a refusal / failure reason. {ok, type?, refused?, reason?}
+   */
+  container (pos) {
+    const name = this.observedBlock(pos)
+    if (!name) return { ok: false, refused: true, reason: `fair play: no chest has been observed at [${pos.join(', ')}]` }
+    if (!CONTAINERS.has(name)) return { ok: false, reason: `[${pos.join(', ')}] is ${name}, not a chest or barrel` }
+    return { ok: true, type: name }
+  }
+
+  /** House rules: may the bot take from the chest at pos? */
+  mayTakeFrom (pos) {
+    return !!(this.chests && this.chests.has(this.motor.dimension?.() ?? this.obs()?.self.dim, pos))
+  }
+
+  toss (item, count, at) { return this.motor.toss(item, count, at) }
+  deposit (pos, item, count) { return this.motor.deposit(pos, item, count) }
+  withdraw (pos, item, count) { return this.motor.withdraw(pos, item, count) }
 
   equip (item, slot) { return this.motor.equip(item, slot) }
   foods () { return this.motor.foods() }

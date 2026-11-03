@@ -13,6 +13,7 @@ const { VerbApi } = require('./api')
 const { HouseRules } = require('./house')
 const { Locator } = require('./locator')
 const { classifyChat } = require('./chat')
+const { ChestAllowlist, CONTAINERS } = require('./chests')
 const { Runner } = require('./runner')
 const { Tap } = require('./tap')
 const { Dashboard, parseBind, verbLibrary, tailFile } = require('./dashboard')
@@ -24,7 +25,6 @@ class Body {
     this.cfg = cfg
     this.createBot = createBot
     this.runner = new Runner(VERBS)
-    this.chatCalls = 0
     this.tap = new Tap()
     this.log = new JsonlLog(cfg.logDir)
     this.bot = null
@@ -37,6 +37,7 @@ class Body {
     this.stats = new BuildStats()
     this.places = new KnownPlaces({ file: cfg.placesFile }).load()
     this.house = new HouseRules(cfg.protectedRegions || [])
+    this.chests = new ChestAllowlist({ fromConfig: cfg.chests || [], file: cfg.chestsFile || null })
     this.locator = new Locator() // Locator Bar waypoints, from the tracked_waypoint packet
     this.backoff = 5000
     this.timers = []
@@ -255,6 +256,7 @@ class Body {
       places: this.places,
       house: this.house,
       locator: this.locator,
+      chests: this.chests,
       sight: () => this.view.sight(),
       registry: { isBlock: n => !!reg?.blocksByName[n], isItem: n => !!reg?.itemsByName[n] }
     })
@@ -267,9 +269,10 @@ class Body {
   }
 
   /**
-   * Chat from allowlisted players: stop / status / come here are handled
-   * here (they work even with the mind busy or down); other "@<bot> …" is a
-   * task_from_chat event, the rest player_said.
+   * Chat from allowlisted players: "stop" and "status" are handled here
+   * (they work even with the mind busy or down), and the house-rules chest
+   * grant; any other "@<bot> …" (including "come here") is a task_from_chat
+   * event for the mind, the rest player_said.
    */
   onChat (from, text) {
     const c = classifyChat({ from, text, botName: this.cfg.mc.username, allowlist: this.cfg.players || [] })
@@ -283,16 +286,34 @@ class Body {
       return this.event('stop_requested', { from, detail: r.detail })
     }
     if (c.kind === 'status') return say(this.statusLine())
-    if (c.kind === 'come') {
-      const id = `chat-${++this.chatCalls}`
-      const args = { target: from }
-      this.runner.run(this.act(), { id, verb: 'goto', args }).then(r => {
-        if (r.status === 'refused' && r.detail === 'busy') say(`busy with ${this.runner.task()?.verb ?? 'something'}; say @${this.cfg.mc.username} stop first`)
-        else if (r.status === 'refused') say(`I can't see you, ${from}`)
-        else if (r.status !== 'done') say(`couldn't get to you: ${r.detail}`)
-        this.event('verb_done', { id, verb: 'goto', args, status: r.status, detail: r.detail, by: 'chat' })
-      })
+    if (c.kind === 'chest') return say(this.grantChest(from))
+  }
+
+  /**
+   * House rules: "@<bot> that chest is yours" from an allowlisted player.
+   * The chest is the block that player is looking at, which the bot must
+   * see too (obs looking_at is only filled when it does). The other half of
+   * a double chest next to it is included. Returns the chat reply.
+   */
+  grantChest (from) {
+    const o = this.obs()
+    const p = o && o.players.find(x => x.name === from && x.pos)
+    if (!p) return `I can't see you, ${from}; come where I can see you and look at the chest`
+    if (!p.looking_at) return `I can't see what you're looking at, ${from}`
+    const pos = p.looking_at
+    const name = this.view.classAt(pos[0], pos[1], pos[2])?.name
+    if (!CONTAINERS.has(name)) return `that's ${name || 'nothing'}, not a chest`
+    const dim = o.self.dim
+    this.chests.add(dim, pos, from)
+    let extra = ''
+    if (name !== 'barrel') {
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const q = [pos[0] + dx, pos[1], pos[2] + dz]
+        if (this.view.classAt(q[0], q[1], q[2])?.name === name) { this.chests.add(dim, q, from); extra = ' (both halves)'; break }
+      }
     }
+    console.log(`[chests] ${from} gave Atlas the ${name} at ${pos.join(' ')}${extra}`)
+    return `ok, I'll take from the ${name} at ${pos.join(' ')}${extra} when asked`
   }
 
   /** One line for "@<bot> status". */

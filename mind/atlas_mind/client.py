@@ -16,6 +16,9 @@ Prints every message from the body. Type:
     equip <item> [slot]     hand, off-hand, head, torso, legs, feet
     dig <x> <y> <z>         dig one observed block
     eat [item]              eat (best food if none named)
+    give <item> <n> <player>        walk to a player and toss them items
+    deposit <item> <x> <y> <z> [n]  put items in a chest (all if no n)
+    withdraw <item> <x> <y> <z> [n] take from a chest given to Atlas
     trace [kind] <text>     send a trace (kind: plan, decision, rag, verb_write,
                             advisor, note; default note); logged, never acted on
     obs           ask for a full view now
@@ -38,7 +41,8 @@ from .pretty import format_message
 
 HELP = ("commands: say <text> | stop | recall <type> [x y z] | goto <x y z | target> | explore <dir> <n> |"
         " mine <block> <n> [radius] | collect <item> | craft <item> [n] | place <block> <x y z> | equip <item> [slot] |"
-        " dig <x y z> | eat [item] | trace [kind] <text> | obs | quit")
+        " dig <x y z> | eat [item] | give <item> <n> <player> | deposit|withdraw <item> <x y z> [n] |"
+        " trace [kind] <text> | obs | quit")
 DIRECTIONS = ("north", "south", "east", "west", "north-east", "north-west", "south-east", "south-west", "forward")
 TRACE_KINDS = ("plan", "decision", "rag", "verb_write", "advisor", "note")
 
@@ -109,6 +113,15 @@ def parse_command(line: str, next_id, now_t=lambda: 0) -> dict | None | str:
         if not pos:
             return "usage: dig <x> <y> <z>"
         return call("dig", {"pos": pos})
+    if cmd == "give":
+        if len(parts) != 3 or not parts[1].isdigit():
+            return "usage: give <item> <count> <player>"
+        return call("give", {"item": parts[0], "count": int(parts[1]), "player": parts[2]})
+    if cmd in ("deposit", "withdraw"):
+        pos = ints(parts[1:4]) if len(parts) in (4, 5) else None
+        if not pos or (len(parts) == 5 and not parts[4].isdigit()):
+            return f"usage: {cmd} <item> <x> <y> <z> [count]"
+        return call(cmd, {"item": parts[0], "chest": pos, **({"count": int(parts[4])} if len(parts) == 5 else {})})
     if cmd == "eat":
         if len(parts) > 1:
             return "usage: eat [item]"

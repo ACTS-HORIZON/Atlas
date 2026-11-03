@@ -46,6 +46,7 @@ async function startBody (t, extraCfg = {}, { spawn = true, vitals = true } = {}
     obsIntervalMs: 3600000,
     sightRadius: 64,
     placesFile: path.join(dir, 'kp.json'),
+    chestsFile: path.join(dir, 'chests.json'),
     dashBind: '127.0.0.1:0',
     verbDir: path.join(dir, 'verbs'),
     ...extraCfg

@@ -49,7 +49,28 @@ function fakeMotor (w, opt = {}) {
     async equip (item, slot) { this.calls.push(['equip', item, slot]); return { ok: true } },
     async place (item, ref, pos) { this.calls.push(['place', item, ref, pos]); w.set(pos[0], pos[1], pos[2], item); return { ok: true } },
     craftPlan (item, count) { return opt.craftPlan ? opt.craftPlan(item, count) : { known: true, options: [] } },
-    async craft (item, count, tablePos) { this.calls.push(['craft', item, count, tablePos]); return { ok: true, crafted: count } }
+    async craft (item, count, tablePos) { this.calls.push(['craft', item, count, tablePos]); return { ok: true, crafted: count } },
+    async toss (item, count, at) {
+      this.calls.push(['toss', item, count, at])
+      const have = (opt.inv || {})[item] || 0
+      const n = Math.min(count, have)
+      if (opt.inv) opt.inv[item] = have - n
+      return n ? { ok: true, tossed: n } : { ok: false, tossed: 0, reason: `no ${item} in inventory` }
+    },
+    async deposit (pos, item, count) {
+      this.calls.push(['deposit', pos, item, count])
+      const room = opt.chestRoom ?? Infinity
+      const moved = Math.min(count, room)
+      if (opt.inv) opt.inv[item] -= moved
+      return { ok: moved > 0, moved, reason: moved < count ? 'the chest is full' : null }
+    },
+    async withdraw (pos, item, count) {
+      this.calls.push(['withdraw', pos, item, count])
+      const available = (opt.chestItems || {})[item] || 0
+      if (!available) return { ok: false, moved: 0, available, reason: `no ${item} in the chest` }
+      const moved = Math.min(count, available)
+      return { ok: true, moved, available }
+    }
   }
   return m
 }
@@ -71,6 +92,7 @@ function setup (w, opt = {}) {
   const api = new VerbApi({
     motor,
     house: opt.house || null,
+    chests: opt.chests || null,
     locator: opt.locator || null,
     observe,
     places,
