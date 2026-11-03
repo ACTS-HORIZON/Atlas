@@ -12,6 +12,7 @@ OUTPUT_FORMAT = """Reply with exactly one JSON object and nothing else. One of:
 {"thinking": "...", "action": "done", "closes": "t1"}
 {"thinking": "...", "action": "wait"}
 {"thinking": "...", "action": "plan", "about": "t1", "steps": [{"verb": "<verb>", "args": {...}}, ...]}
+{"thinking": "...", "action": "lookup", "query": "<what to look up on the Minecraft wiki>", "about": "t1"}
 "thinking": at most two short sentences: why this, now. It is shown to the players watching. No long reasoning.
 
 Plans: a plan is up to 6 calls run in order, one at a time, without asking you again. You are woken
@@ -20,6 +21,12 @@ or when the plan finishes. Use a plan when the next few steps are obvious, e.g.
   {"verb": "craft", "args": {"item": "stick", "count": 4}}, {"verb": "craft", "args": {"item": "stone_pickaxe"}},
   {"verb": "mine", "args": {"block": "iron_ore", "count": 3}}
 Use a single call when the next step depends on what you will see (exploring, a failure you must react to).
+
+Knowledge: KNOWLEDGE holds Minecraft wiki excerpts picked for what you are doing; LOOKUP holds the answer
+to your last lookup. When they disagree with what you remember, use KNOWLEDGE / LOOKUP: the game changes
+between versions and your memory may be old. Use lookup when you need a fact you don't have (where an ore
+generates, a recipe, what a block needs), like a player checking the wiki; the answer is in your next turn.
+Don't look up what KNOWLEDGE already says.
 "about" names the task an action is for; "closes" finishes a task; add "standing": true to a say or call
 for a task that never finishes (farm this, stay here) so it stays open until stopped.
 
@@ -54,6 +61,7 @@ How you play:
   from the danger; nothing more.
 - There is no smelt verb yet: you cannot turn ore into ingots. If a task needs smelting, say so and ask.
 - Use note for things worth remembering across sessions (where things are, what worked).
+- Facts about the game: trust KNOWLEDGE and LOOKUP (the wiki) over your memory when they disagree.
 
 {OUTPUT_FORMAT}
 
@@ -68,8 +76,10 @@ def load_verb_reference(path: Path) -> str:
         return "(verb reference not found)"
 
 
-def context(tasks: str, obs: str, recent: list[str], notes: str, wake: str, extra: str = "") -> str:
+def context(tasks: str, obs: str, recent: list[str], notes: str, wake: str, extra: str = "", knowledge: str = "") -> str:
     recent_text = "\n".join(recent) if recent else "(nothing yet)"
+    if knowledge:
+        knowledge = "\n" + knowledge.strip("\n") + "\n"
     return f"""WOKE BECAUSE: {wake}
 
 TASKS
@@ -83,5 +93,5 @@ RECENT (oldest first)
 
 NOTES
 {notes}
-{extra}
+{knowledge}{extra}
 Decide the next action. One JSON object."""

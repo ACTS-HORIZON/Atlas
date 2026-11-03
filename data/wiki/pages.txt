@@ -1,0 +1,429 @@
+# Pages scripts/wiki_fetch.py fetches from minecraft.wiki, one title per line.
+# Blank lines and lines starting with # are ignored. Redirects are followed.
+# Wiki text is CC BY-NC-SA 3.0: fetched for personal use only.
+
+# --- Ores, minerals and their distribution
+Ore
+Mineral block
+Coal Ore
+Copper Ore
+Iron Ore
+Gold Ore
+Redstone Ore
+Lapis Lazuli Ore
+Diamond Ore
+Emerald Ore
+Nether Gold Ore
+Nether Quartz Ore
+Ancient Debris
+Ore vein
+Coal
+Charcoal
+Raw Iron
+Raw Copper
+Raw Gold
+Iron Ingot
+Copper Ingot
+Gold Ingot
+Netherite Ingot
+Netherite Scrap
+Diamond
+Emerald
+Lapis Lazuli
+Redstone Dust
+Nether Quartz
+Block of Iron
+Block of Coal
+Altitude
+Deepslate
+Tuff
+Bedrock
+Stone
+Cobblestone
+Cobbled Deepslate
+Granite
+Diorite
+Andesite
+Gravel
+Sand
+Dirt
+Clay
+Flint
+Obsidian
+Netherrack
+Basalt
+Blackstone
+Glowstone
+Soul Sand
+Soul Soil
+Magma Block
+
+# --- Tools, weapons, armor
+Tool
+Tiers
+Pickaxe
+Wooden Pickaxe
+Stone Pickaxe
+Iron Pickaxe
+Diamond Pickaxe
+Netherite Pickaxe
+Golden Pickaxe
+Axe
+Shovel
+Hoe
+Sword
+Bow
+Arrow
+Crossbow
+Trident
+Shield
+Shears
+Flint and Steel
+Fishing Rod
+Bucket
+Water Bucket
+Lava Bucket
+Compass
+Clock
+Map
+Lead
+Armor
+Helmet
+Chestplate
+Leggings
+Boots
+Iron Armor
+Diamond Armor
+Netherite Armor
+Golden Armor
+Leather Armor
+Item durability
+Smithing Table
+Netherite Upgrade
+Smithing Template
+Mining
+Breaking
+
+# --- Crafting, smelting, fuel
+Crafting
+Crafting Table
+Recipe book
+Inventory
+Stick
+Planks
+Oak Planks
+Log
+Oak Log
+Wood
+Torch
+Chest
+Barrel
+Ladder
+Door
+Trapdoor
+Fence
+Bed
+Boat
+Minecart
+Rail
+Furnace
+Blast Furnace
+Smoker
+Campfire
+Smelting
+Fuel
+Glass
+Smooth Stone
+Stone Bricks
+Brick
+Ingot
+
+# --- Survival basics
+Tutorial:Beginner's guide
+Tutorial:The first day
+Tutorial:Mining
+Tutorial:Strip mining
+Tutorial:Caving
+Tutorial:Shelters
+Tutorial:Navigation
+Tutorial:Food
+Tutorial:Light
+Health
+Hunger
+Food
+Damage
+Fall damage
+Drowning
+Fire
+Suffocation
+Death
+Spawn
+Day-night cycle
+Light
+Sleep
+Phantom
+Respawn Anchor
+Experience
+Difficulty
+Game mode
+Survival
+Weather
+Locator Bar
+Debug screen
+Coordinates
+Chunk
+Height limit
+Mob spawning
+
+# --- Food
+Apple
+Golden Apple
+Bread
+Wheat
+Wheat Seeds
+Carrot
+Potato
+Baked Potato
+Beetroot
+Melon Slice
+Pumpkin
+Sweet Berries
+Raw Beef
+Steak
+Raw Porkchop
+Cooked Porkchop
+Raw Chicken
+Cooked Chicken
+Raw Mutton
+Cooked Mutton
+Raw Cod
+Cooked Cod
+Raw Salmon
+Cooked Salmon
+Rotten Flesh
+Mushroom Stew
+Cake
+Cookie
+Dried Kelp
+Farming
+Tutorial:Crop farming
+Bone Meal
+Farmland
+
+# --- Fluids
+Water
+Lava
+Waterlogging
+Infinite water source
+Lava lake
+Aquifer
+Bubble Column
+
+# --- Mobs
+Mob
+Hostile mob
+Creeper
+Zombie
+Husk
+Drowned
+Skeleton
+Stray
+Spider
+Cave Spider
+Enderman
+Witch
+Slime
+Silverfish
+Pillager
+Vindicator
+Evoker
+Ravager
+Guardian
+Elder Guardian
+Warden
+Blaze
+Ghast
+Wither Skeleton
+Piglin
+Piglin Brute
+Zombified Piglin
+Hoglin
+Magma Cube
+Strider
+Shulker
+Endermite
+Wither
+Ender Dragon
+Villager
+Iron Golem
+Wandering Trader
+Cow
+Pig
+Sheep
+Chicken
+Wolf
+Cat
+Horse
+Bee
+
+# --- World, caves, biomes, structures
+Biome
+Overworld
+Cave
+Cave biomes
+Lush Caves
+Dripstone Caves
+Deep Dark
+Ravine
+Mineshaft
+Dungeon
+Ancient City
+Mountains
+Badlands
+Plains
+Forest
+Taiga
+Desert
+Ocean
+Swamp
+Jungle
+Savanna
+Snowy Plains
+Mushroom Fields
+Generated structures
+Village
+Pillager Outpost
+Woodland Mansion
+Ocean Monument
+Shipwreck
+Buried treasure
+Ruined Portal
+Desert Pyramid
+Jungle Pyramid
+Igloo
+Trail Ruins
+Trial Chambers
+Spawner
+
+# --- Villagers and trading
+Trading
+Villager trading
+Bell
+Raid
+Hero of the Village
+
+# --- The Nether
+The Nether
+Nether portal
+Tutorial:Nether survival
+Nether Fortress
+Bastion Remnant
+Nether Wastes
+Soul Sand Valley
+Crimson Forest
+Warped Forest
+Basalt Deltas
+Blaze Rod
+Blaze Powder
+Nether Wart
+Fire Resistance
+Bartering
+Gold
+Fire Charge
+
+# --- Ender pearls, eyes, strongholds, the End
+Ender Pearl
+Eye of Ender
+Stronghold
+End Portal
+End Portal Frame
+The End
+Tutorial:Defeating the Ender Dragon
+Tutorial:Finding a stronghold
+End Crystal
+End Stone
+Dragon Egg
+Dragon's Breath
+End City
+End Ship
+End Gateway
+Elytra
+Firework Rocket
+Shulker Box
+Chorus Fruit
+Chorus Plant
+Purpur Block
+Exit Portal
+Credits
+
+# --- Enchanting, anvils, brewing
+Enchanting
+Enchanting Table
+Enchanted Book
+Enchanting mechanics
+Bookshelf
+Anvil
+Grindstone
+Experience Bottle
+Efficiency
+Fortune
+Silk Touch
+Unbreaking
+Mending
+Protection
+Feather Falling
+Sharpness
+Power
+Infinity
+Looting
+Respiration
+Aqua Affinity
+Depth Strider
+Frost Walker
+Brewing
+Brewing Stand
+Potion
+Water Bottle
+Awkward Potion
+Potion of Fire Resistance
+Potion of Healing
+Potion of Strength
+Potion of Night Vision
+Potion of Slow Falling
+Potion of Water Breathing
+
+# --- Redstone and misc blocks the bot meets
+Redstone circuits
+Lever
+Button
+Pressure Plate
+Piston
+Hopper
+Dispenser
+Note Block
+Crafter
+Scaffolding
+TNT
+Glass Pane
+Iron Bars
+Cobweb
+String
+Leather
+Feather
+Bone
+Gunpowder
+Paper
+Book
+Sugar Cane
+Bamboo
+Kelp
+Cactus
+Leaves
+Sapling
+Tree
+Snow
+Ice
+Packed Ice
+Powder Snow
+Moss Block
+Mud

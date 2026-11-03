@@ -5,4 +5,8 @@ atlas.env
 mind/.venv/
 __pycache__/
 *.pyc
-data/
+# data/ is local state (notes, known places, wiki cache); only the wiki page list is tracked
+data/*
+!data/wiki/
+data/wiki/*
+!data/wiki/pages.txt

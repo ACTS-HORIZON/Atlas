@@ -82,14 +82,15 @@ async def until(pred, timeout=3.0):
 
 
 class MindTest(unittest.IsolatedAsyncioTestCase):
-    async def start(self, script, respond=None, **cfg):
+    async def start(self, script, respond=None, retriever=None, **cfg):
         self.tmp = tempfile.TemporaryDirectory()
         self.body = FakeBody(respond)
         url = await self.body.start()
         self.llm = FakeLLM(script)
         self.cfg = Config(link_url=url, idle_s=cfg.pop("idle_s", 0.2), ask_timeout_s=cfg.pop("ask_timeout_s", 30),
-                          notes_file=Path(self.tmp.name) / "notes.md", verb_reference=ROOT / "docs" / "verbs.md", **cfg)
-        self.mind = Mind(self.cfg, self.llm, log=lambda *_: None)
+                          notes_file=Path(self.tmp.name) / "notes.md", verb_reference=ROOT / "docs" / "verbs.md",
+                          wiki_index=cfg.pop("wiki_index", Path(self.tmp.name) / "no-index.json"), **cfg)
+        self.mind = Mind(self.cfg, self.llm, log=lambda *_: None, retriever=retriever)
         self.task = asyncio.create_task(self.mind.run())
         await until(lambda: self.body.ws is not None and self.mind.obs is not None)
 
@@ -446,7 +447,7 @@ class UnitTest(unittest.TestCase):
             lines.append({"ts": "t3", "dir": "out", "msg": {"type": "result", "v": "0.1", "id": "m1", "status": "done", "detail": "mined 3 oak_log", "obs": make_obs(t=9)}})
             log.write_text("\n".join(json.dumps(x) for x in lines) + "\n")
             llm = FakeLLM([])
-            cfg = Config(notes_file=Path(d) / "notes.md", verb_reference=ROOT / "docs" / "verbs.md")
+            cfg = Config(notes_file=Path(d) / "notes.md", verb_reference=ROOT / "docs" / "verbs.md", wiki_index=Path(d) / "none.json")
             out = []
             n = asyncio.run(replay(Mind(cfg, llm, log=lambda *_: None), [str(log)], every=2, limit=10, out=out.append))
             self.assertEqual(n, 4)  # obs 2 and 4, the event, the result
@@ -578,7 +579,7 @@ class ThinkingTest(unittest.TestCase):
             url = await body.start()
             with tempfile.TemporaryDirectory() as d:
                 logs = []
-                cfg = Config(link_url=url, idle_s=0.1, notes_file=Path(d) / "n.md", verb_reference=ROOT / "docs" / "verbs.md", llm_thinking=False)
+                cfg = Config(link_url=url, idle_s=0.1, notes_file=Path(d) / "n.md", verb_reference=ROOT / "docs" / "verbs.md", llm_thinking=False, wiki_index=Path(d) / "none.json")
                 llm = FakeLLM([r, ('{"thinking": "x", "action": "wait"}', "stop", "", 12)])
                 mind = Mind(cfg, llm, log=logs.append)
                 task = asyncio.create_task(mind.run())
@@ -607,7 +608,7 @@ class TaskRefTest(unittest.TestCase):
     def mind(self, *texts):
         d = tempfile.mkdtemp()
         logs = []
-        m = Mind(Config(notes_file=Path(d) / "n.md", verb_reference=ROOT / "docs" / "verbs.md"), FakeLLM([]), log=logs.append)
+        m = Mind(Config(notes_file=Path(d) / "n.md", verb_reference=ROOT / "docs" / "verbs.md", wiki_index=Path(d) / "none.json"), FakeLLM([]), log=logs.append)
         for t in texts:
             m.tasks.add("ACTS_HORIZON", t)
         return m, logs

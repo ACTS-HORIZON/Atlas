@@ -32,6 +32,7 @@ data/      known places file (gitignored)
 - **Verbs** run one at a time (`body/src/runner.js`), and the running one shows as `task` in the obs. `say`, `recall`, `inspect` and `stop` run alongside it. Any other call while a verb runs is `refused` with detail `busy`: it is not queued, and the running verb keeps going. `stop` aborts the running verb, so it returns `interrupted`, and releases every movement control.
 - **Dashboard** at `http://<atlas>:8080/` (see below).
 - **Mind** (brain v0): `python -m atlas_mind` is the loop. It wakes on long-verb results, events, and a 10 s timer (only when something changed), asks an OpenAI-compatible model for one action per turn, keeps a task list and a notes file, and sends its reasoning as `trace`. See [Mind (brain v0)](#mind-brain-v0).
+- **Wiki knowledge:** a local BM25 index of ~400 minecraft.wiki pages. Each turn the mind gets the best excerpts for what it is doing (KNOWLEDGE), and the model can `lookup` on purpose. See [Wiki knowledge](#wiki-knowledge).
 - **Terminal client:** `python -m atlas_mind.client` prints every message and takes typed verb commands (`say`, `goto`, `mine`, `craft`, …).
 
 ### Contract notes
@@ -193,11 +194,12 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
   - **Skipped:** idle ticks while a verb runs, or while an `ask_player` question is open.
   - **Follow-up turns:** a turn that only talked (say, note, done) while a task is open gets one follow-up turn to carry on, at most 3 in a row without new input.
 - **Builds the context:**
-  - a **system prompt**: who Atlas is, fair play, house rules, no fighting, no smelting yet, and the output format, plus `docs/verbs.md` loaded from the repo at start, so it is never stale;
+  - a **system prompt**: who Atlas is, fair play, house rules, no fighting, no smelting yet, trust the wiki over memory, and the output format, plus `docs/verbs.md` loaded from the repo at start, so it is never stale;
   - the **task list**;
   - the **latest obs**, rendered compactly (a few hundred tokens, not raw JSON);
   - the **last 15** calls, results and events;
-  - the **notes**.
+  - the **notes**;
+  - **KNOWLEDGE**: the top 3 wiki excerpts (≤ 600 tokens in all) for the open tasks' text, the last failure's detail and the current verb's target, sent as a `trace` (kind `rag`, with the query and chunk titles) before the turn's decision. None when there is no index.
 - **Asks the model for one JSON object:**
   - **`call`**: `{verb, args, about?}`
   - **`say`**: `{text, about? | closes?}`
@@ -205,6 +207,7 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
   - **`note`**: `{text}`, appended to `data/notes.md`.
   - **`done`**: `{closes}`
   - **`wait`**
+  - **`lookup`**: `{query, about?}` searches the wiki. The answer (≤ 900 tokens) is shown as `LOOKUP "<query>"` in the next turn, which follows at once, and for 2 turns after. Traced as kind `rag` with `data.lookup: true`.
   - **`plan`**: `{steps: [{verb, args}, …], about?}`, up to 6 calls with one `thinking`.
     - **How it runs:** the steps run one at a time without asking the model again. Each step's result is logged as usual.
     - **When it stops:** the mind thinks again only when a step's result isn't `done`, an event arrives (held until the current step ends, then the plan stops), or the plan finishes.
@@ -228,6 +231,7 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
   - **Warning:** if reasoning arrives while thinking is off, `mind.out` warns that the server ignored the setting.
   - **Through another proxy:** llama-swap passes the request body through unchanged. Through LiteLLM, check that it forwards `chat_template_kwargs` (the warning will say if not).
 - **No repeating a failure:** the exact call that just failed or was refused is not sent again; the model is told so and asked once more.
+- **Lookups:** at most 2 in a row, and never the same query twice in a row; the model is told to act on what it found.
 - **No fighting:** the prompt forbids it (there are no combat verbs). When health falls below `ATLAS_RETREAT_HEALTH` (6), the mind is woken with "health is low", and may retreat with `goto`.
 
 **Config** (in `atlas.env` or the environment):
@@ -248,6 +252,10 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
 | `ATLAS_RETREAT_HEALTH` | `6` | |
 | `ATLAS_NOTES_FILE` | `data/notes.md` | |
 | `ATLAS_NOTES_MAX_LINES` | `80` | the oldest notes are dropped (and counted) past this |
+| `ATLAS_WIKI_INDEX` | `data/wiki/index.json` | built by `scripts/wiki_index.py`; missing = no KNOWLEDGE, lookups say so |
+| `ATLAS_RAG_K` | `3` | excerpts per turn and per lookup |
+| `ATLAS_RAG_TOKENS` | `600` | KNOWLEDGE budget per turn |
+| `ATLAS_LOOKUP_TOKENS` | `900` | budget for a lookup's answer |
 
 **Tokens and turns.** After every turn, `mind.out` gets a line like:
 
@@ -314,6 +322,48 @@ It decides on every recorded result and event, plus every 15th obs.
 - the invalid-reply retry;
 - the low-health wake;
 - replay.
+
+`mind/tests/test_wiki.py` covers the wiki pipeline on two pages in the wiki's HTML (`mind/tests/fixtures/`): parsing (noise stripped, tables as rows), chunking, the BM25 index (`"iron ore y level"` finds the ore distribution chunk), the fetch and index scripts, and the mind's KNOWLEDGE block, `rag` traces and `lookup`.
+
+### Wiki knowledge
+
+Atlas's game facts come from minecraft.wiki, fetched once into a local cache and indexed for search. The pages are listed in `data/wiki/pages.txt` (400 titles): ores and where they generate, tools and armor, crafting, furnaces and fuel, food, water and lava, beds and phantoms, hostile mobs, caves and biomes, villages and trading, the Nether, blaze rods, ender pearls and eyes, strongholds, the End, the dragon, End cities and elytra, enchanting and anvils, the Locator Bar.
+
+**License:** the wiki's text is CC BY-NC-SA 3.0. The cache and index are for personal use on your own machine; they are gitignored and must not be published.
+
+On atlas (the sandbox these were written in can't reach the wiki; atlas can):
+
+```bash
+cd /opt/atlas && python3 scripts/wiki_fetch.py
+```
+
+- **Pace:** one request per second, so the first run takes about 7 minutes. It sends a generic User-Agent (no contact details) and backs off on 429/5xx.
+- **Cache:** each page's article HTML goes to `data/wiki/raw/<Title>.html`, with a `.json` beside it (title, revision, time).
+- **Resumable:** run it again after an interruption and it fetches only what's missing. `--refresh` fetches everything again.
+- **Missing titles:** listed in `data/wiki/raw/_missing.txt`. Fix them in `pages.txt` and rerun.
+
+```bash
+cd /opt/atlas && python3 scripts/wiki_index.py
+```
+
+- **What it does:** parses each page to plain text by section. Infoboxes, navboxes, the table of contents, edit links, references and the History/Trivia/Gallery sections are dropped; tables are kept as `a | b | c` rows. It then chunks by section (about 300–600 tokens) and writes a BM25 index to `data/wiki/index.json`.
+- **Output:** a line like `400 pages -> 1900 chunks (tokens: median 310, max 600) in 20 s`.
+- **No extra packages:** both scripts use only the standard library, and so does the mind's retriever. Restart the mind to load a new index.
+
+To check what the mind would get:
+
+```bash
+cd /opt/atlas && python3 scripts/wiki_index.py --query "iron ore y level" --query "furnace fuel"
+```
+
+```bash
+cd /opt/atlas && python3 scripts/wiki_index.py --check-ores
+```
+
+- **`--check-ores`:** prints the wiki's generation text for each ore, to verify the ore table in `docs/verbs.md`.
+- **`--fixtures`:** `python3 scripts/wiki_fetch.py --fixtures` copies the real `Iron_Ore` and `Ore` pages over the hand-written test fixtures in `mind/tests/fixtures/`. Run the tests after, and commit if they pass.
+
+**Swapping the retriever:** the mind only calls `search(query, k)` on whatever `wiki.load_retriever` returns, picked by the index file's `"backend"` field. An embedding backend registers a loader in `wiki.BACKENDS`; nothing else changes.
 
 ### Optional: body as a systemd service
 

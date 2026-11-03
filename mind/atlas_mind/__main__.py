@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = Config.from_env()
     llm = OpenAICompatLLM(cfg.llm_url, cfg.llm_model, cfg.llm_key, cfg.llm_temperature, cfg.llm_max_tokens, cfg.llm_json_mode,
                           cfg.llm_timeout_s, stop_after_object=cfg.llm_stop, thinking=cfg.llm_thinking)
-    mind = Mind(cfg, llm)
+    mind = Mind(cfg, llm, log=(lambda *x: print(*x, file=sys.stderr)) if a.print_prompt else print)
     if a.print_prompt:
         print(mind.system)
         return 0

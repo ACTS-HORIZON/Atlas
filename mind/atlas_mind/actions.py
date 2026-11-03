@@ -8,6 +8,7 @@
 {"thinking": "...", "action": "done", "closes": "t1"}                         # finish t1 without chat
 {"thinking": "...", "action": "wait"}
 {"thinking": "...", "action": "plan", "about": "t1", "steps": [{"verb": "craft", "args": {...}}, ...]}  # up to 6 calls
+{"thinking": "...", "action": "lookup", "query": "iron ore y level", "about": "t1"}  # the wiki; answer next turn
 
 "about" ties an action to a task; "closes" finishes one; "standing": true
 marks the task it is about as standing (re-planned until stopped).
@@ -17,7 +18,7 @@ from __future__ import annotations
 
 import json
 
-ACTIONS = ("call", "say", "ask_player", "note", "done", "wait", "plan")
+ACTIONS = ("call", "say", "ask_player", "note", "done", "wait", "plan", "lookup")
 MAX_PLAN = 6
 
 
@@ -118,6 +119,11 @@ def validate(obj: dict, verbs: set[str] | None = None) -> dict:
                 raise ActionError(f'plan step {i}: "args" must be an object')
             norm.append({"verb": st["verb"], "args": args})
         out["steps"] = norm
+    elif a == "lookup":
+        q = obj.get("query")
+        if not isinstance(q, str) or not q.strip():
+            raise ActionError('"lookup" needs "query": what to look up on the Minecraft wiki')
+        out["query"] = " ".join(q.split())[:200]
     elif a == "ask_player":
         player, text = obj.get("player"), obj.get("text")
         if not isinstance(player, str) or not player or not isinstance(text, str) or not text.strip():

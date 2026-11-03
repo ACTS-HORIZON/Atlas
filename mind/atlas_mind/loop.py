@@ -3,10 +3,13 @@
 1. Wake on a long-verb result, an event (task_from_chat, player_said, stop…),
    or the idle timer.
 2. Build the context: tasks (with their state and what the bot already said),
-   the latest obs (compact), recent calls / results / events, notes.
+   the latest obs (compact), recent calls / results / events, notes, and
+   KNOWLEDGE: wiki excerpts retrieved for the open tasks, the last failure
+   and the current verb target (top 3, <= 600 tokens; trace kind "rag").
 3. Ask the model for exactly one action: call, say, ask_player, note, done,
-   wait, or a plan (up to 6 calls). Its "thinking" goes to the body as a
-   trace (kind "decision") first.
+   wait, lookup, or a plan (up to 6 calls). Its "thinking" goes to the body
+   as a trace (kind "decision") first. A lookup searches the wiki; the
+   answer is shown as LOOKUP in the next turn, which follows at once.
 
 Plans: the steps run one at a time without asking the model again. The
 mind thinks again only when a step's result isn't "done", an event arrives
@@ -32,7 +35,8 @@ Guards that don't rely on the model:
 - after a turn that only talked while a task is open, one follow-up turn
   carries on (at most 3 in a row without new input);
 - after an unusable decision the next idle tick runs a turn even if nothing
-  changed (up to 3 retries, then it waits for a change and says so).
+  changed (up to 3 retries, then it waits for a change and says so);
+- at most 2 lookups in a row, and never the same query twice in a row.
 """
 from __future__ import annotations
 
@@ -43,7 +47,7 @@ import re
 import time
 from collections import deque
 
-from . import CONTRACT_VERSION
+from . import CONTRACT_VERSION, wiki
 from .actions import ActionError, parse
 from .config import Config
 from .llm import LLMError
@@ -56,6 +60,9 @@ V = CONTRACT_VERSION
 QUIET_VERBS = {"say", "recall", "stop"}  # their results don't wake a turn
 MAX_FOLLOW_UPS = 3
 MAX_ERROR_RETRIES = 3
+MAX_LOOKUPS_IN_ROW = 2
+LOOKUP_TURNS = 3  # a lookup's answer stays in the context this many turns
+NOISE_RE = re.compile(r"\[[^\]]*\]|-?\b\d+(\.\d+)?\b|\bm\d+\b")  # coordinates, numbers, call ids
 SAY_REPEAT_WINDOW_S = 60  # a say matching one of the last 3 says within this window is dropped
 STUCK_RE = re.compile(r"\b(stuck|gave up)\b")
 
@@ -106,7 +113,7 @@ def default_log(*a):
 
 
 class Mind:
-    def __init__(self, cfg: Config, llm, *, log=default_log):
+    def __init__(self, cfg: Config, llm, *, log=default_log, retriever=None):
         self.cfg = cfg
         self.llm = llm
         self.log = log
@@ -139,6 +146,13 @@ class Mind:
         self.reasoning_turns = 0
         self.says: deque = deque(maxlen=3)  # (normalised text, time) of the last says sent
         self.stalls: dict[str, int] = {}  # target -> stuck / gave-up results toward it
+        self.retriever = retriever if retriever is not None else wiki.load_retriever(cfg.wiki_index)
+        if self.retriever is None:
+            self.log(f"[mind] no wiki index at {cfg.wiki_index}: no KNOWLEDGE (see README, Wiki knowledge)")
+        self.last_failure: str | None = None  # detail of the latest failed result (until a verb succeeds)
+        self.last_target: str | None = None  # what the latest verb call was after (block, item, player…)
+        self.lookup: dict | None = None  # {"query", "text", "titles", "turns"}: shown as LOOKUP
+        self.lookups_in_row = 0
 
     # ---- link -----------------------------------------------------------------
     async def send(self, msg: dict) -> None:
@@ -178,6 +192,9 @@ class Mind:
                     self.stalls.pop(key, None)
             if failed and m["detail"] != "busy":
                 self.last_failed = (call["verb"], canon(call.get("args")), m["detail"])
+                self.last_failure = m["detail"]
+            elif m["status"] == "done" and call["verb"] not in QUIET_VERBS:
+                self.last_failure = None
             if self.plan is not None and m["id"] == self.plan.get("cid"):
                 self.plan_step_done(call, m)
                 return
@@ -256,7 +273,55 @@ class Mind:
         return self.dirty or self.tasks.version != self.turn_tasks or fingerprint(self.obs) != self.turn_fp
 
     # ---- thinking -------------------------------------------------------------
-    def messages(self, wake: str) -> list[dict]:
+    # ---- knowledge --------------------------------------------------------------
+    def rag_query(self) -> str:
+        """What to retrieve for: the open tasks' text, the last failure, the current verb target."""
+        tasks = self.tasks.working() or self.tasks.open()
+        parts = [t.text for t in tasks[-2:]]
+        if self.last_failure:
+            parts.append(self.last_failure)
+        if self.last_target:
+            parts.append(self.last_target)
+        q = NOISE_RE.sub(" ", " ".join(parts)).replace("@" + self.cfg.bot_name, " ")
+        return " ".join(q.split())[:400]
+
+    def retrieve(self, query: str, budget: int, exclude=()) -> tuple[str, list[str]]:
+        """(rendered excerpts, chunk titles) for a query, within a token budget."""
+        if self.retriever is None or not query:
+            return "", []
+        hits = [h for h in self.retriever.search(query, self.cfg.rag_k + len(exclude)) if h.id not in exclude][: self.cfg.rag_k]
+        pairs = wiki.excerpts(hits, query, budget)
+        return wiki.render(pairs), [h.title for h, _ in pairs]
+
+    async def knowledge(self) -> str:
+        """This turn's KNOWLEDGE (and LOOKUP) blocks; a rag trace when there is knowledge."""
+        out, shown = "", ()
+        if self.lookup and self.lookup["turns"] > 0:
+            self.lookup["turns"] -= 1
+            shown = self.lookup["ids"]  # not repeated under KNOWLEDGE
+            out += f'LOOKUP "{self.lookup["query"]}" (from the wiki; use it over your memory)\n{self.lookup["text"]}\n\n'
+        q = self.rag_query()
+        text, titles = self.retrieve(q, self.cfg.rag_tokens, exclude=shown)
+        if text:
+            out += f"KNOWLEDGE (Minecraft wiki excerpts for what you're doing; use them over your memory)\n{text}\n"
+            await self.send({"type": "trace", "v": V, "t": (self.obs or {}).get("t", 0), "kind": "rag", "text": q,
+                             "data": {"query": q, "titles": titles, "tokens": wiki.tokens(text), "lookup": False}})
+        return out
+
+    async def do_lookup(self, a: dict) -> None:
+        q = a["query"]
+        if self.retriever is None:
+            text, titles, ids = "(no wiki index on this machine: rely on what you know)", [], []
+        else:
+            hits = self.retriever.search(q, self.cfg.rag_k)
+            pairs = wiki.excerpts(hits, q, self.cfg.lookup_tokens)
+            text, titles, ids = (wiki.render(pairs) or "(nothing found)"), [h.title for h, _ in pairs], [h.id for h, _ in pairs]
+        self.lookup = {"query": q, "text": text, "titles": titles, "ids": ids, "turns": LOOKUP_TURNS}
+        self.recent.append(f'you looked up "{q}": ' + ("; ".join(titles) if titles else "nothing found"))
+        await self.send({"type": "trace", "v": V, "t": (self.obs or {}).get("t", 0), "kind": "rag", "text": q,
+                         "data": {"query": q, "titles": titles, "tokens": wiki.tokens(text), "lookup": True}})
+
+    def messages(self, wake: str, knowledge: str = "") -> list[dict]:
         extra = ""
         if self.asking:
             extra = f"\nWAITING for {self.asking['player']} to answer: {self.asking['text']}\n"
@@ -266,7 +331,7 @@ class Mind:
             if n >= 2:
                 extra += (f"\nROUTE: the direct route to {key} is blocked ({n} stuck attempts); try digging down/around, "
                           "explore in another direction, or ask the player to come closer\n")
-        user = context(self.tasks.render(), render_obs(self.obs), list(self.recent), self.notes.render(), wake, extra)
+        user = context(self.tasks.render(), render_obs(self.obs), list(self.recent), self.notes.render(), wake, extra, knowledge)
         return [{"role": "system", "content": self.system}, {"role": "user", "content": user}]
 
     def resolve_task_ref(self, value: str):
@@ -335,6 +400,11 @@ class Mind:
                               f'or finish it with a say that has "closes": "{t.id}".')
         if t and a["action"] == "call" and a["verb"] not in QUIET_VERBS and t.state == "new":
             raise ActionError(f"{t.id} is new: confirm it in chat first (a say with \"about\": \"{t.id}\"), then start it.")
+        if a["action"] == "lookup":
+            if self.lookups_in_row >= MAX_LOOKUPS_IN_ROW:
+                raise ActionError(f"you already looked up {self.lookups_in_row} times in a row; act on what LOOKUP and KNOWLEDGE say.")
+            if self.lookup and self.lookups_in_row and a["query"].lower() == self.lookup["query"].lower():
+                raise ActionError(f'you just looked up "{a["query"]}"; the answer is under LOOKUP. Act on it.')
         if a["action"] == "plan":
             first = a["steps"][0]
             if self.last_failed and (first["verb"], canon(first["args"])) == self.last_failed[:2]:
@@ -350,7 +420,8 @@ class Mind:
         self.log(f"[llm] raw reply: {str(raw)[:500]!r}")
 
     async def decide(self, wake: str) -> dict:
-        msgs = self.messages(wake)
+        msgs = self.messages(wake, await self.knowledge())
+        self.last_prompt = msgs
         self.replies = []
         try:
             raw = await self.llm.complete(msgs)
@@ -379,7 +450,7 @@ class Mind:
     async def act(self, a: dict) -> None:
         self.decisions.append(a)
         t = (self.obs or {}).get("t", 0)
-        summary = {k: a[k] for k in ("action", "verb", "args", "text", "player", "about", "closes", "standing", "steps") if k in a}
+        summary = {k: a[k] for k in ("action", "verb", "args", "text", "player", "about", "closes", "standing", "steps", "query") if k in a}
         reasoning = " / ".join(r.reasoning for r in self.replies if getattr(r, "reasoning", ""))
         if reasoning:  # native thinking: never invisible
             summary["reasoning"] = reasoning[:800] + ("…" if len(reasoning) > 800 else "")
@@ -412,6 +483,8 @@ class Mind:
             if task:
                 self.tasks.close(task)
             self.recent.append(f"you closed {a['closes']}")
+        elif kind == "lookup":
+            await self.do_lookup(a)
         elif kind == "note":
             self.notes.append(a["text"])
             self.recent.append(f"you noted: {a['text']}")
@@ -436,6 +509,10 @@ class Mind:
                 self.recent.append(f'you did not repeat yourself: "{args["text"]}" was already said')
                 return None
             self.says.append((norm_say(args["text"]), self.now()))
+        if verb not in QUIET_VERBS:
+            a = args or {}
+            tgt = a.get("block") or a.get("item") or a.get("target") or a.get("player")
+            self.last_target = f"{verb} {tgt}".replace("_", " ") if isinstance(tgt, str) else verb
         self._n += 1
         cid = f"m{self._n}"
         msg = {"type": "call", "v": V, "id": cid, "verb": verb, "args": args}
@@ -472,7 +549,11 @@ class Mind:
             self.error_streak = 0
             self.error_wait_logged = False
         await self.act(a)
+        self.lookups_in_row = self.lookups_in_row + 1 if a["action"] == "lookup" else 0
         self.turn_tasks = self.tasks.version  # what this turn did itself is not news
+        if a["action"] == "lookup":
+            self.wakes.put_nowait(f'your lookup "{a["query"]}" is answered under LOOKUP')
+            return
         # A turn that only talked (confirmed a task, reported, noted) while a
         # task is still open and no verb runs gets a follow-up turn to carry
         # on, at most MAX_FOLLOW_UPS in a row before it needs real input.

@@ -35,10 +35,9 @@ async def replay(mind: Mind, files: list[str], every: int = 15, limit: int = 10,
             while not mind.wakes.empty():
                 reasons.append(mind.wakes.get_nowait())
             reason = "; ".join(reasons) or "idle"
-            msgs = mind.messages(reason)
-            if show_prompt:
-                out("=" * 72 + "\n" + msgs[1]["content"])
             a = await mind.decide(reason)
+            if show_prompt:
+                out("=" * 72 + "\n" + mind.last_prompt[1]["content"])
             out(f"--- {e.get('ts', '')} woke: {reason}\n{json.dumps(a, indent=2)}")
             decided += 1
             if decided >= limit:

@@ -46,6 +46,10 @@ class Config:
     notes_max_lines: int = 80
     verb_reference: Path = field(default_factory=lambda: ROOT / "docs" / "verbs.md")
     players: list[str] = field(default_factory=list)
+    wiki_index: Path = field(default_factory=lambda: ROOT / "data" / "wiki" / "index.json")
+    rag_k: int = 3
+    rag_tokens: int = 600
+    lookup_tokens: int = 900
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Config":
@@ -74,4 +78,8 @@ class Config:
             notes_max_lines=int(g("ATLAS_NOTES_MAX_LINES", cls.notes_max_lines)),
             verb_reference=path("ATLAS_VERB_REFERENCE", "docs/verbs.md"),
             players=[p.strip() for p in g("ATLAS_PLAYERS", "").split(",") if p.strip()],
+            wiki_index=path("ATLAS_WIKI_INDEX", "data/wiki/index.json"),
+            rag_k=int(g("ATLAS_RAG_K", cls.rag_k)),
+            rag_tokens=int(g("ATLAS_RAG_TOKENS", cls.rag_tokens)),
+            lookup_tokens=int(g("ATLAS_LOOKUP_TOKENS", cls.lookup_tokens)),
         )
