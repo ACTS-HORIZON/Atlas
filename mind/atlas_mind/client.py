@@ -13,7 +13,7 @@ Prints every message from the body. Type:
     collect <item>          pick up visible drops of that item
     craft <item> [n]        craft (2x2, or at a crafting table it has seen)
     smelt <item> [n] [fuel] smelt in a furnace it has seen (item: what to make or what to put in)
-    place <block> <x> <y> <z>   place a block next to Atlas
+    place <block> [x y z]   place a block (without x y z: on a free spot next to Atlas)
     equip <item> [slot]     hand, off-hand, head, torso, legs, feet
     dig <x> <y> <z>         dig one observed block
     eat [item]              eat (best food if none named)
@@ -41,7 +41,7 @@ from . import CONTRACT_VERSION
 from .pretty import format_message
 
 HELP = ("commands: say <text> | stop | recall <type> [x y z] | goto <x y z | target> | explore <dir> <n> |"
-        " mine <block> <n> [radius] [y=<level>] | collect <item> | craft <item> [n] | smelt <item> [n] [fuel] | place <block> <x y z> | equip <item> [slot] |"
+        " mine <block> <n> [radius] [y=<level>] | collect <item> | craft <item> [n] | smelt <item> [n] [fuel] | place <block> [x y z] | equip <item> [slot] |"
         " dig <x y z> | eat [item] | give <item> <n> <player> | deposit|withdraw <item> <x y z> [n] |"
         " trace [kind] <text> | obs | quit")
 DIRECTIONS = ("north", "south", "east", "west", "north-east", "north-west", "south-east", "south-west", "forward")
@@ -101,9 +101,11 @@ def parse_command(line: str, next_id, now_t=lambda: 0) -> dict | None | str:
             return "usage: craft <item> [count]"
         return call("craft", {"item": parts[0], **({"count": int(parts[1])} if len(parts) == 2 else {})})
     if cmd == "place":
+        if len(parts) == 1:
+            return call("place", {"block": parts[0]})
         pos = ints(parts[1:]) if len(parts) == 4 else None
         if not pos:
-            return "usage: place <block> <x> <y> <z>"
+            return "usage: place <block> [<x> <y> <z>]"
         return call("place", {"block": parts[0], "pos": pos})
     if cmd == "equip":
         if len(parts) not in (1, 2):

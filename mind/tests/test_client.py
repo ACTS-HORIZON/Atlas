@@ -36,6 +36,7 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(parse_command("smelt iron_ingot 8", nid)["args"], {"item": "iron_ingot", "count": 8})
         self.assertEqual(parse_command("smelt raw_iron 3 oak_planks", nid)["args"], {"item": "raw_iron", "count": 3, "fuel": "oak_planks"})
         self.assertEqual(parse_command("smelt glass", nid)["args"], {"item": "glass"})
+        self.assertEqual(parse_command("place furnace", nid)["args"], {"block": "furnace"})
         self.assertTrue(parse_command("smelt iron_ingot lots", nid).startswith("usage"))
         self.assertEqual(parse_command("collect oak_log", nid)["args"], {"item": "oak_log"})
         self.assertTrue(parse_command("collect", nid).startswith("usage"))

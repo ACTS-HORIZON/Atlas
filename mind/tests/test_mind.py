@@ -67,8 +67,8 @@ class FakeBody:
             msg["data"] = data
         await self.ws.send(json.dumps(msg))
 
-    async def event(self, kind, detail):
-        await self.ws.send(json.dumps({"type": "event", "v": "0.1", "kind": kind, "detail": detail, "obs": make_obs()}))
+    async def event(self, kind, detail, obs=None):
+        await self.ws.send(json.dumps({"type": "event", "v": "0.1", "kind": kind, "detail": detail, "obs": obs or make_obs()}))
 
     def calls(self):
         return [m for m in self.received if m["type"] == "call"]
@@ -155,27 +155,90 @@ class MindTest(MindHarness, unittest.IsolatedAsyncioTestCase):
         self.assertIn("FAILED RECENTLY (don't repeat): ", self.prompt_text(2))
         self.assertIn('mine {"block":"iron_ore","count":3} -> mine: iron_ore needs one of', self.prompt_text(2))
 
+    def running_task(self, text="get iron"):
+        t = self.mind.tasks.add("ACTS_HORIZON", text)
+        t.state = "running"
+        return t
+
     async def test_a_failed_call_is_refused_for_the_next_10_recent_lines_not_only_right_after(self):
         await self.start([
             {"thinking": "Go.", "action": "call", "verb": "goto", "args": {"pos": [9, 64, 9]}},
             {"thinking": "Look elsewhere.", "action": "call", "verb": "recall", "args": {"type": "iron_ore"}},
             {"thinking": "Walk a bit.", "action": "call", "verb": "explore", "args": {"direction": "north", "distance": 16}},
-            {"thinking": "Plan it.", "action": "plan", "steps": [{"verb": "craft", "args": {"item": "stick"}}, {"verb": "goto", "args": {"pos": [9, 64, 9]}}]},
             {"thinking": "Back to the spot.", "action": "call", "verb": "goto", "args": {"pos": [9, 64, 9]}},
+            {"thinking": "Plan it: sticks, then the spot.", "action": "plan", "steps": [{"verb": "craft", "args": {"item": "stick"}}, {"verb": "goto", "args": {"pos": [9, 64, 9]}}]},
+            {"thinking": "Plan starting with the failed goto.", "action": "plan", "steps": [{"verb": "goto", "args": {"pos": [9, 64, 9]}}, {"verb": "craft", "args": {"item": "stick"}}]},
             {"thinking": "Mine instead.", "action": "call", "verb": "mine", "args": {"block": "stone"}},
         ], respond=lambda c: ("partial", STUCK, None) if c["verb"] == "goto" else ("done", "ok", None))
+        self.running_task()
         logs = []
         self.mind.log = logs.append
         self.mind.wake("go")
-        await until(lambda: len(self.body.calls()) >= 4)
-        self.assertEqual([c["verb"] for c in self.body.calls()[:4]], ["goto", "recall", "explore", "mine"],
-                         "the stuck goto was refused two calls later, and as a later plan step")
-        self.assertIn('plan step 2 (goto {"pos":[9,64,9]}) failed recently', self.llm.prompts[4][-1]["content"])
+        await until(lambda: len(self.body.calls()) >= 6)
+        self.assertEqual([c["verb"] for c in self.body.calls()[:6]], ["goto", "recall", "explore", "craft", "goto", "mine"],
+                         "the single goto two calls later was refused; a plan whose LATER step is that goto ran (step 2 failed again); "
+                         "a plan STARTING with it was refused")
         self.assertTrue(any('that exact call (goto {"pos":[9,64,9]}) failed recently' in str(x) for x in logs))
+        self.assertTrue(any('plan step 1 (goto {"pos":[9,64,9]}) failed recently' in str(x) for x in logs))
         # 10 RECENT lines later it may be tried again
-        f = self.mind.failures[0]
+        f = self.mind.failures[-1]
         self.mind.recent.n = f["at"] + 10
         self.assertIsNone(self.mind.failed_recently("goto", {"pos": [9, 64, 9]}))
+
+    async def test_a_verb_name_as_the_action_is_a_call(self):
+        await self.start([
+            {"thinking": "Planks.", "action": "craft", "args": {"item": "oak_planks", "count": 4}},
+            {"thinking": "Sticks, args inline.", "action": "craft", "item": "stick", "count": 4},
+            {"thinking": "w", "action": "wait"},
+        ])
+        self.running_task("make sticks")
+        self.mind.wake("go")
+        await until(lambda: len(self.body.calls()) >= 2)
+        self.assertEqual([(c["verb"], c["args"]) for c in self.body.calls()[:2]],
+                         [("craft", {"item": "oak_planks", "count": 4}), ("craft", {"item": "stick", "count": 4})])
+        self.assertEqual(self.mind.decisions[0]["action"], "call")
+
+    async def test_idle_means_idle(self):
+        await self.start([
+            {"thinking": "Nothing to do; look around.", "action": "call", "verb": "explore", "args": {"direction": "north", "distance": 32}},
+            {"thinking": "Then mine.", "action": "plan", "steps": [{"verb": "mine", "args": {"block": "stone"}}]},
+            {"thinking": "Fine.", "action": "wait"},
+            {"thinking": "Hungry.", "action": "call", "verb": "eat", "args": {}},
+            {"thinking": "w", "action": "wait"},
+        ])
+        await self.body.ws.send(json.dumps(make_obs(t=150, pos=[9.5, 64, 9.5])))  # the world changes
+        await until(lambda: len(self.llm.prompts) >= 3)
+        self.assertEqual(self.body.calls(), [], "no explore, no mine with no open task")
+        self.assertIn("no open task, so you are idle: explore is not allowed", self.llm.prompts[1][-1]["content"])
+        self.assertIn("Idle means idle", self.llm.prompts[0][0]["content"])
+        await self.body.ws.send(json.dumps(make_obs(t=200, pos=[20.5, 64, 9.5])))
+        await until(lambda: len(self.body.calls()) >= 1)
+        self.assertEqual(self.body.calls()[0]["verb"], "eat", "eating is allowed")
+        m = self.mind  # goto only to get away, when hurt
+        m.obs["self"]["health"] = 4
+        self.assertTrue(m.idle_allows({"action": "call", "verb": "goto", "args": {"pos": [0, 64, 0]}}))
+        m.obs["self"]["health"] = 20
+        self.assertFalse(m.idle_allows({"action": "call", "verb": "goto", "args": {"pos": [0, 64, 0]}}))
+
+    async def test_a_delivered_request_in_obs_chat_is_not_shown_again(self):
+        await self.start([
+            {"thinking": "Confirm.", "action": "say", "text": "On it: an iron pickaxe.", "about": "t1"},
+            {"thinking": "Done.", "action": "say", "text": "Here you go.", "closes": "t1"},
+            {"thinking": "Nothing to do.", "action": "wait"},
+            {"thinking": "w", "action": "wait"},
+        ])
+        line = {"from": "Rook", "text": "@Atlas get me an iron pickaxe", "t": 300}
+        await self.body.event("task_from_chat", {"from": "Rook", "text": "get me an iron pickaxe"}, obs=make_obs(t=310, chat=[line]))
+        await until(lambda: len(self.llm.prompts) >= 1)
+        self.assertIn("chat <Rook> @Atlas get me an iron pickaxe (-> t1 new)", self.prompt_text(0))
+        await until(lambda: self.mind.tasks.get("t1").state == "done" and not self.mind.pending)
+        await self.body.ws.send(json.dumps(make_obs(t=400, chat=[line], pos=[9.5, 64, 9.5])))  # still in the buffer, world changed
+        await until(lambda: len(self.llm.prompts) >= 3)
+        later = self.llm.prompts[-1][-1]["content"]
+        self.assertNotIn("get me an iron pickaxe", later.split("TASKS")[1].split("RECENT")[0].replace("t1 [done] from Rook: get me an iron pickaxe", ""),
+                         "the delivered request is not in the observation's chat")
+        self.assertEqual(len(self.mind.tasks.tasks), 1, "no new task")
+        self.assertEqual([c["args"]["text"] for c in self.body.calls() if c["verb"] == "say"], ["On it: an iron pickaxe.", "Here you go."], "no second confirm")
 
     async def test_hints_expire_after_5_turns_or_when_the_target_changes(self):
         await self.start([{"thinking": "w", "action": "wait"}])

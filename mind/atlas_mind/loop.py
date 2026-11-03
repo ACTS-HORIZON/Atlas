@@ -66,6 +66,7 @@ from .tasks import OPEN, TaskList, fine_key, one_line, place_cell
 V = CONTRACT_VERSION
 QUIET_VERBS = {"say", "recall", "stop"}  # their results don't wake a turn
 MAX_FOLLOW_UPS = 3
+IDLE_VERBS = {"eat", "say", "stop"}  # calls allowed with no open task (plus goto when health is low)
 MAX_ERROR_RETRIES = 3
 MAX_LOOKUPS_IN_ROW = 2
 HINT_TURNS = 5  # LOOKUP and other hints expire after this many turns (stall hints also when the target changes)
@@ -86,6 +87,12 @@ class Recent(deque):
 NOISE_RE = re.compile(r"\[[^\]]*\]|-?\b\d+(\.\d+)?\b|\bm\d+\b")  # coordinates, numbers, call ids
 SAY_REPEAT_WINDOW_S = 60  # a say matching one of the last 3 says within this window is dropped
 STUCK_RE = re.compile(r"\b(stuck|gave up)\b")  # a partial with this in its detail counts as failed
+
+
+def norm_request(text: str) -> str:
+    """A request without its "@Name" prefix, lower case, single spaces."""
+    t = re.sub(r"^\s*@\w+[\s,:]*", "", str(text))
+    return " ".join(t.lower().split())
 
 
 def norm_say(text: str) -> str:
@@ -300,9 +307,27 @@ class Mind:
         lines are not tasks: tasks come only from task_from_chat events
         received on this connection."""
         o = self.obs
-        if not o or self.connect_t is None or not o.get("chat"):
+        if not o or not o.get("chat"):
             return o
-        return {**o, "chat": [c for c in o["chat"] if (c.get("t") or 0) > self.connect_t]}
+        chat = []
+        for c in o["chat"]:
+            if self.connect_t is not None and (c.get("t") or 0) <= self.connect_t:
+                continue
+            t = self.task_of_chat(c)
+            if t and t.state in ("done", "stopped"):
+                continue  # a delivered request: never shown as something to do again
+            chat.append({**c, "text": f"{c.get('text', '')} (-> {t.id} {t.state})"} if t else c)
+        return {**o, "chat": chat}
+
+    def task_of_chat(self, c: dict):
+        """The task a chat line became (same player, same request), or None."""
+        text = norm_request(c.get("text", ""))
+        if not text:
+            return None
+        for t in reversed(self.tasks.tasks):
+            if t.by == c.get("from") and norm_request(t.text) == text:
+                return t
+        return None
 
     def changed_since_turn(self) -> bool:
         return self.dirty or self.tasks.version != self.turn_tasks or fingerprint(self.obs) != self.turn_fp
@@ -440,9 +465,29 @@ class Mind:
         working = self.tasks.working()
         return working[0] if len(working) == 1 and a["action"] in ("call", "plan", "ask_player") else None
 
+    def idle_allows(self, a: dict) -> bool:
+        """With no open task: say, note, wait, lookup, eat (and stop), and goto away when health is low."""
+        def call_ok(verb: str) -> bool:
+            if verb in IDLE_VERBS:
+                return True
+            h = ((self.obs or {}).get("self") or {}).get("health")
+            return verb == "goto" and isinstance(h, (int, float)) and h < self.cfg.retreat_health
+        if a["action"] in ("say", "note", "wait", "lookup"):  # lookup reads the wiki, it doesn't act
+            return True
+        if a["action"] == "call":
+            return call_ok(a["verb"])
+        if a["action"] == "plan":
+            return all(call_ok(st["verb"]) for st in a["steps"])
+        return False
+
     def check(self, raw: str) -> dict:
         a = parse(raw, self.verbs)
         self.resolve_refs(a)
+        if not self.tasks.open() and not self.idle_allows(a):
+            what = a.get("verb") or a["action"]
+            raise ActionError(f"no open task, so you are idle: {what} is not allowed. Idle allows say, note, wait and eat "
+                              f"(and goto away from danger when health is below {self.cfg.retreat_health:g}). Work comes from players "
+                              "(@-tasks); a standing task is how a player keeps you doing something. Reply with wait.")
         if a["action"] == "call" and (f := self.failed_recently(a["verb"], a["args"])):
             raise ActionError(f"that exact call ({a['verb']} {canon(a['args'])}) failed recently: {f['detail']}. "
                               "Don't repeat it: choose a different action that deals with the reason.")
@@ -469,11 +514,12 @@ class Mind:
                 raise ActionError(f'you just looked up "{a["query"]}"; the answer is under LOOKUP. Act on it.')
         if a["action"] == "plan":
             first = a["steps"][0]
-            for i, st in enumerate(a["steps"], 1):
-                f = self.failed_recently(st["verb"], st["args"])
-                if f:
-                    raise ActionError(f"plan step {i} ({st['verb']} {canon(st['args'])}) failed recently: {f['detail']}. "
-                                      "Plan around the reason instead: a different verb, target or method.")
+            # only the first step: later steps may come after steps that fix their cause
+            # (craft planks -> craft wooden_pickaxe); if still wrong they simply fail
+            f = self.failed_recently(first["verb"], first["args"])
+            if f:
+                raise ActionError(f"plan step 1 ({first['verb']} {canon(first['args'])}) failed recently: {f['detail']}. "
+                                  "Plan around the reason instead: a different verb, target or method.")
             if t and t.last_failed == fine_key(first["verb"], first["args"]):
                 raise ActionError(f"the plan starts with the call that just failed for {t.id} ({first['verb']}). "
                                   "Plan around the reason instead: a different verb, target or method.")

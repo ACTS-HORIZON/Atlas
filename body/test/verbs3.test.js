@@ -247,3 +247,18 @@ test('craft: a missing tag ingredient is "any kind", with what the inventory mak
   const r = await run('craft', s.act, { item: 'stick', count: 4 })
   assert.deepEqual(r, { status: 'failed', detail: 'craft: missing 2 planks (any kind) for 4 stick — you have spruce_log 3: craft spruce_planks' })
 })
+
+test('place without pos: the nearest free, visible spot next to the bot, skipping occupied sides', async () => {
+  const w = world().set(0, 10, -1, 'stone').set(1, 10, 0, 'oak_log') // north and east taken at feet level
+  const s = setup(w, { inv: { furnace: 1 } })
+  const r = await run('place', s.act, { block: 'furnace' })
+  assert.deepEqual(r, { status: 'done', detail: 'placed furnace at [0, 10, 1]', data: { block: 'furnace', pos: [0, 10, 1] } })
+  assert.equal(s.motor.calls.filter(c => c[0] === 'place').length, 1, 'no failed attempts on occupied spots')
+  assert.equal(w.get(0, 10, 1), 'furnace')
+
+  const boxed = world()
+  for (const [x, z] of [[0, -1], [1, 0], [0, 1], [-1, 0]]) boxed.set(x, 10, z, 'stone').set(x, 11, z, 'stone')
+  const b = setup(boxed, { inv: { furnace: 1 } })
+  assert.deepEqual(await run('place', b.act, { block: 'furnace' }), { status: 'failed', detail: 'place: no free spot next to Atlas for furnace (every side is occupied or not visible)' })
+  assert.deepEqual(await run('place', b.act, { block: 'crafting_table' }), { status: 'failed', detail: 'place: no crafting_table in inventory' })
+})

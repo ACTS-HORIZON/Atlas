@@ -83,6 +83,13 @@ def extract_json(text: str) -> dict:
 def validate(obj: dict, verbs: set[str] | None = None) -> dict:
     """Check the shape; returns a normalised action dict or raises ActionError."""
     a = obj.get("action")
+    if a not in ACTIONS and verbs is not None and isinstance(a, str) and a in verbs:
+        # {"action": "craft", "args": {...}} (or the args inline): a call to that verb
+        args = obj.get("args")
+        if not isinstance(args, dict):
+            args = {k: v for k, v in obj.items() if k not in ("thinking", "action", "verb", "args", "about", "closes", "standing")}
+        obj = {**obj, "action": "call", "verb": a, "args": args}
+        a = "call"
     if a not in ACTIONS:
         raise ActionError(f'"action" must be one of {", ".join(ACTIONS)}')
     thinking = obj.get("thinking")

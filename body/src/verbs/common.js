@@ -55,7 +55,7 @@ const SCHEMAS = {
   },
   place: {
     type: 'object',
-    required: ['block', 'pos'],
+    required: ['block'],
     additionalProperties: false,
     properties: { block: { type: 'string', minLength: 1 }, pos: { type: 'array', items: { type: 'integer' }, minItems: 3, maxItems: 3 } }
   },

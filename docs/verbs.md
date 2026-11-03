@@ -143,8 +143,9 @@ Walks onto visible drops of `item` until none are left in sight. This is how it 
     - `craft: could not reach the crafting_table at …`
     - `craft: unknown item <x>`
 
-### place {block, pos}
+### place {block, pos?}
 Places an inventory block at `pos`, which must be an empty cell (air, water, grass, …) that the bot can see and reach from where it stands (4.5 blocks), with a solid neighbour to place against. It does not walk; `goto` first.
+- **Without `pos`:** it picks the spot itself: the nearest free, visible cell next to the bot, the four sides at feet level standing on solid ground first, then the others, then head level. Occupied or unseen sides are skipped without trying. Use this for a crafting table or furnace "here". If no side is free: `place: no free spot next to Atlas for <block> (…)`.
 - **Results:**
   - `done`: `placed <block> at [x, y, z]`, `data: {block, pos}`
   - `failed`: `place: no <block> in inventory`; `[x, y, z] is out of reach (<d> blocks, max 4.5); goto closer first`; `is not empty (<block>)`; `is where Atlas is standing`; `is not visible from here`; `nothing solid next to [x, y, z] to place against`; `cannot place blocks in adventure mode`
