@@ -78,6 +78,17 @@ class KnownPlaces {
     return { type: best.type, pos: [...best.pos], dist: r1(bd), age: Math.max(0, Math.trunc(now - best.t)) }
   }
 
+  /** Entries in `dim` within `radius` blocks of pos horizontally (the dashboard map), as {type, pos, t}; at most max, nearest first. */
+  around (pos, dim, radius, max = 2000) {
+    const out = []
+    for (const e of this.map.values()) {
+      if (e.dim !== dim) continue
+      const d = Math.hypot(e.pos[0] + 0.5 - pos[0], e.pos[2] + 0.5 - pos[2])
+      if (d <= radius) out.push({ type: e.type, pos: [...e.pos], t: e.t, d })
+    }
+    return out.sort((a, b) => a.d - b.d).slice(0, max).map(({ d, ...e }) => e)
+  }
+
   /** The n entries in `dim` nearest to pos, as {type, pos, dist, t}. */
   nearest (pos, dim, n = 10) {
     const out = []

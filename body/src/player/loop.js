@@ -68,7 +68,8 @@ class PlayerLoop {
     this.resumeTicks = resumeTicks
     this.maxPauseMs = maxPauseMs
     this.obsMaxAgeMs = obsMaxAgeMs
-    this.last = [] // the last 10 ticks, for the dashboard
+    this.last = [] // the last 20 ticks, for the dashboard
+    this.series = [] // the last 60 s of ticks: {t, ms, mode, timed_out}, for the dashboard's sparkline
     this.obsCache = { at: 0, obs: null }
   }
 
@@ -173,7 +174,10 @@ class PlayerLoop {
     }
     this.log.write(rec)
     this.last.push({ t: Date.now(), mode, offered, chosen: decided ? c.choice : `(${c.timedOut ? 'timeout' : 'error'})`, confidence: c.confidence ?? null, latency_ms: r1(c.latency), effect })
-    if (this.last.length > 10) this.last.shift()
+    if (this.last.length > 20) this.last.shift()
+    const now = Date.now()
+    this.series.push({ t: now, ms: r1(c.latency), mode, timed_out: !!c.timedOut })
+    while (this.series.length && now - this.series[0].t > 60000) this.series.shift()
     return { ...rec, decided, end: res.end }
   }
 

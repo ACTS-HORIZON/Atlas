@@ -716,8 +716,14 @@ class Mind:
         reasoning = " / ".join(r.reasoning for r in self.replies if getattr(r, "reasoning", ""))
         if reasoning:  # native thinking: never invisible
             summary["reasoning"] = reasoning[:800] + ("…" if len(reasoning) > 800 else "")
-        await self.send({"type": "trace", "v": V, "t": t, "kind": "decision", "text": a["thinking"], "data": summary})
         task = None if a.get("error") else self.task_for(a)
+        # for the dashboard's charts: this turn's completion tokens, and the task it was for
+        toks = [r.completion_tokens for r in self.replies if getattr(r, "completion_tokens", None) is not None]
+        if toks:
+            summary["tokens"] = sum(toks)
+        if task:
+            summary["task"] = task.id
+        await self.send({"type": "trace", "v": V, "t": t, "kind": "decision", "text": a["thinking"], "data": summary})
         if task and "standing" in a:
             self.tasks.set_standing(task, a["standing"])
         kind = a["action"]

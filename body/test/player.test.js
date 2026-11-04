@@ -121,7 +121,8 @@ test('scripted chooser: up a 20-block shaft by dig_above / place_below_and_jump 
   assert.equal(lines[0].chosen, 'dig_above')
   assert.equal(lines[0].effect, 'dug stone above')
   assert.equal(lines.at(-1).chosen, 'done')
-  assert.equal(loop.last.length, 10, 'the dashboard keeps the last 10')
+  assert.equal(loop.last.length, 20, 'the dashboard keeps the last 20')
+  assert.ok(loop.series.length >= 20 && loop.series.every(x => typeof x.ms === 'number' && x.mode === 'play'), 'the 60 s latency series')
 })
 
 test('scripted chooser: walk to a visible player -> done next to them', async () => {

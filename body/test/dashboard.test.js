@@ -181,19 +181,19 @@ test('damaged_badly: a drop of 4+ in one update, or any drop below 10 health; no
   mind.ws.close()
 })
 
-test('lessons: a lesson trace is a valid contract message and the dashboard has the notes & lessons panel', async (t) => {
+test('lessons: a lesson trace is a valid contract message, and the page puts notes and lessons in the feed', async (t) => {
   assert.equal(check('trace', { type: 'trace', v: '0.1', t: 5, kind: 'lesson', text: 'when a player is above me, goto surface first', data: {} }), null)
   const html = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'index.html'), 'utf8')
-  assert.match(html, /<h2>Notes &amp; lessons/)
   assert.match(html, /m\.kind === 'note' \|\| m\.kind === 'lesson'/)
+  assert.match(html, /'notes & lessons'/)
 })
 
-test('the Reflexes panel: /api/player says off without a decision model, and the page polls it', async (t) => {
+test('the player loop card: /api/player says off without a decision model, and the page polls it', async (t) => {
   const { dashUrl } = await startBody(t)
   const r = await fetch(dashUrl + '/api/player')
-  assert.deepEqual(await r.json(), { on: false, ticks: [] })
+  const p = await r.json()
+  assert.deepEqual([p.on, p.ticks, p.series], [false, [], []])
   const html = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'index.html'), 'utf8')
-  assert.match(html, /<h2>Reflexes <span class="n" id="player-n">/)
+  assert.match(html, /<h2>Player loop/)
   assert.match(html, /setInterval\(loadPlayer, 1000\)/)
-  assert.doesNotMatch(html, /Last choice and action probabilities from the d1 reflex loop will show here/)
 })

@@ -3,7 +3,9 @@
 //   GET  /                 the page
 //   WS   /tap              every link message, as-is ({ts, dir, logged, msg}),
 //                          replaying the recent ones on connect
-//   GET  /api/places       {count, nearest: [...]}
+//   GET  /api/places       {count, nearest: [...]}; ?radius=R adds around: every known place within R (the map)
+//   GET  /api/stats        {obs: {n, mean_ms, p50_ms, p95_ms, max_ms}, recent_ms: [...], last}: obs build time
+//   GET  /api/player       the player loop: last 20 ticks, the 60 s latency series, the budget
 //   GET  /api/verbs        [{name, kind: "built-in"|"live"}]
 //   GET  /api/verbs/<name> {name, kind, source}
 //   GET  /api/config       config as loaded, secrets masked
@@ -87,7 +89,8 @@ class Dashboard {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
       return res.end(html)
     }
-    if (p === '/api/places') return send(res, 200, this.api.places())
+    if (p === '/api/places') return send(res, 200, this.api.places({ radius: Number(url.searchParams.get('radius')) || null }))
+    if (p === '/api/stats') return send(res, 200, this.api.stats ? this.api.stats() : { obs: null, recent_ms: [], last: null })
     if (p === '/api/player') return send(res, 200, this.api.player ? this.api.player() : { on: false, ticks: [] })
     if (p === '/api/verbs') return send(res, 200, this.api.verbs())
     if (p.startsWith('/api/verbs/')) {

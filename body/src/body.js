@@ -23,6 +23,8 @@ const { DecisionClient } = require('./player/client')
 const { ImitationRecorder } = require('./player/imitation')
 const { BuildStats } = require('./stats')
 
+const r2 = v => Math.round(v * 100) / 100
+
 class Body {
   /** deps.createBot: injectable for tests (default mineflayer.createBot). */
   constructor (cfg, { createBot = mineflayer.createBot } = {}) {
@@ -80,13 +82,16 @@ class Body {
         port: bind.port,
         tap: this.tap,
         api: {
-          places: () => this.placesSummary(),
+          places: (q = {}) => this.placesSummary(q),
+          stats: () => this.statsSummary(),
           verbs: () => verbs.list(),
           verbSource: name => verbs.source(name),
           config: () => this.cfg,
           logTail: n => tailFile(this.log.path, n).map(l => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean),
           stop: () => this.dashboardStop(),
-          player: () => this.player ? { on: true, ticks: this.player.last, url: this.cfg.playerUrl, model: this.cfg.playerModel } : { on: false, ticks: [] }
+          player: () => this.player
+            ? { on: true, ticks: this.player.last, series: this.player.series, budget_ms: this.cfg.playerTimeoutMs, url: this.cfg.playerUrl, model: this.cfg.playerModel }
+            : { on: false, ticks: [], series: [], budget_ms: this.cfg.playerTimeoutMs ?? null }
         }
       })
     }
@@ -400,11 +405,25 @@ class Body {
   }
 
   /** Known places for the dashboard: count and the 10 nearest to the bot. */
-  placesSummary () {
+  /** radius: also every known place within that many blocks (the dashboard map, 32..256). */
+  placesSummary ({ radius = null } = {}) {
     const p = this.bot?.entity?.position
     const dim = this.bot?.game?.dimension
     const nearest = p && dim ? this.places.nearest([p.x, p.y, p.z], dim, 10) : []
-    return { count: this.places.size, dim: dim ?? null, nearest }
+    const out = { count: this.places.size, dim: dim ?? null, nearest }
+    if (radius) out.around = p && dim ? this.places.around([p.x, p.y, p.z], dim, Math.max(16, Math.min(256, radius))) : []
+    return out
+  }
+
+  /** The dashboard's /api/stats: obs build time (summary and the recent builds). */
+  statsSummary () {
+    const s = this.stats.summary()
+    const l = this.stats.last
+    return {
+      obs: s ? { n: s.n, mean_ms: r2(s.mean), p50_ms: r2(s.p50), p95_ms: r2(s.p95), max_ms: r2(s.max) } : null,
+      recent_ms: this.stats.ms.slice(-120).map(r2),
+      last: l ? { candidates: l.candidates, raycasts: l.raycasts } : null
+    }
   }
 
   close () {

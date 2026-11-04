@@ -147,7 +147,7 @@ You should see `[link] listening…`, `[bot] spawned in overworld at … gamemod
 cd /opt/atlas/mind && .venv/bin/python -u -m atlas_mind 2>&1 | tee -a /opt/atlas/logs/mind.out
 ```
 
-It prints one line per decision (`[mind] call: <thinking>`). The dashboard's Trace feed shows the same reasoning.
+It prints one line per decision (`[mind] call: <thinking>`). The dashboard's feed shows the same reasoning.
 
 **Terminal client** (tmux window 3), to watch every message and to issue verbs by hand:
 
@@ -170,17 +170,20 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
 - **Data source:** a read-only tap of the link. Every `obs`, `call`, `result`, `event`, `trace` and `observe` crossing it is pushed to the page as-is, and recent messages are replayed when the page connects.
 - **What reaches the page:**
   - Tap messages are copied through JSON and must validate against the contract schemas; anything else is dropped. Raw Mineflayer objects and hidden entity state can't reach the page.
-  - The rest comes from read-only `GET /api/*` endpoints: known places, verb library, config with secrets masked, and the log tail.
-- **Panels:**
-  - vitals, inventory and world
-  - blocks seen, entities, players and sounds
-  - current task with its verb and progress, plus the last calls
-  - events, chat and the trace feed
-  - known places: the count and the 10 nearest to the bot
-  - verb library: built-in or live-written; click a verb to see its source
-  - config as loaded
-  - live log tail
-  - placeholders for reflexes and advisor calls, marked "not wired yet"
+  - The rest comes from read-only `GET /api/*` endpoints: known places (`?radius=R` adds every place within R, for the map), the player loop (`/api/player`: last 20 ticks and the 60 s latency series), obs build time (`/api/stats`), verb library, config with secrets masked, and the log tail.
+- **Layout (v2, Session 7):** one static page with no network assets (system fonts, SVG and CSS only). It is dark by default, light when the browser prefers it, and made for 1440p and 1080p screens.
+  - **Top band:** health, food and light as bars; position, facing and dimension; time, weather and biome; the current task (verb, args, progress, state, how long it has run); a status dot (tap, obs freshness, health); STOP.
+  - **Map (the centrepiece):** a top-down SVG centred on Atlas, north up, zoom 32/64/128 blocks.
+    - Atlas is a chevron pointing where it faces, with the trail of its last 200 obs positions.
+    - Known places are coloured dots; blocks in sight are outlined squares; entities are diamonds, hostile ones red and labelled.
+    - Players in sight are dots with names; players on the Locator Bar are arrows at the edge in their bearing's direction (↑/↓ when above/below).
+    - The side list is the legend: players, known places by type with counts (click a type to hide it), and the blocks seen.
+    - Fair play: everything on it comes from the obs or known places, never from the server's world.
+  - **Feed:** one timeline, oldest at the top, newest at the bottom. It holds chat, the mind's thinking (as prose, with the action, tokens and task under it), notes and lessons, events, calls with their result inline underneath, and other traces (plan, rag). Filter chips hide a kind.
+  - **Player loop:** mode, achieved Hz, p50/p95 and timeouts over the last 60 s; a latency sparkline with the timeout budget as a dashed line (play blue, survive orange, timeouts as red ticks); the last 20 actions as chips, with confidence as opacity.
+  - **Inventory:** a compact grid with counts; the held item is outlined.
+  - **Session charts:** completion tokens per turn and turns per task, from the mind's decision traces (`data.tokens`, `data.task`), and obs build time from `/api/stats`.
+  - **Drawer (bottom, collapsed):** verb library (click a verb for its source), config as loaded (secrets masked), raw log tail.
 - **The one control: STOP.** It calls the body's stop path directly (`POST /api/stop`), not through the mind. The running verb returns `interrupted`, movement controls are released, and the mind gets a `stop_requested` event with `{"from": "dashboard"}`. Every other endpoint is read-only and answers `405` to writes.
 - **No authentication.** Anyone who can reach the port can watch, which includes chat and coordinates, and can press STOP. On a shared network, set `ATLAS_DASH_BIND=127.0.0.1:8080` and reach it through Proxmox, or firewall the port. Set it to `off` to disable the dashboard.
 - **Without a mind:** obs still flow to the dashboard every 2 s, but they aren't logged, because nothing crossed the link.
@@ -376,7 +379,7 @@ CONTRACT.md "Player loop": the decision model (d1-2B on Horizon, llama.cpp `/v1/
   - Still paused after 20 s, the verb ends `interrupted`.
   - `ATLAS_PLAYER_OVERRIDE=0` turns this off.
 - **Latency:** every 60 s `body.out` gets `[player] <n> ticks in <s> s (play <hz> Hz (<n> ticks in <s> s), survive <hz> Hz (…)), latency p50 <ms> ms p95 <ms> ms, <k> timeouts, <e> errors (<kind> x<n>, …), <u> answers not offered` every 60 s. Each error is also logged with its kind (`fetch failed: UND_ERR_SOCKET`, `HTTP 503`, …), at most 5 lines a minute. The line ends with `; bare request <ms> ms`: a minimal `/v1/systemone` request timed from the body right then. If the bare request is slow too, the server is (contention); if only the ticks are slow, the body is.
-- **Dashboard:** the Reflexes panel shows the last 10 ticks: mode, chosen action, latency, effect, and what was offered.
+- **Dashboard:** the Player loop card shows the latency sparkline for the last 60 s against the budget, achieved Hz, the mode, and the last 20 actions (confidence as opacity).
 
 | Variable | Default | |
 |---|---|---|
@@ -417,7 +420,7 @@ The player learns from its own play; nothing here is a rule about Minecraft, and
   - **On purpose:** the `lesson {text}` action (`note` stays for places and facts).
   - **When a task closes** (done or stopped): one extra short model call that may answer only `{"lesson": "..."}` or `{"lesson": null}`.
   - **When the same failure class comes back twice in a row:** the same short call. A failure class is the verb plus its reason with numbers and coordinates dropped, so `mine: no iron_ore in view within 32 blocks` and `… within 48 blocks` are one class.
-  - **Seen as:** a `trace` of kind `lesson`, shown on the dashboard in the "Notes & lessons" panel, and logged `[mind] lesson (…): …`.
+  - **Seen as:** a `trace` of kind `lesson`, shown in the dashboard feed (filter "notes & lessons"), and logged `[mind] lesson (…): …`.
 - **Retrieval:** BM25 over the lesson text and its situation fields, with the same retriever interface as the wiki. The query is the open task's text, the last failure and the surroundings sentence. The top 3 go into a `LESSONS` block above KNOWLEDGE, each with its age (`- (2 h ago) when a player is above me, goto surface first`).
 - **Stuck mode** (facts, not refusals): after two failures of one class in a row, the context carries `STUCK: "<class>" came back 2x in a row (last: <call> -> <detail>). Lessons for it: …` until something succeeds or a different failure comes. The prompt says the next action should be different in kind: a lookup, a different verb or target, a lesson, or ask_player.
 - **The fuse is separate:** stuck mode only informs; the fuse only pauses.
@@ -509,7 +512,7 @@ systemctl restart atlas-body
 4. **`say hello`** shows up in game chat, and the mind prints `result c1: done`.
 5. **Known places:** let Atlas see an ore or chest, then `recall iron_ore` (or `chest`) returns its position. Restart the body; `[places] N known places` shows they were reloaded, and `recall` still finds them. An ore buried out of Atlas's sight never comes back from `recall`.
 6. **Logs fill:** `logs/link-*.jsonl` grows by one obs every 2 s while the mind is connected.
-7. **Dashboard:** open `http://10.0.0.52:8080/`. The tap pill shows *live*, and the obs panels update every 2 s. Type `trace plan test` in the mind: it shows in the trace feed. Press STOP: the events feed shows `stop_requested`.
+7. **Dashboard:** open `http://10.0.0.52:8080/`. The status dot is green, and the band and map update every 2 s. Type `trace plan test` in the mind: it shows in the feed. Press STOP: the feed shows `stop_requested`.
 8. **Build time:** read `[obs] build time over last N: mean … p95 …` in the body output or `journalctl`.
 
 ## Session 2 live checklist (atlas)
@@ -518,7 +521,7 @@ Run these in order, in the dev world, with your client next to Atlas and the das
 
 1. **Update and restart.** Run the update steps above.
    - **Body log:** `[bot] ready: health …, food …` comes *before* `[obs] first build`, and there's no `[tap] dropped` line.
-   - **Dashboard:** the Self panel fills on the first obs, with numbers, not dashes.
+   - **Dashboard:** the top band fills on the first obs, with numbers, not dashes.
 2. **Obs cost.** Stand Atlas in the same spruce forest as before. After a minute, read `[obs] build time over last N` in the body log.
    - **Expect:** well under the earlier 64–72 ms mean (the benchmark says roughly 4–5× lower once warm). The first build after spawn is still the slow one.
 3. **`goto` a position.** About 10 blocks away on open ground, type `goto <x> <y> <z>` in the mind.
@@ -531,7 +534,7 @@ Run these in order, in the dev world, with your client next to Atlas and the das
    - **Gives up:** a reachable-looking spot it can't get to (a pillar top) gives `partial — gave up N blocks short (stuck)` after about 15 s.
 6. **STOP during `goto`.** Start a long `goto` (about 60 blocks) and press STOP on the dashboard.
    - **In game:** Atlas halts at once.
-   - **Dashboard:** Last calls shows `interrupted — goto: stopped by dashboard (at: …)`, and Events shows `stop_requested`.
+   - **Dashboard:** the goto call in the feed shows `interrupted`, stopped by dashboard, inline under it, and an event `stop_requested` follows.
 7. **Busy.** During a long `goto`, `say on my way` works, but `mine coal_ore 1` gives `refused — busy`, and the `goto` keeps going.
 8. **`explore north 48`.**
    - **Task panel:** `north: 16/48 blocks, N notable blocks seen`. Atlas pauses every 16 blocks and looks left and right.
@@ -564,7 +567,7 @@ Restart the body after changing either.
 
 1. **Chat.**
    - `@Atlas status` gets a chat reply like `status: idle | health 20 food 20 | at …`.
-   - `@Atlas hello there`: the dashboard Events feed shows `task_from_chat {"from":"ACTS_HORIZON","text":"hello there"}`.
+   - `@Atlas hello there`: the dashboard feed shows an event `task_from_chat {"from":"ACTS_HORIZON","text":"hello there"}`.
    - Plain `hi` shows `player_said`.
    - A second, non-allowlisted account's chat shows only in the Chat panel, with no event.
 2. **`goto ACTS_HORIZON`** from the terminal client, in view: Atlas walks to you. (Since session 4, `@Atlas come here` is a task for the mind; see the session 4 checklist.)
@@ -594,7 +597,7 @@ Restart the body after changing either.
 
 **Setup:**
 - Point `ATLAS_LLM_URL` and `ATLAS_LLM_MODEL` at the Gemma server, and set `ATLAS_PLAYERS=ACTS_HORIZON`.
-- Start the body, then the mind (tmux window 2), and open the dashboard. Its Trace feed shows the mind's `thinking` for every turn.
+- Start the body, then the mind (tmux window 2), and open the dashboard. Its feed shows the mind's `thinking` for every turn.
 - Start with a **fresh spawn**: new world, or Atlas with an empty inventory.
 
 **The run:** say `@Atlas get me 3 iron ingots` and don't help. Nothing below is scripted; it's what a sensible plan looks like and what to check for. The exact order and wording will vary.
@@ -632,7 +635,7 @@ Start the mind with `python -u … | tee -a logs/mind.out` (see Run) and keep th
    - `give spruce_log 8 ACTS_HORIZON`: it walks to you and tosses them at your feet;
    - a closing report (`…closes t1`).
    The logs end up at your feet, and in your inventory once you walk over them. No second "on it" appears at any point.
-4. **`@Atlas come here` at low health.** Get Atlas hurt first: fall damage, until health is below 6 (3 hearts). Then `@Atlas come here`. The Trace feed shows the mind deciding: it weighs the low health, then either comes carefully, says why it won't, or eats first. It is not a blind walk, and there is no `verb_done` from the body any more.
+4. **`@Atlas come here` at low health.** Get Atlas hurt first: fall damage, until health is below 6 (3 hearts). Then `@Atlas come here`. The dashboard feed shows the mind deciding: it weighs the low health, then either comes carefully, says why it won't, or eats first. It is not a blind walk, and there is no `verb_done` from the body any more.
 5. **Chests.** Look at a chest Atlas can see and say `@Atlas that chest is yours`. It replies `ok, I'll take from the chest at x y z when asked`, and the grant survives a body restart (`data/chests.<host>_<port>.json`).
    - `withdraw` from that chest works.
    - From another chest: `refused — house rules: … has not been given to Atlas …`.
@@ -652,7 +655,7 @@ The craft loop seen after the stone pickaxe on atlas (HEAD 3b98bcd): waiting for
 1. **The index answers.** `python3 scripts/wiki_index.py --query "iron ore y level"` puts an ore-distribution chunk first (Iron Ore › Natural generation, or the Ore page's distribution table).
 2. **Ore levels.** `python3 scripts/wiki_index.py --check-ores` prints what the wiki says for each ore (docs/verbs.md no longer carries an ore table; the wiki is the source).
 3. **The test: an iron pickaxe from the canopy spot, without help.** Put Atlas back at the spruce-canopy spot from Session 4, with cobblestone in its inventory and no iron. Say `@Atlas get me an iron pickaxe`, then don't help: no items, no answers beyond "yes/no" if it asks. What to expect:
-   - **Knowledge:** the Trace feed shows `rag` traces whose titles include an iron-ore chunk. It may also make a `lookup` (`rag` with `lookup: true`). Its thinking mentions the level, about y 16.
+   - **Knowledge:** the dashboard feed shows `rag` traces whose titles include an iron-ore chunk. It may also make a `lookup` (`rag` with `lookup: true`). Its thinking mentions the level, about y 16.
    - **Iron:** `mine iron_ore` with `y` around 16. The Task panel shows `stairs n … staircase <dir>, y <now> -> 16`, then the tunnel, then ore mined. If the staircase stops (lava, water, a drop), the result names it and the next action is a different approach, not a question.
    - **Furnace:** `craft furnace` (it has the cobblestone), then `place furnace …`.
    - **Smelting:** `smelt iron_ingot 3`, with the Task panel at `n/3 smelted`.
