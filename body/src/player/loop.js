@@ -21,6 +21,9 @@
 //     still paused after maxPauseMs: interrupt() (the verb ends interrupted).
 //     It ticks at surviveHz (5) while no threat or damage is in view, at hz
 //     (20) while one is.
+//   watch(api, {settled, idle: true})  the same survive loop with no verb
+//     running (body.idleSurvive): an action other than continue_task or wait
+//     simply runs; nothing is paused.
 const fs = require('fs')
 const path = require('path')
 const { offeredActions, describe, blockFor, stepOk, shore, waterBeside, DIRS, LEFT, RIGHT } = require('./offered')
@@ -308,7 +311,8 @@ class PlayerLoop {
   }
 
   /** The override while a scripted verb runs (see the top of this file). Resolves when settled() is true. */
-  async watch (api, { settled, interrupt }) {
+  async watch (api, { settled, interrupt = () => {}, idle = false }) {
+    // idle (Session 8b-2): no verb is running, so there is nothing to pause; a survive action is just done
     const st = { intent: 'survive', target: null, dir: api.facing(), pitch: 0, recent: [], ticks: 0, dug: 0, placed: 0 }
     let paused = false; let cont = 0; let pausedAt = 0
     const out = { ticks: 0, pauses: 0, interrupted: false }
@@ -323,8 +327,10 @@ class PlayerLoop {
       if (typeof h === 'number' && lastHealth !== null && h < lastHealth) hotUntil = Date.now() + 1000
       if (typeof h === 'number') lastHealth = h
       const hot = (tk.view && tk.view.threats && tk.view.threats.length > 0) || Date.now() < hotUntil
-      if (!tk.decided) {
-        // no answer: nothing changes (it neither pauses the verb nor counts toward resuming it)
+      if (!tk.decided || idle) {
+        // no answer: nothing changes (it neither pauses the verb nor counts toward resuming it);
+        // idle: the action already ran in tick(), and there is no verb to hold
+        if (idle && tk.decided && tk.chosen !== 'continue_task' && tk.chosen !== 'wait') out.acted = (out.acted || 0) + 1
       } else if (tk.chosen === 'continue_task') {
         if (paused && ++cont >= this.resumeTicks) { api.resumeVerb(); paused = false; cont = 0 }
       } else {

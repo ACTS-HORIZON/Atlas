@@ -151,6 +151,7 @@ class Body {
       this.motionTimer = setInterval(() => this.sampleMotion(), 250)
       this.spawned = true
       this.announceIfReady()
+      this.idleSurvive()
     })
     // Health and food arrive in their own packet, often just after spawn. No
     // obs is built or sent until both are known (a null-vitals obs is not a
@@ -207,6 +208,32 @@ class Body {
     bot.on('end', reason => reconnect(reason))
     // With version auto-detection a failed ping only emits 'error', never 'end'.
     bot.on('error', err => { if (!this.spawned) reconnect(err.code || err.message) })
+  }
+
+  /**
+   * Survive mode with no verb running (Session 8b-2): the player loop's survive ticks run while idle too
+   * (5 Hz, 20 Hz under threat or damage), and a survive action other than continue_task/wait is simply
+   * done. It hands over the moment a verb starts (that verb's own override takes it from there) and
+   * comes back when the verb ends. Off with ATLAS_PLAYER_OVERRIDE=0 or without a decision model.
+   */
+  async idleSurvive () {
+    if (this.idleSurviving) return
+    this.idleSurviving = true
+    try {
+      while (!this.closed) {
+        const busy = !!this.runner.current
+        if (this.player && this.cfg.playerOverride !== false && this.ready() && !busy && !this.dead) {
+          const act = this.act()
+          if (act.api) {
+            try {
+              await this.player.watch(act.api, { idle: true, settled: () => this.closed || !!this.runner.current || !this.ready() || this.dead || !this.player })
+            } catch (err) { console.warn(`[player] idle survive: ${err.message}`) }
+            continue
+          }
+        }
+        await new Promise(resolve => setTimeout(resolve, 200))
+      }
+    } finally { this.idleSurviving = false }
   }
 
   /** In game, and health and food are known. */

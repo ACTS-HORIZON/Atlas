@@ -718,3 +718,24 @@ test('survive mode: swim_up chosen in deep water makes the bot rise (real Motor,
     assert.equal(bot.controlState.jump, false, 'jump let go between presses')
   } finally { clearInterval(bot.timer) }
 })
+
+test('survive mode while idle: in deep water swim_up is chosen and executed; nothing is paused', async () => {
+  const w = pool()
+  const bot = physBot(w, [0.5, 6, 0.5])
+  try {
+    const motor = new Motor(bot)
+    const s = setup(w, { motor })
+    let pauses = 0
+    const pause = motor.pause.bind(motor); motor.pause = () => { pauses++; pause() }
+    const loop = new PlayerLoop({ chooser: new ScriptedChooser((v, offered) => offered.includes('swim_up') ? 'swim_up' : 'wait'), hz: 20, surviveHz: 20 })
+    let done = false
+    const watching = loop.watch(s.api, { idle: true, settled: () => done })
+    await new Promise(resolve => setTimeout(resolve, 2500))
+    done = true
+    const out = await watching
+    assert.ok(out.acted >= 3, `acted ${out.acted} times`)
+    assert.equal(pauses, 0, 'idle: nothing to pause')
+    assert.equal(out.pauses, 0)
+    assert.ok(bot.entity.position.y >= 10.5, `rose from y 6 to ${bot.entity.position.y.toFixed(2)}`)
+  } finally { clearInterval(bot.timer) }
+})

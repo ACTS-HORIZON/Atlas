@@ -212,3 +212,29 @@ test('the player loop card: /api/player says off without a decision model, and t
   assert.match(html, /<h2>Player loop/)
   assert.match(html, /setInterval\(loadPlayer, 1000\)/)
 })
+
+test('idle survive: with no verb running the player loop ticks survive mode; it hands over when a verb starts and comes back after', async (t) => {
+  const { body, linkUrl } = await startBody(t, { playerOverride: true })
+  const { PlayerLoop } = require('../src/player/loop')
+  const { ScriptedChooser } = require('../src/player/client')
+  const calls = []
+  const loop = new PlayerLoop({ chooser: new ScriptedChooser(() => 'continue_task'), hz: 50, surviveHz: 50 })
+  const watch = loop.watch.bind(loop)
+  loop.watch = (api, o) => { calls.push({ idle: !!o.idle, at: Date.now() }); return watch(api, o) }
+  body.player = loop
+  for (let i = 0; i < 40 && !loop.rates.survive.ticks; i++) await new Promise(resolve => setTimeout(resolve, 25))
+  assert.ok(loop.rates.survive.ticks > 0, 'survive ticks with no verb running')
+  assert.deepEqual(calls.map(c => c.idle), [true])
+  const mind = client(linkUrl)
+  await mind.opened
+  mind.send({ type: 'call', v: '0.1', id: 'c1', verb: 'dig_forever', args: {} })
+  await new Promise(resolve => setTimeout(resolve, 150))
+  assert.ok(calls.some(c => !c.idle), 'the verb gets its own override')
+  const r = await (await fetch(`http://127.0.0.1:${body.dash.port}/api/stop`, { method: 'POST' })).json()
+  assert.equal(r.status, 'done')
+  await mind.wait(m => m.type === 'result' && m.id === 'c1')
+  for (let i = 0; i < 40 && calls.filter(c => c.idle).length < 2; i++) await new Promise(resolve => setTimeout(resolve, 25))
+  assert.equal(calls.filter(c => c.idle).length, 2, 'back to idle survive after the verb')
+  mind.ws.close()
+  await body.close()
+})

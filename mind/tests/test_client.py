@@ -77,6 +77,30 @@ class ParseTest(unittest.TestCase):
         self.assertTrue(parse_command("say", nid).startswith("usage"))
 
 
+class WatchParseTest(unittest.TestCase):
+    """--watch <see>:<verb>:<n>[,...] on explore/goto/mine/collect (Session 8b-2)."""
+
+    def parse(self, line):
+        ids = iter(range(100))
+        return parse_command(line, lambda: f"c{next(ids)}")
+
+    def test_watch(self):
+        m = self.parse("explore north 48 --watch oak_log:mine:2")
+        self.assertEqual(m["args"], {"direction": "north", "distance": 48,
+                                     "watch": [{"see": "oak_log", "do": {"verb": "mine", "args": {"block": "oak_log", "count": 2}}}]})
+        m = self.parse("mine stone 5 --watch iron_ore:mine:3,zombie:goto:1")
+        self.assertEqual(m["args"]["watch"], [{"see": "iron_ore", "do": {"verb": "mine", "args": {"block": "iron_ore", "count": 3}}},
+                                              {"see": "zombie", "do": {"verb": "goto", "args": {"target": "zombie"}}, "max": 1}])
+        m = self.parse("goto 10 64 -20 --watch apple:collect:4 nodig")  # flags after the watch still count
+        self.assertEqual(m["args"], {"pos": [10.0, 64.0, -20.0], "dig": False,
+                                     "watch": [{"see": "apple", "do": {"verb": "collect", "args": {"item": "apple"}}, "max": 4}]})
+        self.assertEqual(self.parse("collect apple --watch apple:collect")["args"]["watch"][0]["max"], 1)
+        self.assertEqual(self.parse("craft stick --watch x:mine:1"), "--watch is only for explore, goto, mine, collect")
+        for bad in ("explore north 48 --watch oak_log:fly:2", "explore north 48 --watch oak_log:mine:0", "explore north 48 --watch", "explore north 48 --watch :mine:2"):
+            self.assertTrue(self.parse(bad).startswith("usage: ... --watch"), bad)
+        self.assertTrue(self.parse("explore north --watch oak_log:mine:2").startswith("usage: explore"))
+
+
 class PrettyTest(unittest.TestCase):
     def test_recall_result(self):
         from atlas_mind.pretty import format_message

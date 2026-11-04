@@ -20,7 +20,10 @@ Prints every message from the body. Type:
     give <item> <n> <player>        walk to a player and toss them items
     deposit <item> <x> <y> <z> [n]  put items in a chest (all if no n)
     withdraw <item> <x> <y> <z> [n] take from a chest given to Atlas
-    play "<intent>" [seconds] [target]   hand the controls to the player loop with an intent
+    ... --watch <see>:<verb>:<n>[,...]   on explore/goto/mine/collect: while it runs, on sight of <see>
+                            run <verb> (mine: n of it; collect/goto: at most n times), then carry on;
+                            e.g. explore north 48 --watch oak_log:mine:2
+    play "<intent>" [seconds] [target]   hand the controls to the player loop with an intent (parked: refused unless ATLAS_PLAYER_PLAY=1)
     player        the last 10 ticks of logs/player-<date>.jsonl (chosen, latency, effect)
     trace [kind] <text>     send a trace (kind: plan, decision, rag, verb_write,
                             advisor, note; default note); logged, never acted on
@@ -48,10 +51,41 @@ from .pretty import format_message
 HELP = ("commands: say <text> | stop | recall <type> [x y z] | goto <x y z | target> | explore <dir> <n> |"
         " mine <block> <n> [radius] [y=<level>] | collect <item> | craft <item> [n] | smelt <item> [n] [fuel] | place <block> [x y z] | equip <item> [slot] |"
         " dig <x y z> | eat [item] | give <item> <n> <player> | deposit|withdraw <item> <x y z> [n] |"
+        " explore/goto/mine/collect ... --watch <see>:<verb>:<n>[,...] |"
         " play \"<intent>\" [seconds] [target] | player |"
         " trace [kind] <text> | obs | quit")
 DIRECTIONS = ("north", "south", "east", "west", "north-east", "north-west", "south-east", "south-west", "forward")
 TRACE_KINDS = ("plan", "decision", "rag", "verb_write", "advisor", "note")
+
+
+WATCHABLE = ("explore", "goto", "mine", "collect")
+WATCH_USAGE = "usage: ... --watch <see>:<verb>:<n>[,<see>:<verb>:<n>...] (verb: mine, collect or goto), e.g. explore north 48 --watch oak_log:mine:2"
+
+
+def parse_watch(spec: str) -> list | str:
+    """'oak_log:mine:2,zombie:goto:1' -> the watch list (docs/verbs.md, "Watches"), or an error string.
+    mine: {block: see, count: n}; collect: {item: see}, at most n times; goto: {target: see}, at most n times."""
+    out = []
+    for item in [x for x in spec.split(",") if x.strip()]:
+        bits = item.strip().split(":")
+        if len(bits) not in (2, 3) or not bits[0] or not bits[1]:
+            return WATCH_USAGE
+        see, verb = bits[0], bits[1]
+        try:
+            n = int(bits[2]) if len(bits) == 3 else 1
+        except ValueError:
+            return WATCH_USAGE
+        if n < 1:
+            return WATCH_USAGE
+        if verb == "mine":
+            out.append({"see": see, "do": {"verb": "mine", "args": {"block": see, "count": n}}})
+        elif verb == "collect":
+            out.append({"see": see, "do": {"verb": "collect", "args": {"item": see}}, "max": n})
+        elif verb == "goto":
+            out.append({"see": see, "do": {"verb": "goto", "args": {"target": see}}, "max": n})
+        else:
+            return WATCH_USAGE
+    return out or WATCH_USAGE
 
 
 def parse_command(line: str, next_id, now_t=lambda: 0) -> dict | None | str:
@@ -61,6 +95,21 @@ def parse_command(line: str, next_id, now_t=lambda: 0) -> dict | None | str:
     line = line.strip()
     if not line:
         return None
+    if " --watch" in f" {line} ":
+        # explore/goto/mine/collect ... --watch <spec>: parse the rest as usual, then add args.watch
+        head, _, spec = line.partition("--watch")
+        cmd0 = head.split()[0] if head.split() else ""
+        if cmd0 not in WATCHABLE:
+            return "--watch is only for " + ", ".join(WATCHABLE)
+        spec = spec.strip().split()[0] if spec.strip() else ""
+        rest_after = line.partition("--watch")[2].strip().split()[1:]
+        watch = parse_watch(spec)
+        if isinstance(watch, str):
+            return watch
+        msg = parse_command(" ".join([head.strip(), *rest_after]), next_id, now_t)
+        if isinstance(msg, dict):
+            msg["args"]["watch"] = watch
+        return msg
     cmd, _, rest = line.partition(" ")
     if cmd == "say":
         if not rest.strip():
