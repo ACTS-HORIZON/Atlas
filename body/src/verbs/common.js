@@ -126,6 +126,7 @@ const SCHEMAS = {
       material: { type: 'string', minLength: 1 },
       hollow: { type: 'boolean', default: true },
       roof: { type: 'boolean', default: false },
+      prepare: { type: 'boolean', default: false },
       door: { enum: ['north', 'south', 'east', 'west'] },
       blocks: {
         type: 'array',

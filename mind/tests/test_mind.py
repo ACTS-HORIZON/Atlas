@@ -1127,3 +1127,15 @@ class GroundRenderTest(unittest.TestCase):
         text = render_surroundings(o)
         self.assertIn("open sky", text)
         self.assertIn("standing on: grass_block (placed by you? no); ground level: y=68, you are on it; terrain within 8: flat, y 68-68", text)
+
+
+class BuildGuidanceTest(unittest.TestCase):
+    """Session 10a: the verb reference tells the model how to build on real ground."""
+
+    def test_build_section_says_how(self):
+        from atlas_mind.prompt import load_verb_reference
+        ref = load_verb_reference(ROOT / "docs" / "verbs.md")
+        self.assertIn("one build call for the whole shell. On sloped or uneven ground use `prepare: true`, or `mine {box}` the site first.", ref)
+        self.assertIn("don't start a second build at a different corner: `inspect` the box", ref)
+        self.assertIn("re-run the same build; it skips what is already placed", ref)
+        self.assertIn("### mine {block, count = 1, radius = 32, y?} | {box:", ref)

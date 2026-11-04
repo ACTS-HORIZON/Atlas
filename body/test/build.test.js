@@ -93,7 +93,7 @@ test('short of material: partial with the count missing; protected region: refus
   const list = await run('build', t.act, { blocks: [{ block: 'oak_planks', pos: [4, 10, -2] }, { block: 'oak_planks', pos: [5, 10, -2] }, { block: 'oak_planks', pos: [5, 11, -2] }] })
   assert.equal(list.status, 'partial')
   assert.deepEqual([list.data.placed, list.data.failed_count], [2, 1])
-  assert.deepEqual(list.data.failed[0], { pos: [4, 10, -2], reason: 'dirt is there (build never digs)' })
+  assert.deepEqual(list.data.failed[0], { pos: [4, 10, -2], reason: 'dirt is there (build never digs; prepare: true levels the site)' })
   assert.equal(o.get(4, 10, -2), 'dirt', 'never dug')
   assert.equal(o.get(5, 11, -2), 'oak_planks')
 })

@@ -22,7 +22,7 @@ test('argument validation', async () => {
     ['mine', {}, /block/],
     ['mine', { block: 'iron_ore', count: 0 }, /count/],
     ['mine', { block: 'iron_ore', radius: 1000 }, /radius/],
-    ['mine', { block: 'iron_ore', box: [[0, 0, 0], [1, 1, 1]] }, /box is not supported yet/],
+    ['mine', { block: 'iron_ore', box: [[0, 0, 0], [1, 1, 1]], count: 2 }, /with box, only block may go with it/],
     ['mine', { block: 'not_a_block' }, /unknown block/],
     ['collect', {}, /item/],
     ['collect', { item: 'not_an_item' }, /unknown item/]

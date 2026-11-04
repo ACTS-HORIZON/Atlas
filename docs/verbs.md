@@ -81,7 +81,12 @@ The nearest known place of `type` in this dimension. `near` defaults to the bot'
   - **Can't take a single step the asked way** (a cave wall, a pit): it tries the other three directions, turned right, left, then back, and explores the first that moves: `couldn't go north (ahead north 2 blocks: stone at feet, stone at head), so went east: walked …`, with `data.asked` and `data.blocked`. With none: `partial`, `walked 0 of <n> blocks: no way on in any direction: north (…); east (…); …`.
   - Both carry `data: {direction, walked, seen: {type: count}, new_places}`.
 
-### mine {block, count = 1, radius = 32, y?}
+### mine {block, count = 1, radius = 32, y?} | {box: [[x1, y1, z1], [x2, y2, z2]], block?}
+- **`box` (dig out a region; also how to level a site):** digs every solid block in the box (corners inclusive, at most 4096 cells; only `block` when one is named), top layer first, nearest first within a layer. It stands wherever each block is in reach and in sight (as build does) and digs by hand when it has no tool for it.
+  - Cells in a protected region are skipped and reported (`, skipped <n> in a protected region (first [x, y, z])`).
+  - Water or lava in the box, or next to a block about to be dug, stops it with the reason (`; stopped: water next to [x, y, z] (at […])`); it never opens a fluid.
+  - `done`: `mined out the 3x2x3 box [2, 8, -1]..[4, 9, 1]: dug 18`; `partial` with skipped, failed or stopped cells. `data: {box, size, dug, protected, failed, failed_count, stopped?}`.
+  - Other `mine` arguments don't apply with `box`: `mine: with box, only block may go with it ("count")`.
 - **Blocks, not items:** mine takes block names. Asking for an item fails, naming the blocks that drop it.
 - **Limits:** `count` 1–512, `radius` 1–128, `y` −64–320.
 - **Targets:** notable types (ores, logs, …) come from `blocks_seen` and known places within `radius`. Any type, stone included, also counts when visible in the terrain around the bot, looked for up to 24 blocks out.
@@ -225,20 +230,26 @@ Use play for anything a player would do by hand (climb out, cross terrain, fight
 - **Result:** `done`, `inspected <w>x<h>x<d> box [lo]..[hi]: <n> visible blocks (<block> <n>, …); <k> hidden`, with `data: {box: [lo, hi], size, visible, hidden, counts: {block: n}, blocks: [[x, y, z, "block"], …]}` (air is never listed; at most 512 blocks listed, the counts cover all of them).
 - `failed`: `inspect: the box is <w>x<h>x<d> = <n> cells; at most 32768`.
 
-### build {shape: "box", corner, size, material, hollow = true, roof = false, door?} | {blocks: [{block, pos}, ...]}
+### build {shape: "box", corner, size, material, hollow = true, roof = false, door?, prepare = false} | {blocks: [{block, pos}, ...], prepare = false}
+**How to use it:** one build call for the whole shell. On sloped or uneven ground use `prepare: true`, or `mine {box}` the site first. If a build ends `partial`, don't start a second build at a different corner: `inspect` the box, fix what is in the way (or get more material), and re-run the same build; it skips what is already placed.
 - **Box:** `corner` is the low north-west corner (smallest x, y, z); `size: [w, d, h]` is w along x (east), d along z (south), h up (1–32 each). `hollow` builds the four walls only, and `roof: true` adds a full top layer; `hollow: false` fills it. `door: north|south|east|west` leaves a 1-wide, 2-high gap at the bottom in the middle of that wall (the box must be at least 3 high).
 - **Blocks:** any design, as `[{block, pos}]`, up to 1024 cells.
 - **How it builds:** bottom layer first; within a layer, only cells with something solid next to them (below, beside or above), so walls grow from the ground and a roof grows in from the walls.
-  - **Where it stands:** for each cell it walks to where that cell is in reach (4.3) and in sight, never digging and never standing in a cell it still has to fill. For the middle of a roof that means inside, through the door.
-  - **Each cell, looked at again first:** the right block already there is skipped; another block there fails that cell (build never digs); an empty cell gets the block.
-  - Materials come from the inventory. It doesn't level ground, fill under a shape on a slope, fetch materials or clear the site.
+  - **Where it stands:** for each cell, any standable cell within reach (4.5) that has the cell in sight: outside, inside the footprint, or on blocks it already placed. Never a cell it still has to fill. It tries the nearest few (going downhill costs more, since without digging or scaffolding it may not get back up); a spot the pathfinder can't reach isn't tried again. A cell it can't get to fails that cell only, never the whole build.
+  - **Each cell, looked at again first:** the right block already there is skipped; plants are empty (short or tall grass, ferns, flowers, dead bushes, snow layers, vines: the game replaces them); another block there fails that cell (`<block> is there (build never digs; prepare: true levels the site)`); an empty cell gets the block.
+  - Materials come from the inventory. It doesn't fetch materials.
+- **`prepare: true`:** levels the site first.
+  - It digs every solid block inside the shape's bounding box, from the corner's y up, top-down (grass, dirt, stone, logs…, but not a shell cell that already holds its block).
+  - Then it fills the empty cells under the footprint (down to the ground, at most 6 deep), bottom-up, with dirt from the inventory, else the material, so the shell sits on a level base.
+  - Water or lava next to a block it would dig stops the build there (`; stopped preparing: water next to [x, y, z] (at […])`).
+  - The detail says `prepared (dug <n>, filled <k>); placed …`. A protected region over any cell it would dig or fill refuses the build before anything changes (`… (prepare: dig [x, y, z])`).
 - **Progress:** `build: <n>/<cells> cells (placed <k>), at [x, y, z]`.
 - **Results:**
   - `done`: `built a hollow 5x5x3 cobblestone box at [3, 10, -2] with a door to the south: placed 46, skipped 0 (already there), failed 0`
   - `partial`: some cells failed (`; first failure: [x, y, z] <reason>`) or a material ran out (`; short 16 cobblestone`)
   - `failed`: nothing could be placed
   - `refused`: any cell inside a protected region, before anything is placed
-  - Results carry `data: {cells, placed, skipped, failed: [{pos, reason}] (first 20), failed_count, short: {block: n}, at}`.
+  - Results carry `data: {cells, placed, skipped, failed: [{pos, reason}] (first 20), failed_count, short: {block: n}, dug, filled, at, stopped?}`.
 
 ## Not implemented yet
 `fight`, `flee` and the Later list in CONTRACT.md. Calling one gives `failed` with `verb not implemented yet: <verb>`.

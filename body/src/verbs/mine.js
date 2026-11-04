@@ -36,7 +36,7 @@ const LEFT = { north: 'west', west: 'south', south: 'east', east: 'north' }
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 async function run (act, args) {
-  if (args && Object.hasOwn(args, 'box')) return failed('mine: box is not supported yet')
+  if (args && Object.hasOwn(args, 'box')) return mineBox(act, args)
   const err = checkArgs('mine', args)
   if (err) return failed(err)
   const api = act.api
@@ -275,6 +275,66 @@ async function stripMine (act, api, block, radius, skip, strip, progress) {
   }
   strip.stopped = `tunnel limit of ${max} blocks reached`
   return 'stopped'
+}
+
+/**
+ * mine {box: [[x1, y1, z1], [x2, y2, z2]], block?} (Session 10a, the contract's "box = dig out a region"): dig
+ * every solid block in the box (only that type when block is named) (corners inclusive, at most 4096 cells), top layer first, nearest first within a
+ * layer, standing wherever each block is in reach and in sight (src/verbs/site.js). Cells in a protected
+ * region are skipped and reported. Water or lava in the box, or next to a block about to be dug, stops it
+ * with the reason (it never opens a fluid). This is also how the mind levels a site.
+ * data: {box, size, dug, protected, failed: [{pos, reason}] (first 20), stopped?}
+ */
+async function mineBox (act, args) {
+  for (const k of Object.keys(args)) if (k !== 'box' && k !== 'block') return failed(`mine: with box, only block may go with it ("${k}")`)
+  if (args.block !== undefined && (typeof args.block !== 'string' || !act.api.isBlock(args.block))) return failed(`mine: unknown block ${args.block}`)
+  const b = args.box
+  const v3 = v => Array.isArray(v) && v.length === 3 && v.every(Number.isInteger)
+  if (!Array.isArray(b) || b.length !== 2 || !v3(b[0]) || !v3(b[1])) return failed('mine: box must be [[x1, y1, z1], [x2, y2, z2]] (whole numbers)')
+  const lo = [0, 1, 2].map(i => Math.min(b[0][i], b[1][i])); const hi = [0, 1, 2].map(i => Math.max(b[0][i], b[1][i]))
+  const size = [0, 1, 2].map(i => hi[i] - lo[i] + 1)
+  if (size[0] * size[1] * size[2] > 4096) return failed(`mine: the box is ${size.join('x')} = ${size[0] * size[1] * size[2]} cells; at most 4096`)
+  const api = act.api
+  const no = cannotAct(api, 'mine')
+  if (no) return no
+  if (api.gamemode() === 'adventure') return failed('mine: cannot dig in adventure mode')
+  const { Worksite, FLUID } = require('./site')
+  const site = new Worksite(act)
+  const out = { box: [lo, hi], size, dug: 0, protected: 0, failed: [] }
+  let nFailed = 0; let firstProtected = null; let stopped = null
+  const fail = (pos, reason) => { if (out.failed.length < 20) out.failed.push({ pos, reason }); nFailed++ }
+  const here = api.here().pos
+  const near = (p, q) => Math.hypot(p[0] + 0.5 - here[0], p[2] + 0.5 - here[2]) - Math.hypot(q[0] + 0.5 - here[0], q[2] + 0.5 - here[2])
+  for (let y = hi[1]; y >= lo[1] && !stopped; y--) {
+    const layer = []
+    for (let x = lo[0]; x <= hi[0]; x++) for (let z = lo[2]; z <= hi[2]; z++) layer.push([x, y, z])
+    layer.sort(near)
+    for (const p of layer) {
+      if (act.signal.aborted) return null
+      const c = site.cls(p)
+      if (!c) continue
+      if (FLUID.test(c.name)) { stopped = `${c.name} at [${p.join(', ')}], in the box`; break }
+      if (!c.solid) continue
+      if (args.block && c.name !== args.block) continue // only that type, when one is named
+      const why = api.houseCheck('dig', p)
+      if (why) { out.protected++; firstProtected = firstProtected || p; continue }
+      const wet = [[0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, -1, 0]].map(([dx, dy, dz]) => [p[0] + dx, p[1] + dy, p[2] + dz]).find(q => { const k = site.cls(q); return k && FLUID.test(k.name) })
+      if (wet) { stopped = `${site.cls(wet).name} next to [${p.join(', ')}] (at [${wet.join(', ')}])`; break }
+      act.progress(`mine box: layer y ${y}, dug ${out.dug}, at [${p.join(', ')}] (${c.name})`)
+      const r = await site.reach(p, 'dig')
+      if (act.signal.aborted) return null
+      if (!r.ok) { fail(p, `${c.name}: ${r.reason}`); continue }
+      const d = await api.digObserved(p, c.name, { signal: act.signal, allowHand: true })
+      if (act.signal.aborted) return null
+      if (d.ok) out.dug++
+      else fail(p, `${c.name}: ${d.reason}`)
+    }
+  }
+  const detail = `mined out the ${size.join('x')} box [${lo.join(', ')}]..[${hi.join(', ')}]: dug ${out.dug}` +
+    (out.protected ? `, skipped ${out.protected} in a protected region (first [${firstProtected.join(', ')}])` : '') +
+    (nFailed ? `, failed ${nFailed}; first failure: [${out.failed[0].pos.join(', ')}] ${out.failed[0].reason}` : '') +
+    (stopped ? `; stopped: ${stopped}` : '')
+  return { status: stopped || nFailed || out.protected ? (out.dug ? 'partial' : (stopped ? 'partial' : 'failed')) : 'done', detail, data: { ...out, failed_count: nFailed, ...(stopped ? { stopped } : {}) } }
 }
 
 module.exports = { run, file: __filename, stripMine, staircase }

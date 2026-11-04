@@ -31,7 +31,7 @@ test('verbs over the link: fair-play refusals, validation, result shapes', async
   r = await call('c5', 'collect', { item: 'diamond' })
   assert.deepEqual([r.status, r.detail, r.data], ['done', 'no diamond drops in sight', { item: 'diamond', collected: 0, unreachable: 0 }])
   r = await call('c6', 'mine', { block: 'iron_ore', box: [[0, 0, 0], [1, 1, 1]] })
-  assert.match(r.detail, /box is not supported yet/)
+  assert.match(r.detail, /^mined out the 2x2x2 box \[0, 0, 0\]\.\.\[1, 1, 1\]: dug 0/)
   await dash.wait(e => e.msg.type === 'result' && e.msg.id === 'c6')
   mind.ws.close(); dash.ws.close()
 })

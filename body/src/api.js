@@ -30,7 +30,7 @@ const DIRS = {
 }
 const { CONTAINERS } = require('./chests')
 const AIRLIKE = new Set(['air', 'cave_air', 'void_air'])
-const REPLACEABLE = new Set(['air', 'cave_air', 'void_air', 'water', 'lava', 'short_grass', 'tall_grass', 'fern', 'large_fern', 'snow', 'vine', 'dead_bush', 'seagrass', 'tall_seagrass'])
+const { REPLACEABLE } = require('./replaceable')
 
 // Offsets within radius R, nearest first (cached per R).
 const OFFSETS = new Map()
@@ -381,7 +381,7 @@ class VerbApi {
     if (pos[0] === feet[0] && pos[2] === feet[2] && (pos[1] === feet[1] || pos[1] === feet[1] + 1)) return { ok: false, reason: `[${pos.join(', ')}] is where Atlas is standing` }
     const here = this.peek(pos)
     if (here === null) return { ok: false, reason: `[${pos.join(', ')}] is not visible from here` }
-    if (!REPLACEABLE.has(here)) return { ok: false, reason: `[${pos.join(', ')}] is not empty (${here})` }
+    if (!REPLACEABLE.test(here)) return { ok: false, reason: `[${pos.join(', ')}] is not empty (${here})` }
     for (const [dx, dy, dz] of [[0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]]) {
       const ref = [pos[0] + dx, pos[1] + dy, pos[2] + dz]
       const c = s.classAt(ref[0], ref[1], ref[2])
