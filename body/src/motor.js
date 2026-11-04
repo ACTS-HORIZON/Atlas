@@ -56,13 +56,48 @@ function guardHouseRules (bot, house) {
   }
 }
 
+/**
+ * Remember where the bot itself put blocks (Session 9b: "standing on: cobblestone, placed by you"):
+ * every bot.placeBlock that succeeds, whoever called it (verbs, pillar, the pathfinder's scaffolding),
+ * forgotten when the bot digs that cell. In memory only, at most 50,000 cells (oldest dropped). Idempotent.
+ */
+function trackPlaced (bot, placed) {
+  if (bot._atlasPlacedTracked) return
+  bot._atlasPlacedTracked = true
+  const key = p => `${p.x},${p.y},${p.z}`
+  if (typeof bot.placeBlock === 'function') {
+    const place = bot.placeBlock.bind(bot)
+    bot.placeBlock = async (ref, face, ...rest) => {
+      const r = await place(ref, face, ...rest)
+      if (ref?.position && face) {
+        placed.add(key({ x: ref.position.x + face.x, y: ref.position.y + face.y, z: ref.position.z + face.z }))
+        if (placed.size > 50000) placed.delete(placed.values().next().value)
+      }
+      return r
+    }
+  }
+  if (typeof bot.dig === 'function') {
+    const dig = bot.dig.bind(bot)
+    bot.dig = async (block, ...rest) => {
+      const r = await dig(block, ...rest)
+      if (block?.position) placed.delete(key(block.position))
+      return r
+    }
+  }
+}
+
 class Motor {
   /** house: HouseRules (protected regions), optional */
   constructor (bot, { house = null } = {}) {
     this.bot = bot
     this.house = house
     guardHouseRules(bot, house)
+    this.placedSet = bot._atlasPlaced || (bot._atlasPlaced = new Set())
+    trackPlaced(bot, this.placedSet)
   }
+
+  /** Did the bot place the block at x, y, z (and not dig it since)? */
+  isPlaced (x, y, z) { return this.placedSet.has(`${x},${y},${z}`) }
 
   /**
    * Pathfinder movement rules. dig: may break blocks in the way (tunnel);

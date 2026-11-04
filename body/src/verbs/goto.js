@@ -133,10 +133,24 @@ function overhead (api, x, y, z) {
   return null
 }
 
-/** Open sky overhead and not walled in: some side open at head height (the bottom of an open shaft sees the sky too). */
+/**
+ * The ground surface: open sky overhead, not walled in (some side open at head height; the bottom of an open
+ * shaft sees the sky too), and standing on natural ground: not leaves, a log, or a block the bot placed
+ * (Session 9b: pillaring up into a tree is not the surface).
+ */
 function atSurface (s) {
   if (!s || !s.sky) return false
-  return Object.values(s.sides || {}).some(([, head]) => head === null || !/ 1$/.test(head))
+  if (!Object.values(s.sides || {}).some(([, head]) => head === null || !/ 1$/.test(head))) return false
+  const g = s.ground
+  if (!g) return true // (an obs without ground facts: the old rule)
+  return g.below === 0
+}
+
+/** Open sky, but up on leaves, a log or its own blocks: where the natural ground is, if it can see it. */
+function offTheGround (s) {
+  if (!s || !s.sky || !s.ground || s.ground.below === 0) return null
+  const g = s.ground
+  return { on: g.standing_on ? { block: g.standing_on, placed: !!g.placed } : null, at: g.at, below: g.below }
 }
 
 /**
@@ -161,12 +175,24 @@ async function climbLeg (act, api, goal, opts, everyMs = 50) {
 async function toSurface (act, api, move) {
   const y0 = Math.floor(api.here().pos[1])
   const done = (y, p) => ({ status: 'done', detail: `reached open sky at y ${y} (climbed ${y - y0})`, data: { pos: p.map(r1), y, climbed: y - y0 } })
+  let descents = 0
   for (let round = 0; round < 64; round++) {
     if (act.signal.aborted) return null
     const p = api.here().pos
     const f = p.map(Math.floor)
     const o = api.observe()
     if (atSurface(o && o.surroundings)) return done(f[1], p)
+    // open sky, standing on a tree or its own pillar: down to the natural ground it can see
+    const up = offTheGround(o && o.surroundings)
+    if (up) {
+      const on = up.on ? `${up.on.block}${up.on.placed ? ' (placed by you)' : ''}` : 'nothing solid'
+      if (!up.at) return { status: 'partial', detail: `open sky at y ${f[1]}, but standing on ${on}, not the ground; no natural ground in sight`, data: { pos: p.map(r1), y: f[1], climbed: f[1] - y0, standing_on: up.on } }
+      if (descents++ >= 3) return { status: 'partial', detail: `open sky at y ${f[1]}, standing on ${on}; could not get down to the ground at y ${up.at[1]}`, data: { pos: p.map(r1), y: f[1], climbed: f[1] - y0, ground: up.at } }
+      act.progress(`to the surface: down from ${on} to the ground at y ${up.at[1]} (${up.below} below)`)
+      await api.goto([up.at[0] + 0.5, up.at[1], up.at[2] + 0.5], { kind: 'near', range: 1, dig: move.dig !== false, scaffold: false, signal: act.signal })
+      if (act.signal.aborted) return null
+      continue
+    }
     const top = overhead(api, f[0], f[1], f[2])
     const stop = why => ({ status: 'partial', detail: `stopped at y ${f[1]} (climbed ${f[1] - y0}): ${why}`, data: { pos: p.map(r1), y: f[1], climbed: f[1] - y0 } })
     if (top && /^(lava|water)$/.test(top.name)) return stop(`${top.name} above at y ${top.y}`)
@@ -200,4 +226,4 @@ function plannerText (p) {
   return parts.join(', ') + (p.nearest ? `; nearest point reached [${p.nearest.join(', ')}], ${p.nearest_dist} blocks from the goal` : '')
 }
 
-module.exports = { run, file: __filename }
+module.exports = { run, atSurface, file: __filename }

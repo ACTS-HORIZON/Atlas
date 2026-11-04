@@ -1109,3 +1109,21 @@ class PlayParkedTest(unittest.TestCase):
         m = Mind(Config(), FakeLLM([]))
         self.assertNotIn("play", m.verbs)
         self.assertNotIn("### play {", m.system)
+
+
+class GroundRenderTest(unittest.TestCase):
+    """Session 9b: the ground facts under SURROUNDINGS."""
+
+    def test_ground_line(self):
+        o = {"surroundings": {"summary": "under cover, roof 3 above", "feet": "air", "head": "air", "below": "cobblestone", "above": "air",
+                              "sides": {"north": [None, None]}, "drops": {}, "sky": False, "roof": 3, "light": 12,
+                              "ground": {"standing_on": "cobblestone", "placed": True, "level": 63, "below": 5, "at": [1, 63, 0],
+                                         "terrain": "sloped 61-65", "canopy": True}}}
+        text = render_surroundings(o)
+        self.assertIn("canopy: leaves 3 up", text)
+        self.assertIn("standing on: cobblestone (placed by you? yes); ground level: y=63, 5 below you; terrain within 8: sloped, y 61-65", text)
+        o["surroundings"]["ground"].update(standing_on="grass_block", placed=False, below=0, level=68, terrain="flat 68-68", canopy=False)
+        o["surroundings"]["sky"] = True
+        text = render_surroundings(o)
+        self.assertIn("open sky", text)
+        self.assertIn("standing on: grass_block (placed by you? no); ground level: y=68, you are on it; terrain within 8: flat, y 68-68", text)

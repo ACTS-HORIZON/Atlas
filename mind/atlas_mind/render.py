@@ -32,10 +32,36 @@ def render_surroundings(o: dict | None) -> str:
         else:
             sides.append(f"{ABBR.get(d, d)} {feet or 'open'}/{head or 'open'}")
     drops = [f"{ABBR.get(d, d)} {n}" for d, n in (s.get("drops") or {}).items() if n]
-    sky = "open sky" if s.get("sky") else (f"roof {s['roof']} up" if s.get("roof") is not None else "no sky")
-    return (f"SURROUNDINGS: {s.get('summary', '')}\n"
-            f"  feet {s.get('feet')}, head {s.get('head')}, below {s.get('below')}, above {s.get('above')}; "
-            + "; ".join(sides) + (f"; drops {', '.join(drops)}" if drops else "") + f"; {sky}, light {s.get('light')}")
+    g = s.get("ground") or {}
+    if s.get("sky"):
+        sky = "open sky"
+    elif g.get("canopy"):
+        sky = f"canopy: leaves {s['roof']} up"
+    else:
+        sky = f"roof {s['roof']} up" if s.get("roof") is not None else "no sky"
+    out = (f"SURROUNDINGS: {s.get('summary', '')}\n"
+           f"  feet {s.get('feet')}, head {s.get('head')}, below {s.get('below')}, above {s.get('above')}; "
+           + "; ".join(sides) + (f"; drops {', '.join(drops)}" if drops else "") + f"; {sky}, light {s.get('light')}")
+    return out + render_ground(g) if g else out
+
+
+def render_ground(g: dict) -> str:
+    """The ground facts (Session 9b), one line: what it stands on, where the natural ground is, the terrain."""
+    on = g.get("standing_on")
+    parts = [f"standing on: {on} (placed by you? {'yes' if g.get('placed') else 'no'})" if on else "standing on: nothing solid"]
+    if g.get("level") is None:
+        parts.append("ground level: not in sight")
+    elif g.get("below") == 0:
+        parts.append(f"ground level: y={g['level']}, you are on it")
+    elif g["below"] > 0:
+        parts.append(f"ground level: y={g['level']}, {g['below']} below you")
+    else:
+        parts.append(f"ground level: y={g['level']}, {-g['below']} above you")
+    t = g.get("terrain")
+    if t:
+        shape, _, ys = t.partition(" ")
+        parts.append(f"terrain within 8: {shape}, y {ys}")
+    return "\n  " + "; ".join(parts)
 
 
 def render_obs(o: dict | None, inventory: bool = True) -> str:

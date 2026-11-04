@@ -109,6 +109,32 @@ const SCHEMAS = {
     type: 'object',
     additionalProperties: false,
     properties: { item: { type: 'string', minLength: 1 } }
+  },
+  inspect: {
+    type: 'object',
+    required: ['box'],
+    additionalProperties: false,
+    properties: { box: { type: 'array', minItems: 2, maxItems: 2, items: { type: 'array', items: { type: 'integer' }, minItems: 3, maxItems: 3 } } }
+  },
+  build: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      shape: { enum: ['box'] },
+      corner: { type: 'array', items: { type: 'integer' }, minItems: 3, maxItems: 3 },
+      size: { type: 'array', items: { type: 'integer', minimum: 1, maximum: 32 }, minItems: 3, maxItems: 3 },
+      material: { type: 'string', minLength: 1 },
+      hollow: { type: 'boolean', default: true },
+      roof: { type: 'boolean', default: false },
+      door: { enum: ['north', 'south', 'east', 'west'] },
+      blocks: {
+        type: 'array',
+        minItems: 1,
+        maxItems: 1024,
+        items: { type: 'object', required: ['block', 'pos'], additionalProperties: false, properties: { block: { type: 'string', minLength: 1 }, pos: { type: 'array', items: { type: 'integer' }, minItems: 3, maxItems: 3 } } }
+      }
+    },
+    oneOf: [{ required: ['shape', 'corner', 'size', 'material'] }, { required: ['blocks'] }]
   }
 }
 const validators = Object.fromEntries(Object.entries(SCHEMAS).map(([k, s]) => [k, ajv.compile(s)]))
@@ -120,7 +146,7 @@ function checkArgs (verb, args) {
   const v = validators[verb]
   if (v(args)) return null
   const e = v.errors[0]
-  if (e.keyword === 'oneOf') return `${verb}: give exactly one of pos or target`
+  if (e.keyword === 'oneOf') return verb === 'build' ? 'build: give either {shape: "box", corner, size, material} or {blocks: [{block, pos}, ...]}' : `${verb}: give exactly one of pos or target`
   if (e.keyword === 'additionalProperties') return `${verb}: unknown argument "${e.params.additionalProperty}"`
   return `${verb}: ${(e.instancePath || 'args').replace(/^\//, '')} ${e.message}`
 }

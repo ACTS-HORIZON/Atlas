@@ -62,7 +62,18 @@
         "drops": {"type": "object", "additionalProperties": {"type": ["integer", "null"]}},
         "sky": {"type": "boolean"},
         "roof": {"type": ["integer", "null"]},
-        "light": {"type": ["integer", "null"], "minimum": 0, "maximum": 15}
+        "light": {"type": ["integer", "null"], "minimum": 0, "maximum": 15},
+        "ground": {"type": "object", "description": "Ground facts (Session 9b), from blocks in sight only: the block under the feet and whether the bot placed it; the natural ground (not leaves, logs or placed blocks) nearby, the y one stands at there and how far below the feet; the terrain within 8 blocks; leaves overhead.",
+          "required": ["standing_on", "placed", "level", "below", "at", "terrain", "canopy"], "additionalProperties": false,
+          "properties": {
+            "standing_on": {"type": ["string", "null"], "description": "the block under the feet; null: nothing solid"},
+            "placed": {"type": "boolean", "description": "the bot placed the block it stands on"},
+            "level": {"type": ["integer", "null"]},
+            "below": {"type": ["integer", "null"]},
+            "at": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/vec3"}]},
+            "terrain": {"type": ["string", "null"], "pattern": "^(flat|sloped|mixed) -?\\d+--?\\d+$", "description": "within 8 blocks: shape and the lowest-highest y one stands at"},
+            "canopy": {"type": "boolean"}
+          }}
       }
     },
     "blocks_seen": {

@@ -139,7 +139,7 @@ class Body {
     this.bot = bot
     equipBot(bot) // pathfinder plugin
     this.locator.attach(bot)
-    this.view = new MineflayerView(bot, { sightRadius: this.cfg.sightRadius, locator: this.locator })
+    this.view = new MineflayerView(bot, { sightRadius: this.cfg.sightRadius, locator: this.locator, placedAt: (x, y, z) => !!(this.motor && this.motor.isPlaced(x, y, z)) })
     this.motor = new Motor(bot, { house: this.house })
     let joinGraceUntil = Infinity
 

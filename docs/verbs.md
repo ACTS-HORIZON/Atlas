@@ -49,7 +49,7 @@ The nearest known place of `type` in this dimension. `near` defaults to the bot'
 ### goto {pos | target, range?, dig = true, scaffold = true}
 - **`pos`:** `[x, y, z]`.
 - **`target`:** a visible player's name; a visible entity type (nearest); a block type in `blocks_seen` or known places (nearest); or a player shown on the Locator Bar.
-- **`target: "surface"`:** climbs until there is open sky overhead and a side open at head height (the bottom of an open shaft doesn't count): straight up in legs of up to 16 blocks, pillaring with scaffold blocks and digging what is above, else a staircase dug into the wall. A leg stops the moment the bot is at the surface (it used to pillar on into the open air above the ground). `done`: `reached open sky at y <n> (climbed <k>)`, `data: {pos, y, climbed}`. `partial`: `stopped at y <n> (climbed <k>): lava above at y <m>` (or water), `bedrock above at y <m>`, or `no way up` (` (no scaffold blocks to pillar with)` when it had none).
+- **`target: "surface"`:** the ground surface: climbs until there is open sky overhead, a side open at head height (the bottom of an open shaft doesn't count), and it stands on natural ground (`surroundings.ground.below` is 0: not leaves, a log, or a block it placed; pillaring up into a tree is not the surface). With open sky but up on leaves, a trunk or its own pillar, it walks down to the natural ground it sees (`ground.at`, no scaffolding); `partial` `open sky at y <n>, but standing on <block> (placed by you), not the ground; no natural ground in sight` when it sees none. Otherwise: straight up in legs of up to 16 blocks, pillaring with scaffold blocks and digging what is above, else a staircase dug into the wall. A leg stops the moment the bot is at the surface (it used to pillar on into the open air above the ground). `done`: `reached open sky at y <n> (climbed <k>)`, `data: {pos, y, climbed}`. `partial`: `stopped at y <n> (climbed <k>): lava above at y <m>` (or water), `bedrock above at y <m>`, or `no way up` (` (no scaffold blocks to pillar with)` when it had none).
 - **`range`:** 0–32; default 1, or 2 with a target.
 - **`dig`:** may tunnel through blocks in the way.
 - **`scaffold`:** may place blocks to pillar or bridge, from dirt, cobblestone, cobbled_deepslate, netherrack, andesite, diorite, granite or tuff in the inventory.
@@ -220,8 +220,13 @@ Use play for anything a player would do by hand (climb out, cross terrain, fight
   - `refused`: `play layer is off` (parked; `ATLAS_PLAYER_PLAY=1` turns it on)
   - Results carry `data: {end, ticks, seconds, moved, from, to, dug, placed, damage, log}`. `log` is the `logs/player-<date>.jsonl` file holding every tick.
 
+### inspect {box: [[x1, y1, z1], [x2, y2, z2]]}
+- **What it does:** the region view: every block in the box (corners inclusive, any order, at most 32x32x32) the bot can see a face of from where it stands. Line of sight as always: blocks behind others are counted as `hidden`, never named. Runs alongside a running verb, like `say` and `recall`.
+- **Result:** `done`, `inspected <w>x<h>x<d> box [lo]..[hi]: <n> visible blocks (<block> <n>, …); <k> hidden`, with `data: {box: [lo, hi], size, visible, hidden, counts: {block: n}, blocks: [[x, y, z, "block"], …]}` (air is never listed; at most 512 blocks listed, the counts cover all of them).
+- `failed`: `inspect: the box is <w>x<h>x<d> = <n> cells; at most 32768`.
+
 ## Not implemented yet
-`inspect`, `build`, `fight`, `flee` and the Later list in CONTRACT.md. Calling one gives `failed` with `verb not implemented yet: <verb>`.
+`build`, `fight`, `flee` and the Later list in CONTRACT.md. Calling one gives `failed` with `verb not implemented yet: <verb>`.
 
 ## Events
 

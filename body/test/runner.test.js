@@ -38,10 +38,12 @@ test('while a verb runs, other calls are refused "busy": not queued, nothing can
   assert.equal(r.task().id, 'c1')
   assert.equal(act.halts, 0)
 
-  // say, recall, inspect run alongside (inspect is not implemented yet, but is not "busy")
+  // say, recall, inspect run alongside (this bare act has no api for inspect to look with, but it is not "busy")
   assert.deepEqual(await r.run(act, { id: 'c6', verb: 'say', args: { text: 'hi' } }), { status: 'done', detail: 'said: hi' })
   assert.deepEqual(await r.run(act, { id: 'c7', verb: 'recall', args: { type: 'iron_ore' } }), { status: 'failed', detail: 'unknown' })
-  assert.deepEqual(await r.run(act, { id: 'c8', verb: 'inspect', args: { box: [[0, 0, 0], [1, 1, 1]] } }), { status: 'failed', detail: 'verb not implemented yet: inspect' })
+  const ins = await r.run(act, { id: 'c8', verb: 'inspect', args: { box: [[0, 0, 0], [1, 1, 1]] } })
+  assert.notEqual(ins.detail, 'busy')
+  assert.match(ins.detail, /^inspect: /)
   assert.equal(r.task().id, 'c1', 'still the task')
   assert.deepEqual(act.said, ['hi'])
 

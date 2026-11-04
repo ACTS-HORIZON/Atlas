@@ -19,6 +19,8 @@ function fakeMotor (w, opt = {}) {
     pos: opt.pos || [0.5, 10, 0.5],
     calls: [],
     picked: new Set(),
+    placedSet: new Set(opt.placed || []), // "x,y,z" the bot placed (the real Motor tracks bot.placeBlock)
+    isPlaced (x, y, z) { return this.placedSet.has(`${x},${y},${z}`) },
     here () { return [...this.pos] },
     gamemode () { return opt.gamemode || 'survival' },
     facing () { return this.dir || opt.facing || 'south' },
@@ -57,6 +59,7 @@ function fakeMotor (w, opt = {}) {
       this.calls.push(['pillar', item])
       const f = this.pos.map(Math.floor)
       w.set(f[0], f[1], f[2], item)
+      this.placedSet.add(f.join(','))
       this.pos = [this.pos[0], this.pos[1] + 1, this.pos[2]]
       return { ok: true }
     },
@@ -78,7 +81,7 @@ function fakeMotor (w, opt = {}) {
     isFood (n) { return (opt.edible || ['bread', 'cooked_beef', 'rotten_flesh', 'apple']).includes(n) },
     async eat (item) { this.calls.push(['eat', item]); opt.food = Math.min(20, (opt.food ?? 20) + 5); return { ok: true } },
     async equip (item, slot) { this.calls.push(['equip', item, slot]); return { ok: true } },
-    async place (item, ref, pos) { this.calls.push(['place', item, ref, pos]); w.set(pos[0], pos[1], pos[2], item); return { ok: true } },
+    async place (item, ref, pos) { this.calls.push(['place', item, ref, pos]); w.set(pos[0], pos[1], pos[2], item); this.placedSet.add(pos.join(',')); if (opt.inv && opt.inv[item]) opt.inv[item]--; return { ok: true } },
     craftPlan (item, count) { return opt.craftPlan ? opt.craftPlan(item, count) : { known: true, options: [] } },
     async craft (item, count, tablePos) { this.calls.push(['craft', item, count, tablePos]); return { ok: true, crafted: count } },
     async toss (item, count, at) {
@@ -118,7 +121,7 @@ function setup (w, opt = {}) {
   const places = new KnownPlaces({ file: null })
   const players = opt.players || []
   const entities = opt.entities || []
-  const viewNow = () => makeView(w, { pos: motor.here(), yaw: 0, players: typeof players === 'function' ? players(motor) : players, entities, waypoints: opt.locator ? opt.locator.list() : [] })
+  const viewNow = () => makeView(w, { pos: motor.here(), yaw: 0, placedAt: (x, y, z) => !!(motor.isPlaced && motor.isPlaced(x, y, z)), players: typeof players === 'function' ? players(motor) : players, entities, waypoints: opt.locator ? opt.locator.list() : [] })
   const observe = () => {
     const v = viewNow()
     const { obs } = buildObs(v, {})

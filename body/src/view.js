@@ -33,9 +33,10 @@ const snake = s => String(s).replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/\s+
 const AIR_CLASS = classify('air')
 
 class MineflayerView {
-  constructor (bot, { sightRadius, locator = null }) {
+  constructor (bot, { sightRadius, locator = null, placedAt = null }) {
     this.bot = bot
     this.locator = locator
+    this.placedAt = placedAt // (x, y, z) -> did the bot place that block (Motor.isPlaced)
     this.maxSight = sightRadius
     this.byState = [] // stateId -> classify() result, filled lazily
     this.cols = new Map()
@@ -299,6 +300,7 @@ class MineflayerView {
         gamemode: bot.game.gameMode
       },
       classAt: this.classAt,
+      placedAt: this.placedAt || (() => false),
       scanNotable: (e, R, visit) => this.scanNotable(e, R, visit),
       entities,
       players,
