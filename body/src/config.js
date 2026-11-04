@@ -61,7 +61,7 @@ module.exports = {
   // The player loop (src/player): the decision model on Horizon; empty URL = off
   playerUrl: env('ATLAS_PLAYER_URL', ''),
   playerModel: env('ATLAS_PLAYER_MODEL', 'd1-2b'),
-  playerTimeoutMs: positive('ATLAS_PLAYER_TIMEOUT_MS', 40),
+  playerTimeoutMs: positive('ATLAS_PLAYER_TIMEOUT_MS', 60),
   playerHz: positive('ATLAS_PLAYER_HZ', 20),
   // while a scripted verb runs, the loop ticks with intent "survive" (0 = off)
   playerOverride: env('ATLAS_PLAYER_OVERRIDE', '1') !== '0',

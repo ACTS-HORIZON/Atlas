@@ -19,7 +19,7 @@
 //     still paused after maxPauseMs: interrupt() (the verb ends interrupted).
 const fs = require('fs')
 const path = require('path')
-const { offeredActions, blockFor, stepOk, DIRS, LEFT, RIGHT } = require('./offered')
+const { offeredActions, describe, blockFor, stepOk, DIRS, LEFT, RIGHT } = require('./offered')
 const { reflexView } = require('./view')
 
 const r1 = v => Math.round(v * 10) / 10
@@ -68,8 +68,10 @@ class PlayerLoop {
   probe (api, st) {
     const o = this.obs(api) || {}
     const s = api.sight()
-    const feet = api.here().pos.map(Math.floor)
+    const pos = api.here().pos
+    const feet = [Math.floor(pos[0]), Math.floor(pos[1] + 1e-3), Math.floor(pos[2])] // 63.9999 standing on a block is 64
     return {
+      sides: o.surroundings ? o.surroundings.sides : null,
       feet,
       dir: st.dir,
       cls: (x, y, z) => s.classAt(x, y, z),
@@ -87,20 +89,26 @@ class PlayerLoop {
     const probe = this.probe(api, st)
     const offered = offeredActions(probe, mode)
     const obs = this.obs(api)
-    const view = reflexView({ obs, probe, intent: st.intent, target: st.target, recent: st.recent, offered, pitch: st.pitch })
-    const c = await this.chooser.choose(view, offered)
+    const view = reflexView({ obs, probe, intent: st.intent, target: st.target, recent: st.recent, offered, pitch: st.pitch, noProgress: st.noProgress })
+    const criteria = describe(probe, offered, { sky: obs && obs.surroundings ? !!obs.surroundings.sky : null })
+    const c = await this.chooser.choose(view, offered, { intent: mode === 'survive' ? null : (st.target ? `${st.intent} (target: ${st.target})` : st.intent), criteria })
     const before = { pos: api.here().pos, health: obs && obs.self ? obs.self.health : null }
     const res = await this.execute(api, st, c.choice, probe)
     this.obsCache.at = 0 // the world changed: look again next tick
+    this.obsCache.obs = null
     const after = api.here().pos
     const moved = Math.hypot(after[0] - before.pos[0], after[1] - before.pos[1], after[2] - before.pos[2])
     const effect = res.effect || (moved >= 0.5 ? `moved ${r1(moved)}` : 'no change')
     st.recent.push({ action: c.choice, effect })
-    if (st.recent.length > 3) st.recent.shift()
+    if (st.recent.length > 5) st.recent.shift()
+    // no progress: the same block and the same surroundings sentence as last tick
+    const here = after.map(Math.floor).join(',') + '|' + ((this.obs(api) || {}).surroundings || {}).summary
+    st.noProgress = here === st.lastPlace ? (st.noProgress || 0) + 1 : 0
+    st.lastPlace = here
     if (res.dug) st.dug++
     if (res.placed) st.placed++
     st.ticks++
-    const rec = { mode, intent: st.intent, target: st.target, view, offered, chosen: c.choice, probabilities: c.probabilities, latency_ms: r1(c.latency), timed_out: c.timedOut, effect }
+    const rec = { mode, intent: st.intent, target: st.target, view, offered, criteria, chosen: c.choice, probabilities: c.probabilities, latency_ms: r1(c.latency), timed_out: c.timedOut, ...(c.error ? { error: c.error } : {}), effect }
     this.log.write(rec)
     this.last.push({ t: Date.now(), mode, offered, chosen: c.choice, latency_ms: r1(c.latency), effect })
     if (this.last.length > 10) this.last.shift()

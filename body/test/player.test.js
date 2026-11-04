@@ -115,7 +115,8 @@ test('scripted chooser: up a 20-block shaft by dig_above / place_below_and_jump 
   await loop.close()
   const lines = fs.readFileSync(r.log, 'utf8').trim().split('\n').map(l => JSON.parse(l))
   assert.equal(lines.length, r.ticks)
-  assert.deepEqual(Object.keys(lines[0]).sort(), ['chosen', 'effect', 'intent', 'latency_ms', 'mode', 'offered', 'probabilities', 'target', 'timed_out', 'ts', 'view'])
+  assert.deepEqual(Object.keys(lines[0]).sort(), ['chosen', 'criteria', 'effect', 'intent', 'latency_ms', 'mode', 'offered', 'probabilities', 'target', 'timed_out', 'ts', 'view'])
+  assert.equal(lines[0].criteria.dig_above, 'break the stone block above you (sky not visible)')
   assert.equal(lines[0].chosen, 'dig_above')
   assert.equal(lines[0].effect, 'dug stone above')
   assert.equal(lines.at(-1).chosen, 'done')
@@ -222,7 +223,7 @@ test('decision client: the request, the answer, wait on timeout or an answer not
   c = new DecisionClient({ url: 'x', fetchImpl: async () => { throw new Error('ECONNREFUSED') } })
   r = await c.choose({}, ['step', 'wait'])
   assert.deepEqual([r.choice, r.error], ['wait', 'ECONNREFUSED'])
-  assert.match(c.stats.report(), /^\[player\] 1 ticks, latency p50 [\d.]+ ms p95 [\d.]+ ms, 0 timeouts, 1 errors$/)
+  assert.match(c.stats.report(), /^\[player\] 1 ticks in [\d.]+ s \([\d.]+ Hz achieved\), latency p50 [\d.]+ ms p95 [\d.]+ ms, 0 timeouts, 1 errors \(ECONNREFUSED x1\), 0 answers not offered$/)
 })
 
 // ---- the /v1/systemone contract, as verified on Horizon (Session 6b-2) ----
@@ -233,15 +234,20 @@ const KNOWN_VIEW = { self: { health: 14, food: 17, held: 'stone_pickaxe', y: 10,
   intent: 'get to the surface', threats: [], hazards: ['drop 2 east'], surroundings: 'in a 1-wide shaft 5 deep, stone all sides, roof 1 above', sky: false,
   recent: [{ action: 'dig_above', effect: 'dug stone above' }], offered: ['jump', 'dig_above', 'place_below_and_jump', 'wait', 'done', 'stuck'] }
 
+const KNOWN_CRITERIA = { jump: 'jump in place (stone above your head)', dig_above: 'break the stone block above you (sky not visible)',
+  place_below_and_jump: 'jump and place cobblestone under your feet to climb one block (12 cobblestone left)', wait: 'do nothing this tick',
+  done: 'the goal is satisfied now', stuck: 'no offered action can make progress toward the goal' }
+
 test('systemone contract: the request body, byte for byte, for a known view', () => {
   const c = new DecisionClient({ url: 'http://10.0.0.140:8000/upstream/d1-2b/v1/systemone' })
-  const body = JSON.stringify(c.request(KNOWN_VIEW, KNOWN_VIEW.offered))
+  const body = JSON.stringify(c.request(KNOWN_VIEW, KNOWN_VIEW.offered, { intent: 'get to the surface', criteria: KNOWN_CRITERIA }))
   const expected = '{"model":"d1-2b","state":"{\\"self\\":{\\"health\\":14,\\"food\\":17,\\"held\\":\\"stone_pickaxe\\",\\"y\\":10,\\"facing\\":\\"south\\",\\"pitch\\":0,\\"on_ground\\":true},' +
     '\\"intent\\":\\"get to the surface\\",\\"threats\\":[],\\"hazards\\":[\\"drop 2 east\\"],\\"surroundings\\":\\"in a 1-wide shaft 5 deep, stone all sides, roof 1 above\\",\\"sky\\":false,' +
     '\\"recent\\":[{\\"action\\":\\"dig_above\\",\\"effect\\":\\"dug stone above\\"}],\\"offered\\":[\\"jump\\",\\"dig_above\\",\\"place_below_and_jump\\",\\"wait\\",\\"done\\",\\"stuck\\"]}",' +
-    '"questions":{"action":{"type":"choice","instructions":"Choose the one action the player should take this tick to pursue the intent in the state, staying safe.",' +
-    '"criteria":{"jump":"jump in place","dig_above":"break the block above the head","place_below_and_jump":"jump and place a block under the feet to climb one block",' +
-    '"wait":"do nothing this tick","done":"the intent is accomplished","stuck":"the intent cannot be accomplished from here"}}}}'
+    '"questions":{"action":{"type":"choice","instructions":"Goal: get to the surface. Pick the one action that makes progress toward it now. If no offered action can make progress, answer stuck. Answer done only when the goal is satisfied.",' +
+    '"criteria":{"jump":"jump in place (stone above your head)","dig_above":"break the stone block above you (sky not visible)",' +
+    '"place_below_and_jump":"jump and place cobblestone under your feet to climb one block (12 cobblestone left)",' +
+    '"wait":"do nothing this tick","done":"the goal is satisfied now","stuck":"no offered action can make progress toward the goal"}}}}'
   assert.equal(body, expected)
   const parsed = JSON.parse(body)
   assert.deepEqual(Object.keys(parsed), ['model', 'state', 'questions'])
@@ -249,6 +255,11 @@ test('systemone contract: the request body, byte for byte, for a known view', ()
   assert.deepEqual(JSON.parse(parsed.state), KNOWN_VIEW)
   assert.deepEqual(Object.keys(parsed.questions.action), ['type', 'instructions', 'criteria'])
   for (const a of MICRO) assert.equal(typeof DESCRIPTIONS[a], 'string', `a description for ${a}`)
+  // the intent defaults to the view's own; the survive override asks its own question
+  assert.match(c.request(KNOWN_VIEW, ['wait']).questions.action.instructions, /^Goal: get to the surface\. /)
+  assert.equal(c.request(KNOWN_VIEW, ['wait', 'continue_task'], { intent: null }).questions.action.instructions,
+    'Goal: stay alive while the running task goes on. Pick continue_task unless a threat or a hazard needs a reaction now.')
+  assert.equal(c.request(KNOWN_VIEW, ['wait']).questions.action.criteria.wait, 'do nothing this tick', 'no criteria given: the static base line')
 })
 
 test('systemone: a stub server with the real response shape; the URL is used as is; an answer outside the offered set is wait', async (t) => {
@@ -278,4 +289,98 @@ test('systemone: a stub server with the real response shape; the URL is used as 
   const n = await c.choose(KNOWN_VIEW, KNOWN_VIEW.offered)
   assert.equal(n.choice, 'wait')
   assert.equal(n.error, 'answer not offered: sprint')
+})
+
+// ---- 6b-4: the filter never offers a step into a wall; criteria say what is true now; no progress; budget and errors
+const { describe } = require('../src/player/offered')
+
+test('a tunnel facing a wall: no step or sprint, dig_ahead offered; and never a step the surroundings rule out', () => {
+  const w = new FakeWorld({ fill: 'stone' }).box([0, 10, -5], [0, 11, 0], 'air') // a 1-wide tunnel running north, its end at z 0; stone to the south
+  const p = probe(w, { feet: [0, 10, 0], dir: 'south' })
+  const o = offeredActions(p)
+  assert.ok(!o.includes('step') && !o.includes('sprint'), o.join(' '))
+  assert.ok(o.includes('dig_ahead'))
+  const n = offeredActions(probe(w, { feet: [0, 10, 0], dir: 'north' }))
+  assert.ok(n.includes('step'), 'down the tunnel is fine')
+  // the cells say open, but the surroundings the model sees say stone 1 ahead: no step
+  const q = { ...probe(w, { feet: [0, 10, 0], dir: 'north' }), sides: { north: ['stone 1', 'stone 1'] } }
+  assert.ok(!offeredActions(q).includes('step'))
+  // head-high wall only: still no step
+  const h = new FakeWorld({ fill: 'air' }).box([-5, 0, -5], [5, 9, 5], 'stone').set(0, 11, 1, 'stone')
+  assert.ok(!offeredActions(probe(h, { dir: 'south' })).includes('step'))
+})
+
+test('criteria are written for this tick: what is above, ahead, to each side', () => {
+  const w = new FakeWorld({ fill: 'stone' }).box([0, 10, -5], [0, 11, 0], 'air').box([0, 10, 1], [0, 11, 1], 'air') // tunnel north, one open cell south
+  const p = probe(w, { feet: [0, 10, 0], dir: 'south', inventory: { cobblestone: 12 }, food: 12, foods: ['bread'], threats: [{ type: 'zombie', rel: [0, 0, -3], dist: 3 }] })
+  const offered = offeredActions(p)
+  const c = describe(p, offered, { sky: false })
+  assert.equal(c.dig_above, 'break the stone block above you (sky not visible)')
+  assert.equal(c.step, 'walk one block south into open air')
+  assert.equal(c.turn_left, 'face east (stone)')
+  assert.equal(c.turn_right, 'face west (stone)')
+  assert.equal(c.dig_below, 'break the stone block under your feet (stone below it)')
+  assert.equal(c.eat, 'eat bread (food 12/20)')
+  assert.equal(c.retreat, 'step south, away from the zombie')
+  assert.equal(c.attack, 'hit the zombie 3 blocks away')
+  assert.equal(c.wait, 'do nothing this tick', 'no fact: the base line')
+  assert.deepEqual(Object.keys(c), offered)
+})
+
+test('the view carries the last 5 actions and "no progress for N ticks"; the loop sends intent and criteria', async () => {
+  const w = new FakeWorld({ fill: 'stone' }).box([0, 10, 0], [0, 11, 0], 'air')
+  const s = setup(w, { pos: [0.5, 10, 0.5] })
+  const seen = []
+  const loop = new PlayerLoop({ chooser: new ScriptedChooser((v, offered, opts) => { seen.push({ v, opts }); return 'wait' }), hz: 1000 })
+  await loop.run(s.api, { intent: 'get to the surface', budgetTicks: 8 })
+  const last = seen.at(-1)
+  assert.equal(last.v.recent.length, 5)
+  assert.equal(last.v.progress, 'no progress for 6 ticks', 'the 8th view: ticks 2-7 changed nothing')
+  assert.equal(seen[0].v.progress, undefined, 'nothing to compare on the first tick')
+  assert.equal(last.opts.intent, 'get to the surface')
+  assert.equal(last.opts.criteria.dig_above, 'break the stone block above you (sky not visible)')
+})
+
+test('budget and errors: 60 ms default, the achieved tick rate, errors logged and counted by kind, unoffered counted', async () => {
+  const logged = []
+  const ok = { answers: { action: { choice: 'sprint', probabilities: {}, confidence: 0.4 } } }
+  let mode = 'unoffered'
+  const c = new DecisionClient({
+    url: 'x',
+    log: m => logged.push(m),
+    fetchImpl: async () => {
+      if (mode === 'reset') throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_SOCKET', message: 'other side closed' } })
+      if (mode === '503') return { ok: false, status: 503, json: async () => ({}) }
+      return { ok: true, json: async () => ok }
+    }
+  })
+  assert.equal(c.timeoutMs, 60)
+  await c.choose({}, ['wait', 'step'])
+  mode = 'reset'; await c.choose({}, ['wait']); await c.choose({}, ['wait'])
+  mode = '503'; await c.choose({}, ['wait'])
+  assert.deepEqual(logged, ['[player] answer not offered: sprint', '[player] decision error: fetch failed: UND_ERR_SOCKET', '[player] decision error: fetch failed: UND_ERR_SOCKET', '[player] decision error: HTTP 503'])
+  const r = c.stats.report(c.stats.since + 2000)
+  assert.equal(r.replace(/p50 [\d.]+ ms p95 [\d.]+ ms/, 'p50 X p95 X'),
+    '[player] 4 ticks in 2.0 s (2.0 Hz achieved), latency p50 X p95 X, 0 timeouts, 3 errors (fetch failed: UND_ERR_SOCKET x2, HTTP 503 x1), 1 answers not offered')
+  for (let i = 0; i < 10; i++) await c.choose({}, ['wait'])
+  assert.equal(logged.length, 5, 'at most 5 lines a minute; the rest are only counted')
+})
+
+test('scripts/player_eval.py: the 10 hand-written views, and its requests are byte-identical to DecisionClient.request()', () => {
+  const { execFileSync } = require('child_process')
+  const root = path.join(__dirname, '..', '..')
+  const views = JSON.parse(fs.readFileSync(path.join(root, 'scripts', 'player_eval_views.json'), 'utf8')).views
+  assert.equal(views.length, 10)
+  const wants = views.map(v => v.want.join('/'))
+  for (const w of ['dig_above', 'step', 'turn_left', 'retreat', 'done', 'stuck']) assert.ok(wants.some(x => x.split('/').includes(w)), `a view wants ${w}`)
+  let py = null
+  try { execFileSync('python3', ['--version']) ; py = 'python3' } catch { }
+  if (!py) return
+  const c = new DecisionClient({ url: 'x' })
+  views.forEach((v, i) => {
+    for (const a of v.offered) assert.ok(v.state.offered.includes(a), `view ${i}: offered matches the view`)
+    const out = execFileSync(py, [path.join(root, 'scripts', 'player_eval.py'), '--print-request', String(i)], { encoding: 'utf8' })
+    const want = JSON.stringify(c.request(v.state, v.offered, { intent: v.mode === 'survive' ? null : v.intent, criteria: v.criteria }))
+    assert.equal(out, want, `view ${i} (${v.name})`)
+  })
 })

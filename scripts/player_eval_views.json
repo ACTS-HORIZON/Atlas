@@ -1,0 +1,710 @@
+{
+ "_comment": "Hand-written reflex views for scripts/player_eval.py: state (the reflex view as the body builds it), offered, criteria (as describe() would write them), and the answers we want.",
+ "views": [
+  {
+   "name": "wall ahead, open shaft above (climb out)",
+   "mode": "play",
+   "intent": "get to the surface",
+   "want": [
+    "place_below_and_jump",
+    "dig_above"
+   ],
+   "state": {
+    "self": {
+     "health": 20,
+     "food": 18,
+     "held": "stone_pickaxe",
+     "y": -1,
+     "facing": "south",
+     "pitch": 0,
+     "on_ground": true
+    },
+    "intent": "get to the surface",
+    "threats": [],
+    "hazards": [],
+    "surroundings": "in a 1-wide shaft 6 deep, stone all sides, open above",
+    "sky": true,
+    "recent": [
+     {
+      "action": "dig_above",
+      "effect": "dug stone above"
+     },
+     {
+      "action": "place_below_and_jump",
+      "effect": "pillared up on cobblestone"
+     }
+    ],
+    "offered": [
+     "jump",
+     "turn_left",
+     "turn_right",
+     "look_up",
+     "look_down",
+     "dig_ahead",
+     "dig_below",
+     "place_below_and_jump",
+     "wait",
+     "done",
+     "stuck"
+    ]
+   },
+   "offered": [
+    "jump",
+    "turn_left",
+    "turn_right",
+    "look_up",
+    "look_down",
+    "dig_ahead",
+    "dig_below",
+    "place_below_and_jump",
+    "wait",
+    "done",
+    "stuck"
+   ],
+   "criteria": {
+    "jump": "jump in place (open air above your head)",
+    "turn_left": "face east (stone)",
+    "turn_right": "face west (stone)",
+    "look_up": "tilt the view up",
+    "look_down": "tilt the view down",
+    "dig_ahead": "break the stone block ahead of you (south, at head height)",
+    "dig_below": "break the cobblestone block under your feet (cobblestone below it)",
+    "place_below_and_jump": "jump and place cobblestone under your feet to climb one block (40 cobblestone left)",
+    "wait": "do nothing this tick",
+    "done": "the goal is satisfied now",
+    "stuck": "no offered action can make progress toward the goal"
+   }
+  },
+  {
+   "name": "wall ahead, stone above, surface close (dig up)",
+   "mode": "play",
+   "intent": "get to the surface",
+   "want": [
+    "dig_above",
+    "place_below_and_jump"
+   ],
+   "state": {
+    "self": {
+     "health": 20,
+     "food": 18,
+     "held": "stone_pickaxe",
+     "y": 58,
+     "facing": "south",
+     "pitch": 0,
+     "on_ground": true
+    },
+    "intent": "get to the surface",
+    "threats": [],
+    "hazards": [],
+    "surroundings": "boxed in: stone all sides and above",
+    "sky": false,
+    "recent": [
+     {
+      "action": "place_below_and_jump",
+      "effect": "pillared up on cobblestone"
+     }
+    ],
+    "offered": [
+     "turn_left",
+     "turn_right",
+     "look_up",
+     "look_down",
+     "dig_ahead",
+     "dig_above",
+     "dig_below",
+     "wait",
+     "done",
+     "stuck"
+    ]
+   },
+   "offered": [
+    "turn_left",
+    "turn_right",
+    "look_up",
+    "look_down",
+    "dig_ahead",
+    "dig_above",
+    "dig_below",
+    "wait",
+    "done",
+    "stuck"
+   ],
+   "criteria": {
+    "turn_left": "face east (stone)",
+    "turn_right": "face west (stone)",
+    "look_up": "tilt the view up",
+    "look_down": "tilt the view down",
+    "dig_ahead": "break the stone block ahead of you (south, at head height)",
+    "dig_above": "break the stone block above you (sky not visible)",
+    "dig_below": "break the cobblestone block under your feet (cobblestone below it)",
+    "wait": "do nothing this tick",
+    "done": "the goal is satisfied now",
+    "stuck": "no offered action can make progress toward the goal"
+   }
+  },
+  {
+   "name": "open ground, target ahead (north, facing north)",
+   "mode": "play",
+   "intent": "walk to Rook",
+   "want": [
+    "step",
+    "sprint"
+   ],
+   "state": {
+    "self": {
+     "health": 20,
+     "food": 18,
+     "held": "stone_pickaxe",
+     "y": 64,
+     "facing": "north",
+     "pitch": 0,
+     "on_ground": true
+    },
+    "intent": "walk to Rook (target: Rook)",
+    "target": {
+     "name": "Rook",
+     "dist": 14.2,
+     "bearing": "front"
+    },
+    "threats": [],
+    "hazards": [],
+    "surroundings": "on open flat ground",
+    "sky": true,
+    "recent": [],
+    "offered": [
+     "step",
+     "sprint",
+     "jump",
+     "turn_left",
+     "turn_right",
+     "look_up",
+     "look_down",
+     "dig_below",
+     "wait",
+     "done",
+     "stuck"
+    ]
+   },
+   "offered": [
+    "step",
+    "sprint",
+    "jump",
+    "turn_left",
+    "turn_right",
+    "look_up",
+    "look_down",
+    "dig_below",
+    "wait",
+    "done",
+    "stuck"
+   ],
+   "criteria": {
+    "step": "walk one block north into open air",
+    "sprint": "sprint two blocks north through open air",
+    "jump": "jump in place (open air above your head)",
+    "turn_left": "face west (open)",
+    "turn_right": "face east (open)",
+    "look_up": "tilt the view up",
+    "look_down": "tilt the view down",
+    "dig_below": "break the grass_block block under your feet (dirt below it)",
+    "wait": "do nothing this tick",
+    "done": "the goal is satisfied now",
+    "stuck": "no offered action can make progress toward the goal"
+   }
+  },
+  {
+   "name": "open ground, target north, facing east (turn)",
+   "mode": "play",
+   "intent": "walk to Rook",
+   "want": [
+    "turn_left"
+   ],
+   "state": {
+    "self": {
+     "health": 20,
+     "food": 18,
+     "held": "stone_pickaxe",
+     "y": 64,
+     "facing": "east",
+     "pitch": 0,
+     "on_ground": true
+    },
+    "intent": "walk to Rook (target: Rook)",
+    "target": {
+     "name": "Rook",
+     "dist": 14.2,
+     "bearing": "left"
+    },
+    "threats": [],
+    "hazards": [],
+    "surroundings": "on open flat ground",
+    "sky": true,
+    "recent": [
+     {
+      "action": "turn_right",
+      "effect": "facing east"
+     }
+    ],
+    "offered": [
+     "step",
+     "sprint",
+     "jump",
+     "turn_left",
+     "turn_right",
+     "look_up",
+     "look_down",
+     "dig_below",
+     "wait",
+     "done",
+     "stuck"
+    ]
+   },
+   "offered": [
+    "step",
+    "sprint",
+    "jump",
+    "turn_left",
+    "turn_right",
+    "look_up",
+    "look_down",
+    "dig_below",
+    "wait",
+    "done",
+    "stuck"
+   ],
+   "criteria": {
+    "step": "walk one block east into open air",
+    "sprint": "sprint two blocks east through open air",
+    "jump": "jump in place (open air above your head)",
+    "turn_left": "face north (open)",
+    "turn_right": "face south (open)",
+    "look_up": "tilt the view up",
+    "look_down": "tilt the view down",
+    "dig_below": "break the grass_block block under your feet (dirt below it)",
+    "wait": "do nothing this tick",
+    "done": "the goal is satisfied now",
+    "stuck": "no offered action can make progress toward the goal"
+   }
+  },
+  {
+   "name": "zombie adjacent, low health",
+   "mode": "play",
+   "intent": "walk to Rook",
+   "want": [
+    "retreat",
+    "attack"
+   ],
+   "state": {
+    "self": {
+     "health": 5,
+     "food": 18,
+     "held": "stone_pickaxe",
+     "y": 64,
+     "facing": "north",
+     "pitch": 0,
+     "on_ground": true
+    },
+    "intent": "walk to Rook (target: Rook)",
+    "target": {
+     "name": "Rook",
+     "seen": false
+    },
+    "threats": [
+     {
+      "type": "zombie",
+      "bearing": "front",
+      "dist": 1.4,
+      "approaching": true
+     }
+    ],
+    "hazards": [],
+    "surroundings": "on open flat ground",
+    "sky": true,
+    "recent": [
+     {
+      "action": "step",
+      "effect": "moved 1"
+     }
+    ],
+    "offered": [
+     "jump",
+     "turn_left",
+     "turn_right",
+     "look_up",
+     "look_down",
+     "dig_below",
+     "attack",
+     "retreat",
+     "wait",
+     "done",
+     "stuck"
+    ]
+   },
+   "offered": [
+    "jump",
+    "turn_left",
+    "turn_right",
+    "look_up",
+    "look_down",
+    "dig_below",
+    "attack",
+    "retreat",
+    "wait",
+    "done",
+    "stuck"
+   ],
+   "criteria": {
+    "jump": "jump in place (open air above your head)",
+    "turn_left": "face west (open)",
+    "turn_right": "face east (open)",
+    "look_up": "tilt the view up",
+    "look_down": "tilt the view down",
+    "dig_below": "break the grass_block block under your feet (dirt below it)",
+    "attack": "hit the zombie 1.4 blocks away",
+    "retreat": "step south, away from the zombie",
+    "wait": "do nothing this tick",
+    "done": "the goal is satisfied now",
+    "stuck": "no offered action can make progress toward the goal"
+   }
+  },
+  {
+   "name": "two zombies close, low health, override",
+   "mode": "survive",
+   "intent": "survive",
+   "want": [
+    "retreat",
+    "attack"
+   ],
+   "state": {
+    "self": {
+     "health": 4,
+     "food": 9,
+     "held": "stone_pickaxe",
+     "y": 64,
+     "facing": "east",
+     "pitch": 0,
+     "on_ground": true
+    },
+    "intent": "survive",
+    "threats": [
+     {
+      "type": "zombie",
+      "bearing": "front",
+      "dist": 2.1,
+      "approaching": true
+     },
+     {
+      "type": "zombie",
+      "bearing": "front-right",
+      "dist": 3.0,
+      "approaching": true
+     }
+    ],
+    "hazards": [],
+    "surroundings": "on open flat ground",
+    "sky": true,
+    "recent": [],
+    "offered": [
+     "jump",
+     "attack",
+     "retreat",
+     "eat",
+     "wait",
+     "continue_task"
+    ]
+   },
+   "offered": [
+    "jump",
+    "attack",
+    "retreat",
+    "eat",
+    "wait",
+    "continue_task"
+   ],
+   "criteria": {
+    "jump": "jump in place (open air above your head)",
+    "attack": "hit the zombie 2.1 blocks away",
+    "retreat": "step west, away from the zombie",
+    "eat": "eat bread (food 9/20)",
+    "wait": "do nothing this tick",
+    "continue_task": "let the running task carry on"
+   }
+  },
+  {
+   "name": "goal met: next to Rook",
+   "mode": "play",
+   "intent": "walk to Rook",
+   "want": [
+    "done"
+   ],
+   "state": {
+    "self": {
+     "health": 20,
+     "food": 18,
+     "held": "stone_pickaxe",
+     "y": 64,
+     "facing": "north",
+     "pitch": 0,
+     "on_ground": true
+    },
+    "intent": "walk to Rook (target: Rook)",
+    "target": {
+     "name": "Rook",
+     "dist": 1.1,
+     "bearing": "front"
+    },
+    "threats": [],
+    "hazards": [],
+    "surroundings": "on open flat ground",
+    "sky": true,
+    "recent": [
+     {
+      "action": "step",
+      "effect": "moved 1"
+     },
+     {
+      "action": "step",
+      "effect": "moved 1"
+     }
+    ],
+    "offered": [
+     "jump",
+     "turn_left",
+     "turn_right",
+     "look_up",
+     "look_down",
+     "dig_below",
+     "wait",
+     "done",
+     "stuck"
+    ]
+   },
+   "offered": [
+    "jump",
+    "turn_left",
+    "turn_right",
+    "look_up",
+    "look_down",
+    "dig_below",
+    "wait",
+    "done",
+    "stuck"
+   ],
+   "criteria": {
+    "jump": "jump in place (open air above your head)",
+    "turn_left": "face west (open)",
+    "turn_right": "face east (open)",
+    "look_up": "tilt the view up",
+    "look_down": "tilt the view down",
+    "dig_below": "break the grass_block block under your feet (dirt below it)",
+    "wait": "do nothing this tick",
+    "done": "the goal is satisfied now",
+    "stuck": "no offered action can make progress toward the goal"
+   }
+  },
+  {
+   "name": "goal met: out on the surface",
+   "mode": "play",
+   "intent": "get to the surface",
+   "want": [
+    "done"
+   ],
+   "state": {
+    "self": {
+     "health": 20,
+     "food": 18,
+     "held": "stone_pickaxe",
+     "y": 70,
+     "facing": "south",
+     "pitch": 0,
+     "on_ground": true
+    },
+    "intent": "get to the surface",
+    "threats": [],
+    "hazards": [
+     "drop 6 north"
+    ],
+    "surroundings": "on open ground, at the edge of a drop of 6 to the north",
+    "sky": true,
+    "recent": [
+     {
+      "action": "place_below_and_jump",
+      "effect": "pillared up on cobblestone"
+     },
+     {
+      "action": "step",
+      "effect": "moved 1"
+     }
+    ],
+    "offered": [
+     "step",
+     "jump",
+     "turn_left",
+     "turn_right",
+     "look_up",
+     "look_down",
+     "dig_below",
+     "place_below_and_jump",
+     "place_ahead",
+     "wait",
+     "done",
+     "stuck"
+    ]
+   },
+   "offered": [
+    "step",
+    "jump",
+    "turn_left",
+    "turn_right",
+    "look_up",
+    "look_down",
+    "dig_below",
+    "place_below_and_jump",
+    "place_ahead",
+    "wait",
+    "done",
+    "stuck"
+   ],
+   "criteria": {
+    "step": "walk one block south into open air",
+    "jump": "jump in place (open air above your head)",
+    "turn_left": "face east (open)",
+    "turn_right": "face west (open)",
+    "look_up": "tilt the view up",
+    "look_down": "tilt the view down",
+    "dig_below": "break the grass_block block under your feet (dirt below it)",
+    "place_below_and_jump": "jump and place cobblestone under your feet to climb one block (12 cobblestone left)",
+    "place_ahead": "place cobblestone south of you at feet height",
+    "wait": "do nothing this tick",
+    "done": "the goal is satisfied now",
+    "stuck": "no offered action can make progress toward the goal"
+   }
+  },
+  {
+   "name": "sealed in bedrock, no scaffold",
+   "mode": "play",
+   "intent": "get to the surface",
+   "want": [
+    "stuck"
+   ],
+   "state": {
+    "self": {
+     "health": 20,
+     "food": 18,
+     "held": null,
+     "y": -62,
+     "facing": "south",
+     "pitch": 0,
+     "on_ground": true
+    },
+    "intent": "get to the surface",
+    "threats": [],
+    "hazards": [],
+    "surroundings": "boxed in: bedrock all sides and above",
+    "sky": false,
+    "recent": [],
+    "offered": [
+     "turn_left",
+     "turn_right",
+     "look_up",
+     "look_down",
+     "wait",
+     "done",
+     "stuck"
+    ]
+   },
+   "offered": [
+    "turn_left",
+    "turn_right",
+    "look_up",
+    "look_down",
+    "wait",
+    "done",
+    "stuck"
+   ],
+   "criteria": {
+    "turn_left": "face east (bedrock)",
+    "turn_right": "face west (bedrock)",
+    "look_up": "tilt the view up",
+    "look_down": "tilt the view down",
+    "wait": "do nothing this tick",
+    "done": "the goal is satisfied now",
+    "stuck": "no offered action can make progress toward the goal"
+   }
+  },
+  {
+   "name": "sealed in bedrock, nothing changing for a while",
+   "mode": "play",
+   "intent": "get to the surface",
+   "want": [
+    "stuck"
+   ],
+   "state": {
+    "self": {
+     "health": 20,
+     "food": 18,
+     "held": null,
+     "y": -62,
+     "facing": "south",
+     "pitch": 0,
+     "on_ground": true
+    },
+    "intent": "get to the surface",
+    "threats": [],
+    "hazards": [],
+    "surroundings": "boxed in: bedrock all sides and above",
+    "sky": false,
+    "recent": [
+     {
+      "action": "wait",
+      "effect": "waited"
+     },
+     {
+      "action": "turn_left",
+      "effect": "facing east"
+     },
+     {
+      "action": "wait",
+      "effect": "waited"
+     },
+     {
+      "action": "turn_right",
+      "effect": "facing south"
+     },
+     {
+      "action": "wait",
+      "effect": "waited"
+     }
+    ],
+    "progress": "no progress for 12 ticks",
+    "offered": [
+     "turn_left",
+     "turn_right",
+     "look_up",
+     "look_down",
+     "wait",
+     "done",
+     "stuck"
+    ]
+   },
+   "offered": [
+    "turn_left",
+    "turn_right",
+    "look_up",
+    "look_down",
+    "wait",
+    "done",
+    "stuck"
+   ],
+   "criteria": {
+    "turn_left": "face east (bedrock)",
+    "turn_right": "face west (bedrock)",
+    "look_up": "tilt the view up",
+    "look_down": "tilt the view down",
+    "wait": "do nothing this tick",
+    "done": "the goal is satisfied now",
+    "stuck": "no offered action can make progress toward the goal"
+   }
+  }
+ ]
+}

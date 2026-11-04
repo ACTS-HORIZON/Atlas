@@ -9,36 +9,18 @@
 //   cls(x, y, z) -> blocks.classify() result | null (unknown / not loaded),
 //   inventory {name: count}, food (0-20), foods [edible names held],
 //   threats [{type, rel: [dx, dy, dz], dist}] (visible hostiles),
-//   houseOk(action, pos) -> bool (protected regions), onGround
+//   houseOk(action, pos) -> bool (protected regions), onGround,
+//   sides (optional): obs.surroundings.sides, {north: [feet, head], …}, each "stone 1" | null
 const DIRS = { north: [0, -1], east: [1, 0], south: [0, 1], west: [-1, 0] }
 const LEFT = { north: 'west', west: 'south', south: 'east', east: 'north' }
 const RIGHT = { north: 'east', east: 'south', south: 'west', west: 'north' }
 
 const MICRO = ['step', 'sprint', 'jump', 'turn_left', 'turn_right', 'look_up', 'look_down', 'dig_ahead', 'dig_above', 'dig_below',
   'place_below_and_jump', 'place_ahead', 'attack', 'block', 'retreat', 'eat', 'wait', 'done', 'stuck', 'continue_task']
-// One line per micro-action: the `criteria` of the decision model's choice question.
-const DESCRIPTIONS = {
-  step: 'walk one block forward',
-  sprint: 'sprint two blocks forward',
-  jump: 'jump in place',
-  turn_left: 'turn 90 degrees to the left',
-  turn_right: 'turn 90 degrees to the right',
-  look_up: 'tilt the view up',
-  look_down: 'tilt the view down',
-  dig_ahead: 'break the block in front at feet/head height',
-  dig_above: 'break the block above the head',
-  dig_below: 'break the block under the feet and drop into its space',
-  place_below_and_jump: 'jump and place a block under the feet to climb one block',
-  place_ahead: 'place a block in front at feet height',
-  attack: 'hit the nearest hostile mob in reach',
-  block: 'raise the shield',
-  retreat: 'step away from the nearest threat',
-  eat: 'eat food to restore hunger',
-  wait: 'do nothing this tick',
-  done: 'the intent is accomplished',
-  stuck: 'the intent cannot be accomplished from here',
-  continue_task: 'let the running task carry on'
-}
+// The base line per micro-action (src/player/prompt.json, shared with scripts/player_eval.py);
+// describe() overlays what is true right now.
+const PROMPT = require('./prompt.json')
+const DESCRIPTIONS = PROMPT.descriptions
 const SURVIVAL = new Set(['attack', 'block', 'retreat', 'eat', 'jump', 'wait', 'continue_task'])
 
 const HURTS = /^(lava|fire|soul_fire|magma_block|campfire|soul_campfire|cactus|sweet_berry_bush|powder_snow|wither_rose|pointed_dripstone)$/
@@ -81,8 +63,10 @@ function offeredActions (p, mode = 'play') {
   const out = new Set(['wait'])
   const houseOk = p.houseOk || (() => true)
 
-  // moving
-  if (stepOk(p, x, y, z, d)) {
+  // moving: never into a solid block (that is dig_ahead's job), never against what the surroundings say
+  const side = (p.sides && p.sides[p.dir]) || []
+  const wallAhead = side.some(v => typeof v === 'string' && / 1$/.test(v) && !/^(water|lava|air) /.test(v))
+  if (!wallAhead && stepOk(p, x, y, z, d)) {
     out.add('step')
     if ((p.food ?? 20) > 6 && stepOk(p, x + d[0], y, z + d[1], d)) out.add('sprint')
   }
@@ -126,4 +110,44 @@ function offeredActions (p, mode = 'play') {
   return MICRO.filter(a => out.has(a))
 }
 
-module.exports = { offeredActions, landing, stepOk, blockFor, MICRO, DESCRIPTIONS, SURVIVAL, DIRS, LEFT, RIGHT, PLACEABLE, isSolid }
+const NAME = c => (c ? (/^(air|cave_air|void_air)$/.test(c.name) ? 'open air' : c.name) : 'something unseen')
+const AWAY = t => (Math.abs(t.rel[0]) >= Math.abs(t.rel[2]) ? (t.rel[0] > 0 ? 'west' : 'east') : (t.rel[2] > 0 ? 'north' : 'south'))
+
+/**
+ * The criteria for this tick: each offered action's base line with what is true right now, e.g.
+ * dig_above: "break the stone block above you (sky not visible)", step: "walk one block south into open air",
+ * turn_left: "face east (stone)". sky: is there open sky above (obs.surroundings.sky).
+ */
+function describe (p, offered, { sky = null } = {}) {
+  const [x, y, z] = p.feet
+  const d = DIRS[p.dir] || DIRS.north
+  const c = (dx, dy, dz) => p.cls(x + dx, y + dy, z + dz)
+  const headAt = dir => { const e = DIRS[dir]; const f = c(e[0], 0, e[1]); const h = c(e[0], 1, e[1]); return isSolid(h) ? NAME(h) : isSolid(f) ? NAME(f) : 'open' }
+  const t = (p.threats || [])[0]
+  const block = blockFor(p)
+  const facts = {
+    step: () => { const l = landing(p, x + d[0], y, z + d[1]); return `walk one block ${p.dir} into ${NAME(c(d[0], 0, d[1]))}${l.ok && l.depth ? `, dropping ${l.depth}` : ''}` },
+    sprint: () => `sprint two blocks ${p.dir} through open air`,
+    jump: () => `jump in place (${NAME(c(0, 2, 0))} above your head)`,
+    turn_left: () => `face ${LEFT[p.dir]} (${headAt(LEFT[p.dir])})`,
+    turn_right: () => `face ${RIGHT[p.dir]} (${headAt(RIGHT[p.dir])})`,
+    dig_ahead: () => { const h = c(d[0], 1, d[1]); const which = isSolid(h) ? h : c(d[0], 0, d[1]); return `break the ${NAME(which)} block ahead of you (${p.dir}, at ${isSolid(h) ? 'head' : 'feet'} height)` },
+    dig_above: () => `break the ${NAME(c(0, 2, 0))} block above you (sky ${sky === null ? 'unknown' : sky ? 'visible' : 'not visible'})`,
+    dig_below: () => `break the ${NAME(c(0, -1, 0))} block under your feet (${NAME(c(0, -2, 0))} below it)`,
+    place_below_and_jump: () => `jump and place ${block} under your feet to climb one block (${p.inventory[block]} ${block} left)`,
+    place_ahead: () => `place ${block} ${p.dir} of you at feet height`,
+    attack: () => t ? `hit the ${t.type} ${t.dist} blocks away` : null,
+    block: () => t ? `raise the shield against the ${t.type}` : null,
+    retreat: () => t ? `step ${AWAY(t)}, away from the ${t.type}` : null,
+    eat: () => `eat ${(p.foods || [])[0]} (food ${p.food}/20)`
+  }
+  const out = {}
+  for (const act of offered) {
+    let line = null
+    try { line = facts[act] ? facts[act]() : null } catch { line = null }
+    out[act] = line || DESCRIPTIONS[act] || act
+  }
+  return out
+}
+
+module.exports = { describe, PROMPT, offeredActions, landing, stepOk, blockFor, MICRO, DESCRIPTIONS, SURVIVAL, DIRS, LEFT, RIGHT, PLACEABLE, isSolid }

@@ -1,0 +1,27 @@
+{
+  "_comment": "The decision model's question (CONTRACT.md Player loop): read by body/src/player/client.js and scripts/player_eval.py, so the live loop and the offline tuning tool ask the same thing. {intent} is filled in.",
+  "instructions": "Goal: {intent}. Pick the one action that makes progress toward it now. If no offered action can make progress, answer stuck. Answer done only when the goal is satisfied.",
+  "survive_instructions": "Goal: stay alive while the running task goes on. Pick continue_task unless a threat or a hazard needs a reaction now.",
+  "descriptions": {
+    "step": "walk one block forward",
+    "sprint": "sprint two blocks forward",
+    "jump": "jump in place",
+    "turn_left": "turn 90 degrees to the left",
+    "turn_right": "turn 90 degrees to the right",
+    "look_up": "tilt the view up",
+    "look_down": "tilt the view down",
+    "dig_ahead": "break the block in front at feet/head height",
+    "dig_above": "break the block above the head",
+    "dig_below": "break the block under the feet and drop into its space",
+    "place_below_and_jump": "jump and place a block under the feet to climb one block",
+    "place_ahead": "place a block in front at feet height",
+    "attack": "hit the nearest hostile mob in reach",
+    "block": "raise the shield",
+    "retreat": "step away from the nearest threat",
+    "eat": "eat food to restore hunger",
+    "wait": "do nothing this tick",
+    "done": "the goal is satisfied now",
+    "stuck": "no offered action can make progress toward the goal",
+    "continue_task": "let the running task carry on"
+  }
+}

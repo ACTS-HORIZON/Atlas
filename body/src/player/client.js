@@ -1,7 +1,7 @@
 'use strict'
 // The decision model (CONTRACT.md, "Player loop"): d1-2B behind llama.cpp's
 // /v1/systemone endpoint on Horizon. One `choice` question per tick over the
-// offered micro-actions; 40 ms budget, `wait` on timeout or any error.
+// offered micro-actions; 60 ms budget (ATLAS_PLAYER_TIMEOUT_MS), `wait` on timeout or any error.
 //
 // The shape, verified on Horizon (Session 6b-2):
 //   POST <ATLAS_PLAYER_URL>, the full URL, used as is, e.g.
@@ -12,16 +12,25 @@
 //                             "criteria": {"<option>": "<one-line description>", ...}}}}
 //   200 {"answers": {"action": {"choice": "retreat", "probabilities": {...},
 //        "confidence": 0.498}}, "usage": {...}}
-const { DESCRIPTIONS } = require('./offered')
+// instructions and the base criteria lines: src/player/prompt.json (shared with scripts/player_eval.py)
+const PROMPT = require('./prompt.json')
 
-const INSTRUCTIONS = 'Choose the one action the player should take this tick to pursue the intent in the state, staying safe.'
+/** The question's instructions: the intent's goal and the rule; null intent = the survive override. */
+function instructionsFor (intent) {
+  return intent ? PROMPT.instructions.replace('{intent}', intent) : PROMPT.survive_instructions
+}
 
 class LatencyStats {
-  constructor (keep = 2000) { this.keep = keep; this.samples = []; this.timeouts = 0; this.errors = 0; this.ticks = 0 }
-  add (ms, { timedOut = false, error = false } = {}) {
+  constructor (keep = 2000) { this.keep = keep; this.samples = []; this.timeouts = 0; this.errors = 0; this.ticks = 0; this.kinds = new Map(); this.since = Date.now(); this.unoffered = 0 }
+  add (ms, { timedOut = false, error = false, kind = null, unoffered = false } = {}) {
     this.ticks++
     if (timedOut) this.timeouts++
-    if (error) this.errors++
+    if (unoffered) this.unoffered++
+    if (error) {
+      this.errors++
+      const k = kind || 'error'
+      this.kinds.set(k, (this.kinds.get(k) || 0) + 1)
+    }
     this.samples.push(ms)
     if (this.samples.length > this.keep) this.samples.shift()
   }
@@ -32,16 +41,30 @@ class LatencyStats {
     return Math.round(s[Math.min(s.length - 1, Math.floor(p / 100 * s.length))] * 10) / 10
   }
 
-  /** "[player] 1200 ticks, latency p50 17.1 ms p95 21.4 ms, 3 timeouts, 0 errors"; resets the window. */
-  report () {
-    const line = `[player] ${this.ticks} ticks, latency p50 ${this.pct(50)} ms p95 ${this.pct(95)} ms, ${this.timeouts} timeouts, ${this.errors} errors`
-    this.samples = []; this.ticks = 0; this.timeouts = 0; this.errors = 0
+  /**
+   * "[player] 1200 ticks in 60.0 s (20.0 Hz achieved), latency p50 17.1 ms p95 21.4 ms, 3 timeouts,
+   * 2 errors (fetch failed: other side closed x2), 1 answers not offered"; resets the window.
+   */
+  report (now = Date.now()) {
+    const secs = Math.max(0.001, (now - this.since) / 1000)
+    const kinds = [...this.kinds].map(([k, n]) => `${k} x${n}`).join(', ')
+    const line = `[player] ${this.ticks} ticks in ${secs.toFixed(1)} s (${(this.ticks / secs).toFixed(1)} Hz achieved), latency p50 ${this.pct(50)} ms p95 ${this.pct(95)} ms, ` +
+      `${this.timeouts} timeouts, ${this.errors} errors${kinds ? ` (${kinds})` : ''}, ${this.unoffered} answers not offered`
+    this.samples = []; this.ticks = 0; this.timeouts = 0; this.errors = 0; this.unoffered = 0; this.kinds = new Map(); this.since = now
     return line
   }
 }
 
 class DecisionClient {
-  constructor ({ url, model = 'd1-2b', timeoutMs = 40, fetchImpl = globalThis.fetch } = {}) {
+  /** Logged, at most 5 a minute (the rest are counted in the report). */
+  warn (m) {
+    const now = Date.now()
+    if (!this.warned || now - this.warned.at > 60000) this.warned = { at: now, n: 0 }
+    if (++this.warned.n <= 5) this.log(`[player] ${m}`)
+  }
+
+  constructor ({ url, model = 'd1-2b', timeoutMs = 60, fetchImpl = globalThis.fetch, log = m => console.warn(m) } = {}) {
+    this.log = log
     this.url = url
     this.model = model
     this.timeoutMs = timeoutMs
@@ -49,22 +72,26 @@ class DecisionClient {
     this.stats = new LatencyStats()
   }
 
-  /** The request body: the view as a JSON string, one choice question whose criteria are the offered actions. */
-  request (state, offered) {
-    const criteria = {}
-    for (const a of offered) criteria[a] = DESCRIPTIONS[a] || a
-    return { model: this.model, state: JSON.stringify(state), questions: { action: { type: 'choice', instructions: INSTRUCTIONS, criteria } } }
+  /**
+   * The request body: the view as a JSON string; one choice question whose instructions carry the intent
+   * and whose criteria are the offered actions, each described relative to this tick (describe() in
+   * offered.js; the static base line when none is given).
+   */
+  request (state, offered, { intent = state && state.intent, criteria = null } = {}) {
+    const c = {}
+    for (const a of offered) c[a] = (criteria && criteria[a]) || PROMPT.descriptions[a] || a
+    return { model: this.model, state: JSON.stringify(state), questions: { action: { type: 'choice', instructions: instructionsFor(intent), criteria: c } } }
   }
 
   /** {choice, probabilities, confidence, latency, timedOut, error?}; choice is always one of offered ('wait' on any trouble). */
-  async choose (state, offered) {
+  async choose (state, offered, opts = {}) {
     const t0 = performance.now()
     const fallback = offered.includes('wait') ? 'wait' : offered[0]
     try {
       const res = await this.fetch(this.url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(this.request(state, offered)),
+        body: JSON.stringify(this.request(state, offered, opts)),
         signal: AbortSignal.timeout(this.timeoutMs)
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -72,28 +99,39 @@ class DecisionClient {
       const a = body && body.answers && body.answers.action
       if (body && body.usage) this.usage = body.usage
       const latency = performance.now() - t0
-      this.stats.add(latency)
-      const choice = a && offered.includes(a.choice) ? a.choice : fallback
+      const unoffered = !(a && offered.includes(a.choice))
+      this.stats.add(latency, { unoffered })
+      if (unoffered) this.warn(`answer not offered: ${a && a.choice}`)
+      const choice = unoffered ? fallback : a.choice
       return { choice, probabilities: (a && a.probabilities) || null, confidence: (a && a.confidence) ?? null, latency, timedOut: false, ...(choice !== (a && a.choice) ? { error: `answer not offered: ${a && a.choice}` } : {}) }
     } catch (err) {
       const latency = performance.now() - t0
       const timedOut = err && (err.name === 'TimeoutError' || err.name === 'AbortError')
-      this.stats.add(latency, { timedOut, error: !timedOut })
-      return { choice: fallback, probabilities: null, confidence: null, latency, timedOut, ...(timedOut ? {} : { error: String(err.message || err) }) }
+      const kind = timedOut ? null : errorKind(err)
+      this.stats.add(latency, { timedOut, error: !timedOut, kind })
+      if (!timedOut) this.warn(`decision error: ${kind}`)
+      return { choice: fallback, probabilities: null, confidence: null, latency, timedOut, ...(timedOut ? {} : { error: kind }) }
     }
   }
+}
+
+/** "fetch failed: other side closed", "HTTP 503", "bad JSON: …": what went wrong, with undici's cause. */
+function errorKind (err) {
+  const msg = String((err && err.message) || err)
+  const cause = err && err.cause && (err.cause.code || err.cause.message)
+  return cause ? `${msg}: ${cause}` : msg
 }
 
 /** A chooser from a function (tests, or a scripted policy): fn(state, offered) -> action name. */
 class ScriptedChooser {
   constructor (fn) { this.fn = fn; this.stats = new LatencyStats() }
-  async choose (state, offered) {
+  async choose (state, offered, opts = {}) {
     const t0 = performance.now()
-    const c = await this.fn(state, offered)
+    const c = await this.fn(state, offered, opts)
     const latency = performance.now() - t0
     this.stats.add(latency)
     return { choice: offered.includes(c) ? c : (offered.includes('wait') ? 'wait' : offered[0]), probabilities: null, confidence: null, latency, timedOut: false }
   }
 }
 
-module.exports = { DecisionClient, ScriptedChooser, LatencyStats, INSTRUCTIONS }
+module.exports = { DecisionClient, ScriptedChooser, LatencyStats, instructionsFor, errorKind, PROMPT }
