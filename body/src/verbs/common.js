@@ -146,6 +146,7 @@ function checkArgs (verb, args) {
   const v = validators[verb]
   if (v(args)) return null
   const e = v.errors[0]
+  if (verb === 'build' && (e.keyword === 'oneOf' || (e.keyword === 'required' && !args.blocks))) return 'build: give either {shape: "box", corner, size, material} or {blocks: [{block, pos}, ...]}'
   if (e.keyword === 'oneOf') return verb === 'build' ? 'build: give either {shape: "box", corner, size, material} or {blocks: [{block, pos}, ...]}' : `${verb}: give exactly one of pos or target`
   if (e.keyword === 'additionalProperties') return `${verb}: unknown argument "${e.params.additionalProperty}"`
   return `${verb}: ${(e.instancePath || 'args').replace(/^\//, '')} ${e.message}`

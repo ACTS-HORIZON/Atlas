@@ -29,7 +29,7 @@ test('say and stop', async () => {
   assert.deepEqual(act.said, ['hello world'], 'nothing else was sent')
   assert.equal((await runVerb(act, 'stop')).status, 'done')
   assert.equal(act.halted, 1)
-  assert.match((await runVerb(act, 'build', { blocks: [] })).detail, /not implemented/)
+  assert.match((await runVerb(act, 'fight', { target: 'zombie' })).detail, /not implemented/)
   assert.match((await runVerb(act, 'constructor')).detail, /not implemented/)
   assert.equal((await runVerb({ ...act, connected: () => false }, 'say', { text: 'hi' })).status, 'failed')
 })

@@ -225,8 +225,23 @@ Use play for anything a player would do by hand (climb out, cross terrain, fight
 - **Result:** `done`, `inspected <w>x<h>x<d> box [lo]..[hi]: <n> visible blocks (<block> <n>, …); <k> hidden`, with `data: {box: [lo, hi], size, visible, hidden, counts: {block: n}, blocks: [[x, y, z, "block"], …]}` (air is never listed; at most 512 blocks listed, the counts cover all of them).
 - `failed`: `inspect: the box is <w>x<h>x<d> = <n> cells; at most 32768`.
 
+### build {shape: "box", corner, size, material, hollow = true, roof = false, door?} | {blocks: [{block, pos}, ...]}
+- **Box:** `corner` is the low north-west corner (smallest x, y, z); `size: [w, d, h]` is w along x (east), d along z (south), h up (1–32 each). `hollow` builds the four walls only, and `roof: true` adds a full top layer; `hollow: false` fills it. `door: north|south|east|west` leaves a 1-wide, 2-high gap at the bottom in the middle of that wall (the box must be at least 3 high).
+- **Blocks:** any design, as `[{block, pos}]`, up to 1024 cells.
+- **How it builds:** bottom layer first; within a layer, only cells with something solid next to them (below, beside or above), so walls grow from the ground and a roof grows in from the walls.
+  - **Where it stands:** for each cell it walks to where that cell is in reach (4.3) and in sight, never digging and never standing in a cell it still has to fill. For the middle of a roof that means inside, through the door.
+  - **Each cell, looked at again first:** the right block already there is skipped; another block there fails that cell (build never digs); an empty cell gets the block.
+  - Materials come from the inventory. It doesn't level ground, fill under a shape on a slope, fetch materials or clear the site.
+- **Progress:** `build: <n>/<cells> cells (placed <k>), at [x, y, z]`.
+- **Results:**
+  - `done`: `built a hollow 5x5x3 cobblestone box at [3, 10, -2] with a door to the south: placed 46, skipped 0 (already there), failed 0`
+  - `partial`: some cells failed (`; first failure: [x, y, z] <reason>`) or a material ran out (`; short 16 cobblestone`)
+  - `failed`: nothing could be placed
+  - `refused`: any cell inside a protected region, before anything is placed
+  - Results carry `data: {cells, placed, skipped, failed: [{pos, reason}] (first 20), failed_count, short: {block: n}, at}`.
+
 ## Not implemented yet
-`build`, `fight`, `flee` and the Later list in CONTRACT.md. Calling one gives `failed` with `verb not implemented yet: <verb>`.
+`fight`, `flee` and the Later list in CONTRACT.md. Calling one gives `failed` with `verb not implemented yet: <verb>`.
 
 ## Events
 
