@@ -88,6 +88,7 @@ class Dashboard {
       return res.end(html)
     }
     if (p === '/api/places') return send(res, 200, this.api.places())
+    if (p === '/api/player') return send(res, 200, this.api.player ? this.api.player() : { on: false, ticks: [] })
     if (p === '/api/verbs') return send(res, 200, this.api.verbs())
     if (p.startsWith('/api/verbs/')) {
       const v = this.api.verbSource(decodeURIComponent(p.slice('/api/verbs/'.length)))

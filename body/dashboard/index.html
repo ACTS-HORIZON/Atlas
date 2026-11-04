@@ -136,10 +136,10 @@
     <div class="scroll tall"><pre id="verbsrc" class="muted">click a verb to see its source</pre></div>
   </section>
 
-  <section class="placeholder">
-    <h2>Reflexes</h2>
-    <div class="note">not wired yet</div>
-    <div class="muted">Last choice and action probabilities from the d1 reflex loop will show here.</div>
+  <section>
+    <h2>Reflexes <span class="n" id="player-n"></span></h2>
+    <div class="muted" id="player-state">player loop: …</div>
+    <div class="scroll tall"><table id="player"></table></div>
   </section>
 
   <section class="placeholder">
@@ -391,7 +391,23 @@ setInterval(() => {
   $('seen').className = 'pill ' + (s !== null && s < 6 ? 'ok' : 'bad')
 }, 1000)
 
-loadConfig(); loadVerbs(); loadPlaces(); loadLog().then(connect)
+// ---- the player loop: its last 10 ticks (offered, chosen, latency) ----
+async function loadPlayer () {
+  try {
+    const p = await api('/api/player')
+    $('player-state').textContent = p.on ? `player loop: ${p.model} at ${p.url}` : 'player loop: off (no ATLAS_PLAYER_URL)'
+    $('player-n').textContent = p.ticks.length ? p.ticks.length + ' ticks' : ''
+    const rows = [el('tr', null, el('th', null, 'mode'), el('th', null, 'chosen'), el('th', null, 'ms'), el('th', null, 'effect'), el('th', null, 'offered'))]
+    for (const t of [...p.ticks].reverse()) {
+      rows.push(el('tr', null, el('td', null, t.mode), el('td', null, tag(t.chosen, t.chosen === 'done' ? 'done' : '')), el('td', { class: 'mono' }, String(t.latency_ms)),
+        el('td', null, t.effect || ''), el('td', { class: 'muted' }, t.offered.join(' '))))
+    }
+    $('player').replaceChildren(...rows)
+  } catch {}
+}
+
+loadConfig(); loadVerbs(); loadPlaces(); loadPlayer(); loadLog().then(connect)
+setInterval(loadPlayer, 1000)
 setInterval(loadPlaces, 5000)
 setInterval(loadVerbs, 30000)
 </script>

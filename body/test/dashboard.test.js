@@ -187,3 +187,13 @@ test('lessons: a lesson trace is a valid contract message and the dashboard has 
   assert.match(html, /<h2>Notes &amp; lessons/)
   assert.match(html, /m\.kind === 'note' \|\| m\.kind === 'lesson'/)
 })
+
+test('the Reflexes panel: /api/player says off without a decision model, and the page polls it', async (t) => {
+  const { dashUrl } = await startBody(t)
+  const r = await fetch(dashUrl + '/api/player')
+  assert.deepEqual(await r.json(), { on: false, ticks: [] })
+  const html = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'index.html'), 'utf8')
+  assert.match(html, /<h2>Reflexes <span class="n" id="player-n">/)
+  assert.match(html, /setInterval\(loadPlayer, 1000\)/)
+  assert.doesNotMatch(html, /Last choice and action probabilities from the d1 reflex loop will show here/)
+})

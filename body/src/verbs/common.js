@@ -95,6 +95,16 @@ const SCHEMAS = {
     additionalProperties: false,
     properties: { item: { type: 'string', minLength: 1 }, count: { type: 'integer', minimum: 1, maximum: 576, default: 1 }, fuel: { type: 'string', minLength: 1 } }
   },
+  play: {
+    type: 'object',
+    required: ['intent'],
+    additionalProperties: false,
+    properties: {
+      intent: { type: 'string', minLength: 1, maxLength: 200 },
+      target: { type: 'string', minLength: 1 },
+      budget: { oneOf: [{ type: 'number', minimum: 1, maximum: 1800 }, { type: 'object', additionalProperties: false, properties: { ticks: { type: 'integer', minimum: 1, maximum: 36000 }, seconds: { type: 'number', minimum: 1, maximum: 1800 } } }] }
+    }
+  },
   eat: {
     type: 'object',
     additionalProperties: false,

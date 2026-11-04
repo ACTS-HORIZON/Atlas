@@ -205,6 +205,16 @@ Smelts in a furnace Atlas has seen: in view, or a known place within 32 blocks. 
   - `refused`: the only furnace in reach is inside a protected region: `house rules: no furnace use inside protected region "<name>" (…)`.
   - Results carry `data: {item, input, smelted, requested, fuel, fuel_used, furnace}`.
 
+### play {intent, target?, budget?}
+Use play for anything a player would do by hand (climb out, cross terrain, fight); use goto/mine when a script is plainly better.
+- **What it does:** hands the controls to the player loop (the decision model, ~20 Hz) with `intent` (free text, e.g. "get to the surface", "walk to Rook") and an optional `target`. It runs until the model says the intent is done or that it's stuck, the `budget` runs out (seconds, or `{ticks, seconds}`; default 60 s), or `stop`.
+- **Progress:** `<intent>: tick <n>, <action> (<effect>)`.
+- **Results:**
+  - `done`: `play "<intent>": done after <n> ticks; moved <d> blocks ([x, y, z] → [x, y, z]), dug <k>, placed <k>, damage <h>`
+  - `partial`: the same, with `the player is stuck after <n> ticks` or `out of budget after <n> ticks (<s> s)`
+  - `failed`: `play: no decision model configured (ATLAS_PLAYER_URL)`
+  - Results carry `data: {end, ticks, seconds, moved, from, to, dug, placed, damage, log}`. `log` is the `logs/player-<date>.jsonl` file holding every tick.
+
 ## Not implemented yet
 `inspect`, `build`, `fight`, `flee` and the Later list in CONTRACT.md. Calling one gives `failed` with `verb not implemented yet: <verb>`.
 

@@ -183,7 +183,9 @@ class Motor {
       ? Math.hypot(bot.entity.position.x - target.x, bot.entity.position.z - target.z)
       : bot.entity.position.distanceTo(centre)
     const start = bot.entity.position.clone()
-    const t0 = Date.now()
+    let t0 = Date.now()
+    let heldSince = null
+    const t0Shift = () => { if (heldSince) { t0 += Date.now() - heldSince; heldSince = null } }
     const limit = timeoutMs ?? 30000 + 1500 * dist()
     let best = dist(); let lastGain = Date.now()
     const movements = this.movements({ dig, scaffold })
@@ -232,7 +234,15 @@ class Motor {
         }
       }
       const onAbort = () => finish('aborted')
+      let held = false
       const tick = setInterval(() => {
+        if (this.paused) { // the player loop holds the verb: no goal, no clocks running
+          if (!held) { held = true; heldSince = Date.now(); try { bot.pathfinder.setGoal(null) } catch {}; bot.clearControlStates() }
+          const now = Date.now()
+          lastMove = lastStep = lastGain = now
+          return
+        }
+        if (held) { held = false; t0Shift(); try { bot.pathfinder.setGoal(goal) } catch {} }
         const d = dist()
         try { onProgress?.(r1(d)) } catch {}
         const mining = bot.pathfinder.isMining()
@@ -402,6 +412,7 @@ class Motor {
       const item = bot.inventory.items().find(i => i.name === tool.tool)
       if (item && bot.heldItem?.name !== item.name) await bot.equip(item, 'hand')
     }
+    while (this.paused && !signal?.aborted) await new Promise(resolve => setTimeout(resolve, 50)) // held by the player loop
     if (signal?.aborted) return { ok: false, reason: 'aborted' }
     if (!bot.canDigBlock(block)) return { ok: false, reason: 'out of reach' }
     const onAbort = () => { try { bot.stopDigging() } catch {} }
@@ -427,6 +438,64 @@ class Motor {
       signal?.removeEventListener('abort', onAbort)
     }
   }
+
+  // ---- the player loop's primitives -----------------------------------------
+  async jump () {
+    this.bot.setControlState('jump', true)
+    await new Promise(resolve => setTimeout(resolve, 300))
+    this.bot.setControlState('jump', false)
+    return { ok: true }
+  }
+
+  /** Jump and place item under the feet (where the bot stood). */
+  async pillar (item) {
+    const bot = this.bot
+    const it = bot.inventory.items().find(i => i.name === item)
+    if (!it) return { ok: false, reason: `no ${item} in inventory` }
+    const feet = bot.entity.position.floored()
+    const ref = bot.blockAt(feet.offset(0, -1, 0))
+    if (!ref || ref.boundingBox !== 'block') return { ok: false, reason: 'nothing solid below to place on' }
+    try {
+      await bot.equip(it, 'hand')
+      await bot.look(bot.entity.yaw, -Math.PI / 2, true)
+      bot.setControlState('jump', true)
+      const t0 = Date.now()
+      while (bot.entity.position.y < feet.y + 1 && Date.now() - t0 < 600) await new Promise(resolve => setTimeout(resolve, 20))
+      await bot.placeBlock(ref, new Vec3(0, 1, 0))
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, reason: err.message }
+    } finally {
+      bot.setControlState('jump', false)
+    }
+  }
+
+  /** Hit the entity of this type nearest to pos (the obs reports type and position, not ids). */
+  async attack (type, pos) {
+    const bot = this.bot
+    const at = new Vec3(pos[0], pos[1], pos[2])
+    const e = Object.values(bot.entities).filter(x => x !== bot.entity && x.position && (x.name === type || x.type === type) && x.position.distanceTo(at) < 2.5)
+      .sort((a, b) => a.position.distanceTo(at) - b.position.distanceTo(at))[0]
+    if (!e) return { ok: false, reason: `no ${type} there any more` }
+    try {
+      await bot.lookAt(e.position.offset(0, (e.height || 1.8) * 0.8, 0), true)
+      bot.attack(e)
+      return { ok: true }
+    } catch (err) { return { ok: false, reason: err.message } }
+  }
+
+  async shield () {
+    try {
+      this.bot.activateItem(true)
+      await new Promise(resolve => setTimeout(resolve, 500))
+      this.bot.deactivateItem()
+      return { ok: true }
+    } catch (err) { return { ok: false, reason: err.message } }
+  }
+
+  /** The override (src/player): goto and dig hold still while paused, and carry on when resumed. */
+  pause () { this.paused = true }
+  resume () { this.paused = false }
 
   /** Turn the head to a yaw (radians, Mineflayer) and pitch. */
   async look (yaw, pitch = 0) {

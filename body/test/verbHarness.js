@@ -21,7 +21,7 @@ function fakeMotor (w, opt = {}) {
     picked: new Set(),
     here () { return [...this.pos] },
     gamemode () { return opt.gamemode || 'survival' },
-    facing () { return opt.facing || 'south' },
+    facing () { return this.dir || opt.facing || 'south' },
     goto (o) {
       this.calls.push(['goto', o])
       const r = opt.goto ? opt.goto(o, this) : { status: 'reached', remaining: 0, moved: 3 }
@@ -40,8 +40,20 @@ function fakeMotor (w, opt = {}) {
       w.set(pos[0], pos[1], pos[2], 'air')
       return { ok: true, name: 'x' }
     },
-    async look () {},
-    async face (d) { this.calls.push(['face', d]) },
+    async look (yaw, pitch) { this.calls.push(['look', yaw, pitch]) },
+    async jump () { this.calls.push(['jump']); return { ok: true } },
+    async pillar (item) {
+      this.calls.push(['pillar', item])
+      const f = this.pos.map(Math.floor)
+      w.set(f[0], f[1], f[2], item)
+      this.pos = [this.pos[0], this.pos[1] + 1, this.pos[2]]
+      return { ok: true }
+    },
+    async attack (type, pos) { this.calls.push(['attack', type, pos]); return { ok: true } },
+    async shield () { this.calls.push(['shield']); return { ok: true } },
+    pause () { this.calls.push(['pause']); this.paused = true },
+    resume () { this.calls.push(['resume']); this.paused = false },
+    async face (d) { this.calls.push(['face', d]); this.dir = d },
     drops () { return (opt.drops || []).filter(d => !this.picked.has(d.id)) },
     entityExists (id) { return (opt.drops || []).some(d => d.id === id) && !this.picked.has(id) },
     inventory () { return { ...(opt.inv || {}), ...(opt.invAfter ? opt.invAfter(this) : {}) } },

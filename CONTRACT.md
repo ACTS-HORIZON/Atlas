@@ -109,6 +109,7 @@ The body runs one verb at a time; it appears as `task` in the obs. `say`, `recal
 | `give` | `item`, `count`, `player` | walk to the player, toss at their feet |
 | `deposit` / `withdraw` | `item`, `count`, `chest` | withdraw only from allowlisted chests |
 | `say` | `text` | chat; text starting with `/` is refused |
+| `play` | `intent`, `target`, `budget` | hands the controls to the player loop (see Player loop) until `done`/`stuck`/budget/`stop` |
 | `stop` |      | cancel current verb |
 
 **Later:** `shelter`, `pillar`, `bridge`, `sleep`, `use` (doors, levers, portal lighting), `throw` (eyes of ender), `shoot` (bow), `follow`, `trade`, farming (`plant`, `harvest`). Note: the dragon run needs `use`, `throw`, `shoot`, `sleep`, `bridge` and `pillar`, so core v1 alone cannot beat the game.
@@ -119,13 +120,17 @@ The body runs one verb at a time; it appears as `task` in the obs. `say`, `recal
 
 **Standing tasks:** a task with no completion check (farm this plot, stay here). It loops until `stop`. Night, hunger and danger are handled like any other task. A new task arriving mid-task: Gemma says what it'll do in chat ("pausing farming, getting your iron, then back") and does it.
 
-## Reflexes (body-internal)
+## Player loop (body-internal) — replaces "Reflexes", 2026-11-03 (Collin)
 
-* **Always on:** d1-2B ticks continuously (\~20 Hz) on the reflex view. Its default answer is `continue_task`; it decides for itself when something needs a reaction. No code gate.
-* **Tick:** one d1-2B `choice` question over the currently possible actions. The body removes impossible ones first: no `eat` without food, no `block` without blocks, and so on.
-* **Action set v1:** `continue_task`, `attack`, `attack_jump`, `strafe_left`, `strafe_right`, `retreat`, `retreat_sprint`, `pillar_up`, `block`, `eat`, `shield`.
-* **Override and release:** any answer other than `continue_task` pauses the running verb and acts. After \~1 s of `continue_task` answers the paused verb resumes. If the verb can't continue, it returns `interrupted` to the mind.
-* **Escalate:** a 2–5 Hz `noul` question ("does the brain need to know?") sends an `event` to the mind, e.g. after a near-death or when the reflexes keep fleeing from the same thing.
+Three layers, not two. Gemma is strategy (seconds). The decision model is **the player** (20 Hz). Verbs are macros Gemma may still call when a script is simply better (A\* across open ground, crafting through a window) — hands, not the player.
+
+* **Always on:** d1-2B ticks continuously (\~20 Hz) on the reflex view plus Gemma's current **intent** (free text + optional target, e.g. "get to the surface", "walk to Rook"). One `choice` question per tick covers survival and play alike; no separate reflex gate.
+* **Micro-actions v1:** `step`, `sprint`, `jump`, `turn_left`, `turn_right`, `look_up`, `look_down`, `dig_ahead`, `dig_above`, `dig_below`, `place_below_and_jump`, `place_ahead`, `attack`, `block`, `retreat`, `eat`, `wait`, `done` (intent satisfied), `stuck` (can't). The body offers only the actions that are possible **and not immediately lethal** this tick (no step into lava or a drop > 3, no dig below with air under it, no `eat` without food) — the 2B model stays safe by what it is offered, not by what it knows.
+* **Intent lifecycle:** Gemma sets an intent with the `play {intent, target?, budget}` verb; the loop runs until the model answers `done` or `stuck`, the budget (ticks or seconds) runs out, or `stop`. The result reports what happened and why, with the tick trace attached for fine-tuning d1 later.
+* **Override:** with a scripted verb running, any answer other than `continue_task` pauses it and acts; \~1 s of `continue_task` resumes it; if it can't resume, `interrupted` goes to the mind.
+* **Escalate:** a 2–5 Hz `noul` question ("does the brain need to know?") sends `reflex_escalation` to the mind.
+* **Fair play unchanged:** the reflex view is built by the same filter; micro-actions act on what the player can see.
+* **Risk, named:** d1-2B's quality on real game states is untested (bench caveat). The player loop is measured against the scripted verbs on the same tasks; if it loses badly, the model or its prompt is the problem, not the design.
 
 ## Events (body → mind)
 

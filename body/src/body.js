@@ -18,6 +18,8 @@ const { mineHint, collectHint, dropsOf } = require('./drops')
 const { Runner } = require('./runner')
 const { Tap } = require('./tap')
 const { Dashboard, parseBind, verbLibrary, tailFile } = require('./dashboard')
+const { PlayerLoop } = require('./player/loop')
+const { DecisionClient } = require('./player/client')
 const { BuildStats } = require('./stats')
 
 class Body {
@@ -40,6 +42,10 @@ class Body {
     this.house = new HouseRules(cfg.protectedRegions || [])
     this.chests = new ChestAllowlist({ fromConfig: cfg.chests || [], file: cfg.chestsFile || null })
     this.locator = new Locator() // Locator Bar waypoints, from the tracked_waypoint packet
+    // the player loop (CONTRACT.md "Player loop"); off without a decision model URL
+    this.player = cfg.playerUrl
+      ? new PlayerLoop({ chooser: new DecisionClient({ url: cfg.playerUrl, model: cfg.playerModel, timeoutMs: cfg.playerTimeoutMs }), logDir: cfg.logDir, hz: cfg.playerHz })
+      : null
     this.backoff = 5000
     this.timers = []
     this.link = new Link({
@@ -67,7 +73,8 @@ class Body {
           verbSource: name => verbs.source(name),
           config: () => this.cfg,
           logTail: n => tailFile(this.log.path, n).map(l => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean),
-          stop: () => this.dashboardStop()
+          stop: () => this.dashboardStop(),
+          player: () => this.player ? { on: true, ticks: this.player.last, url: this.cfg.playerUrl, model: this.cfg.playerModel } : { on: false, ticks: [] }
         }
       })
     }
@@ -89,6 +96,7 @@ class Body {
       if (this.ready() && (this.link.count || this.dash?.count)) { const o = this.obs(); if (o) this.link.broadcast(o) }
     }, this.cfg.obsIntervalMs))
     this.timers.push(setInterval(() => this.stats.report(), 60000))
+    if (this.player) this.timers.push(setInterval(() => { if (this.player.chooser.stats.ticks) console.log(this.player.chooser.stats.report()) }, 60000))
   }
 
   connect () {
@@ -262,7 +270,8 @@ class Body {
       },
       places: this.places,
       api: this.verbApi(),
-      cfg: { stripLength: this.cfg.stripLength, stripMax: this.cfg.stripMax }
+      player: this.player,
+      cfg: { stripLength: this.cfg.stripLength, stripMax: this.cfg.stripMax, followMaxS: this.cfg.followMaxS }
     }
   }
 
@@ -289,7 +298,16 @@ class Body {
   }
 
   async onCall (call) {
-    const r = await this.runner.run(this.act(), call)
+    const act = this.act()
+    const running = this.runner.run(act, call)
+    // the override: while a scripted verb runs, the player loop ticks with intent "survive"
+    if (this.player && this.cfg.playerOverride && this.runner.current && this.runner.current.id === call.id && call.verb !== 'play' && act.api) {
+      let settled = false
+      running.finally(() => { settled = true })
+      this.player.watch(act.api, { settled: () => settled, interrupt: reason => { if (this.runner.current && this.runner.current.id === call.id) this.runner.interrupt(act, reason) } })
+        .catch(err => console.warn(`[player] override: ${err.message}`))
+    }
+    const r = await running
     if (r.status === 'done' && call.verb === 'say') await new Promise(resolve => setTimeout(resolve, 50))
     return { ...r, obs: this.obs() }
   }
@@ -380,6 +398,7 @@ class Body {
     try { this.places.save() } catch (err) { console.warn(`[places] save failed: ${err.message}`) }
     await Promise.all([this.link.close(), this.dash?.close()])
     await this.log.close()
+    if (this.player) await this.player.close()
   }
 }
 

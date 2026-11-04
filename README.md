@@ -345,6 +345,35 @@ It decides on every recorded result and event, plus every 15th obs.
 
 `mind/tests/test_wiki.py` covers the wiki pipeline on two pages in the wiki's HTML (`mind/tests/fixtures/`): parsing (noise stripped, tables as rows), chunking, the BM25 index (`"iron ore y level"` finds `Iron Ore › Obtaining › Natural generation`; the subject beats a chunk dense with Y numbers; one chunk per page), `--eval`, the fetch and index scripts, and the mind's KNOWLEDGE block, `rag` traces and `lookup`.
 
+### The player loop (body)
+
+CONTRACT.md "Player loop": the decision model (d1-2B on Horizon, llama.cpp `/v1/systemone`) is the player at ~20 Hz; verbs are macros. It's off unless `ATLAS_PLAYER_URL` is set.
+
+- **Each tick:**
+  - **View:** the reflex view (≤250 tokens): vitals, held item, the nearest threats with bearing and distance, hazards in the 8 cells around and below, the surroundings sentence, the intent, and the last 3 micro-actions with their effect.
+  - **Offered actions:** only the micro-actions that are possible and not immediately lethal (`body/src/player/offered.js`): no step into lava or a drop over 3, no `dig_below` with air under it, no `eat` without food, `place_below_and_jump` only with a block to place.
+  - **Choice:** one question over the offered set, with a 40 ms budget; `wait` on a timeout or any error.
+  - **Act:** the answer is executed through the filtered API: one step, one block of dig, one jump, one place.
+- **Tick log:** every tick goes to `logs/player-<date>.jsonl` as `{ts, mode, intent, target, view, offered, chosen, probabilities, latency_ms, timed_out, effect}`. That is the fine-tuning data for d1.
+- **`play {intent, target?, budget?}`** runs the loop with an intent (see docs/verbs.md).
+- **Override:** while a scripted verb runs, the loop ticks with intent "survive". Only `attack`, `block`, `retreat`, `eat`, `jump`, `wait` and `continue_task` are offered.
+  - Any other answer than `continue_task` pauses the verb (its goto and digging hold still) and acts.
+  - 20 ticks (~1 s) of `continue_task` resume it.
+  - Still paused after 20 s, the verb ends `interrupted`.
+  - `ATLAS_PLAYER_OVERRIDE=0` turns this off.
+- **Latency:** `body.out` gets `[player] <n> ticks, latency p50 <ms> ms p95 <ms> ms, <k> timeouts, <e> errors` every 60 s.
+- **Dashboard:** the Reflexes panel shows the last 10 ticks: mode, chosen action, latency, effect, and what was offered.
+
+| Variable | Default | |
+|---|---|---|
+| `ATLAS_PLAYER_URL` | — | e.g. `http://<horizon>:9931/v1/systemone`; empty = no player loop |
+| `ATLAS_PLAYER_MODEL` | `d1-2B` | sent as `model` |
+| `ATLAS_PLAYER_TIMEOUT_MS` | `40` | per tick; `wait` on timeout |
+| `ATLAS_PLAYER_HZ` | `20` | tick rate |
+| `ATLAS_PLAYER_OVERRIDE` | `1` | the survive loop while scripted verbs run |
+
+**Request shape:** the body sends `{"model", "state": <reflex view>, "questions": {"action": {"type": "choice", "question", "choices": [offered]}}}` and reads `answers.action.choice` (and `probabilities`). The top level and the answer follow the 2026-11-01 bench note; the shape of one `questions` entry is built in one place (`DecisionClient.request` in `body/src/player/client.js`). Check it against `~/bench/s1bench.py`.
+
 ### Lessons
 
 The player learns from its own play; nothing here is a rule about Minecraft, and nothing is refused because of a lesson.

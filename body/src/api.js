@@ -272,6 +272,53 @@ class VerbApi {
     return this.motor.dig(pos, { signal, allowHand: true })
   }
 
+  // ---- the player loop's hands (src/player): one block, one jump, one hit --
+  /** Dig one block next to the feet: dx, dz in -1..1, dy -1 (below) .. 2 (above the head). */
+  async digRel (dx, dy, dz, { signal } = {}) {
+    if (Math.abs(dx) > 1 || Math.abs(dz) > 1 || dy < -1 || dy > 2) return { ok: false, refused: true, reason: 'only the blocks right around the bot' }
+    const f = this.motor.here().map(Math.floor)
+    const pos = [f[0] + dx, f[1] + dy, f[2] + dz]
+    const house = this.houseCheck('dig', pos)
+    if (house) return { ok: false, refused: true, reason: house }
+    return this.motor.dig(pos, { signal, allowHand: true })
+  }
+
+  jump () { return this.motor.jump() }
+
+  /** Jump and place a block under the feet (a pillar step). */
+  async pillar (block) {
+    if (!block || !this.inventoryCount(block)) return { ok: false, reason: block ? `no ${block} in inventory` : 'no block to place' }
+    const f = this.motor.here().map(Math.floor)
+    const house = this.houseCheck('place', f)
+    if (house) return { ok: false, refused: true, reason: house }
+    return this.motor.pillar(block)
+  }
+
+  /** Hit the nearest visible hostile within maxDist. */
+  async attackNearest (maxDist = 3.5) {
+    const o = this.obs()
+    const e = o && o.entities.filter(x => x.hostile && x.dist <= maxDist).sort((a, b) => a.dist - b.dist)[0]
+    if (!e) return { ok: false, reason: 'nothing hostile in reach' }
+    const pos = [o.self.pos[0] + e.rel[0], o.self.pos[1] + e.rel[1], o.self.pos[2] + e.rel[2]]
+    const r = await this.motor.attack(e.type, pos)
+    return { ...r, type: e.type }
+  }
+
+  useShield () {
+    if (!this.inventoryCount('shield')) return Promise.resolve({ ok: false, reason: 'no shield' })
+    return this.motor.shield()
+  }
+
+  /** Look up/down (degrees, + up) while facing the same way. */
+  look (pitchDeg) {
+    const yaw = { north: 0, west: Math.PI / 2, south: Math.PI, east: -Math.PI / 2 }[this.motor.facing()] ?? 0
+    return this.motor.look(yaw, pitchDeg * Math.PI / 180)
+  }
+
+  /** The override: hold the running scripted verb's movement and digging, and let it go again. */
+  pauseVerb () { if (this.motor.pause) this.motor.pause() }
+  resumeVerb () { if (this.motor.resume) this.motor.resume() }
+
   /** What a block at pos is, if observed: visible now, or a known place there. */
   observedBlock (pos) {
     const now = this.peek(pos)
