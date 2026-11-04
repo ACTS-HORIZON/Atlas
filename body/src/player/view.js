@@ -69,4 +69,25 @@ function reflexView ({ obs, probe, intent, target = null, recent = [], offered =
   return view
 }
 
-module.exports = { reflexView, targetSeen, hazards, tokens, MAX_TOKENS, DIRS }
+const SURVIVE_MAX_TOKENS = 120
+
+/**
+ * The survive-mode view (the override while a scripted verb runs): as small as it can be, ≤120 tokens.
+ * Vitals, threats, hazards, and the last action with its effect; nothing about the task.
+ */
+function surviveView ({ obs, probe, recent = [] }) {
+  const s = (obs && obs.self) || {}
+  const view = {
+    self: { health: s.health, food: s.food },
+    threats: ((obs && obs.entities) || []).filter(e => e.hostile).slice(0, 3)
+      .map(e => ({ type: e.type, bearing: e.bearing, dist: e.dist, ...(e.approaching ? { approaching: true } : {}) })),
+    hazards: probe ? hazards(probe) : [],
+    last: recent.length ? recent[recent.length - 1] : null
+  }
+  while (tokens(view) > SURVIVE_MAX_TOKENS && view.hazards.length > 1) view.hazards.pop()
+  while (tokens(view) > SURVIVE_MAX_TOKENS && view.threats.length > 1) view.threats.pop()
+  if (tokens(view) > SURVIVE_MAX_TOKENS) view.last = null
+  return view
+}
+
+module.exports = { reflexView, surviveView, targetSeen, hazards, tokens, MAX_TOKENS, SURVIVE_MAX_TOKENS, DIRS }

@@ -24,7 +24,7 @@
 const fs = require('fs')
 const path = require('path')
 const { offeredActions, describe, blockFor, stepOk, DIRS, LEFT, RIGHT } = require('./offered')
-const { reflexView } = require('./view')
+const { reflexView, surviveView } = require('./view')
 
 const r1 = v => Math.round(v * 10) / 10
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -101,7 +101,9 @@ class PlayerLoop {
   snapshot (api, st, mode, obs = this.obs(api)) {
     const probe = this.probe(api, st, obs)
     const offered = offeredActions(probe, mode)
-    const view = reflexView({ obs, probe, intent: st.intent, target: st.target, recent: st.recent, offered, pitch: st.pitch, noProgress: st.noProgress })
+    const view = mode === 'survive'
+      ? surviveView({ obs, probe, recent: st.recent })
+      : reflexView({ obs, probe, intent: st.intent, target: st.target, recent: st.recent, offered, pitch: st.pitch, noProgress: st.noProgress })
     const criteria = describe(probe, offered, { sky: obs && obs.surroundings ? !!obs.surroundings.sky : null })
     return { obs, probe, offered, view, criteria }
   }
@@ -123,19 +125,30 @@ class PlayerLoop {
     const { obs, probe, offered, view, criteria } = this.snapshot(api, st, mode)
     const c = await this.chooser.choose(view, offered, { mode, intent: mode === 'survive' ? null : (st.target ? `${st.intent} (target: ${st.target})` : st.intent), criteria })
     const before = { pos: api.here().pos, health: obs && obs.self ? obs.self.health : null }
-    const gate = mode === 'play' ? this.endGate(st, c.choice, c.confidence) : { act: c.choice }
-    const res = gate.held ? { effect: gate.held } : await this.execute(api, st, gate.act, probe)
+    // a timeout or an error is no decision: survive carries on with the task, play waits; neither counts
+    // toward a streak, pauses a verb, or is logged as a choice
+    const decided = !c.timedOut && !c.error
+    let res
+    if (!decided) res = { effect: mode === 'survive' ? 'no decision: continuing the task' : 'no decision: waited' }
+    else {
+      const gate = mode === 'play' ? this.endGate(st, c.choice, c.confidence) : { act: c.choice }
+      res = gate.held ? { effect: gate.held } : await this.execute(api, st, gate.act, probe)
+    }
     this.obsCache.at = 0 // the world changed: look again next tick
     this.obsCache.obs = null
     const after = api.here().pos
     const moved = Math.hypot(after[0] - before.pos[0], after[1] - before.pos[1], after[2] - before.pos[2])
     const effect = res.effect || (moved >= 0.5 ? `moved ${r1(moved)}` : 'no change')
-    st.recent.push({ action: c.choice, effect })
-    if (st.recent.length > 5) st.recent.shift()
-    // no progress: the same block and the same surroundings sentence as last tick
+    if (decided) {
+      st.recent.push({ action: c.choice, effect })
+      if (st.recent.length > 5) st.recent.shift()
+    }
+    // no progress: the same block and the same surroundings sentence as last tick, and not moving
     const here = after.map(Math.floor).join(',') + '|' + ((this.obs(api) || {}).surroundings || {}).summary
-    st.noProgress = here === st.lastPlace ? (st.noProgress || 0) + 1 : 0
+    const drift = st.lastPos ? Math.hypot(after[0] - st.lastPos[0], after[2] - st.lastPos[2]) : 0
+    st.noProgress = here === st.lastPlace && drift < 0.05 ? (st.noProgress || 0) + 1 : 0
     st.lastPlace = here
+    st.lastPos = after
     if (res.dug) st.dug++
     if (res.placed) st.placed++
     st.ticks++
@@ -147,7 +160,8 @@ class PlayerLoop {
       view,
       offered,
       criteria,
-      chosen: c.choice,
+      chosen: decided ? c.choice : null,
+      ...(decided ? {} : { no_decision: c.timedOut ? 'timeout' : 'error' }),
       probabilities: c.probabilities,
       confidence: c.confidence ?? null,
       margin: c.margin ?? null,
@@ -158,9 +172,9 @@ class PlayerLoop {
       effect
     }
     this.log.write(rec)
-    this.last.push({ t: Date.now(), mode, offered, chosen: c.choice, confidence: c.confidence ?? null, latency_ms: r1(c.latency), effect })
+    this.last.push({ t: Date.now(), mode, offered, chosen: decided ? c.choice : `(${c.timedOut ? 'timeout' : 'error'})`, confidence: c.confidence ?? null, latency_ms: r1(c.latency), effect })
     if (this.last.length > 10) this.last.shift()
-    return { ...rec, end: res.end }
+    return { ...rec, decided, end: res.end }
   }
 
   /** Do one micro-action through the filtered API. {effect?, dug?, placed?, end?} */
@@ -170,12 +184,14 @@ class PlayerLoop {
     const fail = r => ({ effect: `failed: ${r.reason || r.status || 'no'}` })
     switch (action) {
       case 'step': case 'sprint': {
-        const n = action === 'sprint' ? 2 : 1
-        for (let i = 0; i < n; i++) { const r = await api.step(st.dir, {}); if (r.status !== 'reached') return fail(r) }
-        return {}
+        // a forward press that lets go by itself after one block (two sprinting) or 300 ms; the tick
+        // goes on as soon as the bot moves, and the next step re-arms it
+        const r = await api.press(st.dir, { sprint: action === 'sprint' })
+        return { effect: r.moving ? `${action === 'sprint' ? 'sprinting' : 'walking'} ${st.dir}` : `failed: did not move ${st.dir}` }
       }
-      case 'jump': await api.jump(); return {}
+      case 'jump': { const r = await api.jump(); return { effect: r && r.airborne === false ? 'jumped (stayed on the ground)' : 'jumped' } }
       case 'turn_left': case 'turn_right':
+        if (api.release) api.release()
         st.dir = (action === 'turn_left' ? LEFT : RIGHT)[st.dir]
         await api.face(st.dir)
         return { effect: `facing ${st.dir}` }
@@ -184,22 +200,26 @@ class PlayerLoop {
         if (api.look) await api.look(st.pitch)
         return { effect: `pitch ${st.pitch}` }
       case 'dig_ahead': {
+        if (api.release) api.release()
         const headSolid = probe.cls(x + d[0], y + 1, z + d[1])?.solid
         const r = await api.digAhead(st.dir, headSolid ? 1 : 0, {})
         return r.ok ? { effect: `dug ${r.name || 'a block'} ahead`, dug: true } : fail(r)
       }
       case 'dig_above': case 'dig_below': {
+        if (api.release) api.release()
         const dy = action === 'dig_above' ? 2 : -1
         const name = probe.cls(x, y + dy, z)?.name
         const r = await api.digRel(0, dy, 0, {})
         return r.ok ? { effect: `dug ${name || 'a block'} ${action === 'dig_above' ? 'above' : 'below'}`, dug: true } : fail(r)
       }
       case 'place_below_and_jump': {
+        if (api.release) api.release()
         const b = blockFor(probe)
         const r = await api.pillar(b)
         return r.ok ? { effect: `pillared up on ${b}`, placed: true } : fail(r)
       }
       case 'place_ahead': {
+        if (api.release) api.release()
         const b = blockFor(probe)
         const r = await api.place(b, [x + d[0], y, z + d[1]])
         return r.ok ? { effect: `placed ${b} ahead`, placed: true } : fail(r)
@@ -211,8 +231,9 @@ class PlayerLoop {
         if (!t) return { effect: 'nothing to retreat from' }
         const away = Math.abs(t.rel[0]) >= Math.abs(t.rel[2]) ? (t.rel[0] > 0 ? 'west' : 'east') : (t.rel[2] > 0 ? 'north' : 'south')
         if (!stepOk(probe, x, y, z, DIRS[away])) return { effect: 'no safe step away' }
-        const r = await api.step(away, {})
-        return r.status === 'reached' ? { effect: `stepped ${away}, away from the ${t.type}` } : fail(r)
+        const r = await api.press(away, {})
+        st.dir = away
+        return r.moving ? { effect: `stepping ${away}, away from the ${t.type}` } : { effect: `failed: did not move ${away}` }
       }
       case 'eat': {
         const food = (probe.foods || [])[0]
@@ -271,12 +292,15 @@ class PlayerLoop {
       const start = Date.now()
       const tk = await this.tick(api, st, 'survive')
       out.ticks++
+      if (!tk.decided) out.undecided = (out.undecided || 0) + 1
       // full rate while a threat or damage is in view (and a second after damage); otherwise surviveHz
       const h = tk.view && tk.view.self ? tk.view.self.health : null
       if (typeof h === 'number' && lastHealth !== null && h < lastHealth) hotUntil = Date.now() + 1000
       if (typeof h === 'number') lastHealth = h
       const hot = (tk.view && tk.view.threats && tk.view.threats.length > 0) || Date.now() < hotUntil
-      if (tk.chosen === 'continue_task') {
+      if (!tk.decided) {
+        // no answer: nothing changes (it neither pauses the verb nor counts toward resuming it)
+      } else if (tk.chosen === 'continue_task') {
         if (paused && ++cont >= this.resumeTicks) { api.resumeVerb(); paused = false; cont = 0 }
       } else {
         cont = 0
@@ -306,6 +330,17 @@ class PlayerLoop {
 
   /** The 60 s line for body.out: latency, errors, and the achieved rate per mode. */
   report (now = Date.now()) { return this.chooser.stats.report(now, this.rateReport()) }
+
+  /**
+   * The 60 s line plus a bare /v1/systemone request timed from the body, to tell a slower server
+   * (contention: the bare request is slow too) from a slower body (only the ticks are slow).
+   */
+  async reportWithBare () {
+    const line = this.report()
+    if (!this.chooser.bare) return line
+    const b = await this.chooser.bare()
+    return `${line}; bare request ${b.ok ? `${r1(b.ms)} ms` : `failed after ${r1(b.ms)} ms (${b.error})`}`
+  }
 
   close () { return this.log.close() }
 }

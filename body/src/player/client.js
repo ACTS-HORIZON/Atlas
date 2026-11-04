@@ -75,6 +75,27 @@ class DecisionClient {
   }
 
   /**
+   * A bare request, timed: the smallest state and a two-option question, outside the tick stats.
+   * {ok, ms, error?}. Logged every 60 s next to the tick latency (server contention vs. the body).
+   */
+  async bare () {
+    const t0 = performance.now()
+    try {
+      const res = await this.fetch(this.url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(this.request({}, ['wait', 'continue_task'], { intent: null })),
+        signal: AbortSignal.timeout(Math.max(1000, this.timeoutMs * 10))
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      await res.json()
+      return { ok: true, ms: performance.now() - t0 }
+    } catch (err) {
+      return { ok: false, ms: performance.now() - t0, error: errorKind(err) }
+    }
+  }
+
+  /**
    * The request body: the view as a JSON string; one choice question whose instructions carry the intent
    * and whose criteria are the offered actions, each described relative to this tick (describe() in
    * offered.js; the static base line when none is given).

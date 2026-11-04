@@ -42,6 +42,16 @@ function fakeMotor (w, opt = {}) {
     },
     async look (yaw, pitch) { this.calls.push(['look', yaw, pitch]) },
     async jump () { this.calls.push(['jump']); return { ok: true } },
+    // the player's step/sprint press: one block (two sprinting) at once in the fake world
+    async press (dir, o = {}) {
+      this.calls.push(['press', dir, !!o.sprint])
+      this.dir = dir
+      const d = { north: [0, -1], south: [0, 1], east: [1, 0], west: [-1, 0] }[dir]
+      const n = o.sprint ? 2 : 1
+      this.pos = [this.pos[0] + d[0] * n, this.pos[1], this.pos[2] + d[1] * n]
+      return { ok: true, moving: true }
+    },
+    release () {},
     async pillar (item) {
       this.calls.push(['pillar', item])
       const f = this.pos.map(Math.floor)
@@ -99,11 +109,11 @@ function fakeMotor (w, opt = {}) {
 
 /** act for a verb, with the real VerbApi over the fake world. */
 function setup (w, opt = {}) {
-  const motor = fakeMotor(w, opt)
+  const motor = opt.motor || fakeMotor(w, opt)
   const places = new KnownPlaces({ file: null })
   const players = opt.players || []
   const entities = opt.entities || []
-  const viewNow = () => makeView(w, { pos: motor.pos, yaw: 0, players: typeof players === 'function' ? players(motor) : players, entities, waypoints: opt.locator ? opt.locator.list() : [] })
+  const viewNow = () => makeView(w, { pos: motor.here(), yaw: 0, players: typeof players === 'function' ? players(motor) : players, entities, waypoints: opt.locator ? opt.locator.list() : [] })
   const observe = () => {
     const v = viewNow()
     const { obs } = buildObs(v, {})

@@ -200,7 +200,7 @@
    ],
    "criteria": {
     "step": "walk one block north into open air",
-    "sprint": "sprint two blocks north through open air",
+    "sprint": "sprint north through open air (up to two blocks)",
     "jump": "jump in place (open air above your head)",
     "turn_left": "face west (open)",
     "turn_right": "face east (open)",
@@ -274,7 +274,7 @@
    ],
    "criteria": {
     "step": "walk one block east into open air",
-    "sprint": "sprint two blocks east through open air",
+    "sprint": "sprint east through open air (up to two blocks)",
     "jump": "jump in place (open air above your head)",
     "turn_left": "face north (open)",
     "turn_right": "face south (open)",

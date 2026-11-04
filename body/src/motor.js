@@ -439,12 +439,59 @@ class Motor {
     }
   }
 
-  // ---- the player loop's primitives -----------------------------------------
+  // ---- the player loop's primitives: control presses, not pathfinder calls ----
+  /**
+   * step / sprint: face dir and hold forward (and sprint) until the bot has moved one block (two
+   * sprinting) or maxMs (300) has passed, then let go by itself. Resolves as soon as the movement is
+   * observed (or startMs passes without any): {ok, moving}; `this.pressing.done` resolves when the press
+   * ends, with {moved, ms}. A new press, or release(), ends the running one first.
+   */
+  async press (dir, { sprint = false, maxMs = 300, startMs = 100 } = {}) {
+    const bot = this.bot
+    this.release()
+    if (dir) await this.face(dir)
+    const p0 = bot.entity.position.clone ? bot.entity.position.clone() : { ...bot.entity.position }
+    const t0 = Date.now()
+    const blocks = sprint ? 2 : 1
+    const dist = () => { const p = bot.entity.position; return Math.hypot(p.x - p0.x, p.z - p0.z) }
+    let started = null
+    const start = new Promise(resolve => { started = resolve })
+    const token = {}
+    this.pressing = token
+    bot.setControlState('sprint', !!sprint)
+    bot.setControlState('forward', true)
+    token.done = (async () => {
+      let moving = false
+      while (this.pressing === token && Date.now() - t0 < maxMs) {
+        await new Promise(resolve => setTimeout(resolve, 10))
+        const d = dist()
+        if (!moving && d >= 0.02) { moving = true; started({ ok: true, moving: true }) }
+        if (!moving && Date.now() - t0 >= startMs) started({ ok: true, moving: false })
+        if (d >= blocks - 0.02) break
+      }
+      if (this.pressing === token) this.release()
+      started({ ok: true, moving }) // (no-op when already resolved)
+      return { moved: Math.round(dist() * 100) / 100, ms: Date.now() - t0 }
+    })()
+    return start
+  }
+
+  /** Let go of a running step/sprint press. */
+  release () {
+    if (!this.pressing) return
+    this.pressing = null
+    this.bot.setControlState('forward', false)
+    this.bot.setControlState('sprint', false)
+  }
+
+  /** One jump press: hold jump until the bot leaves the ground (or 150 ms), then let go. */
   async jump () {
-    this.bot.setControlState('jump', true)
-    await new Promise(resolve => setTimeout(resolve, 300))
-    this.bot.setControlState('jump', false)
-    return { ok: true }
+    const bot = this.bot
+    bot.setControlState('jump', true)
+    const t0 = Date.now()
+    while (bot.entity.onGround !== false && Date.now() - t0 < 150) await new Promise(resolve => setTimeout(resolve, 10))
+    bot.setControlState('jump', false)
+    return { ok: true, airborne: bot.entity.onGround === false }
   }
 
   /** Jump and place item under the feet (where the bot stood). */

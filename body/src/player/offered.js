@@ -127,7 +127,7 @@ function describe (p, offered, { sky = null } = {}) {
   const block = blockFor(p)
   const facts = {
     step: () => { const l = landing(p, x + d[0], y, z + d[1]); return `walk one block ${p.dir} into ${NAME(c(d[0], 0, d[1]))}${l.ok && l.depth ? `, dropping ${l.depth}` : ''}` },
-    sprint: () => `sprint two blocks ${p.dir} through open air`,
+    sprint: () => `sprint ${p.dir} through open air (up to two blocks)`,
     jump: () => `jump in place (${NAME(c(0, 2, 0))} above your head)`,
     turn_left: () => `face ${LEFT[p.dir]} (${headAt(LEFT[p.dir])})`,
     turn_right: () => `face ${RIGHT[p.dir]} (${headAt(RIGHT[p.dir])})`,

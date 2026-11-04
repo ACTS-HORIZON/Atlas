@@ -285,6 +285,12 @@ class VerbApi {
 
   jump () { return this.motor.jump() }
 
+  /** The player's step/sprint: a forward press toward dir (see Motor.press); resolves once moving. */
+  press (dir, { sprint = false } = {}) { return this.motor.press(dir, { sprint }) }
+
+  /** Let go of a running press (any other micro-action). */
+  release () { if (this.motor.release) this.motor.release() }
+
   /** Jump and place a block under the feet (a pillar step). */
   async pillar (block) {
     if (!block || !this.inventoryCount(block)) return { ok: false, reason: block ? `no ${block} in inventory` : 'no block to place' }
@@ -315,7 +321,6 @@ class VerbApi {
     return this.motor.look(yaw, pitchDeg * Math.PI / 180)
   }
 
-  /** The override: hold the running scripted verb's movement and digging, and let it go again. */
   /** Is the motor doing anything right now (the imitation recorder's idle test)? */
   motorActive () { return this.motor.active ? this.motor.active() : false }
   pauseVerb () { if (this.motor.pause) this.motor.pause() }

@@ -108,7 +108,13 @@ class Body {
       if (this.ready() && (this.link.count || this.dash?.count)) { const o = this.obs(); if (o) this.link.broadcast(o) }
     }, this.cfg.obsIntervalMs))
     this.timers.push(setInterval(() => this.stats.report(), 60000))
-    if (this.player) this.timers.push(setInterval(() => { if (this.player.chooser.stats.ticks) console.log(this.player.report()) }, 60000))
+    // every 60 s: tick latency and rates, next to a bare /v1/systemone request timed from here
+    if (this.player) {
+      this.timers.push(setInterval(() => {
+        if (!this.player.chooser.stats.ticks) return
+        this.player.reportWithBare().then(line => console.log(line), err => console.warn(`[player] report: ${err.message}`))
+      }, 60000))
+    }
   }
 
   connect () {

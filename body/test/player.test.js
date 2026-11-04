@@ -466,3 +466,184 @@ test('imitation labels: step, turn, dig_ahead, wait, and an ambiguous diagonal m
   assert.deepEqual(intentOf('goto', { target: 'Rook' }), { intent: 'go to Rook', target: 'Rook' })
   assert.deepEqual(intentOf('goto', { target: 'surface' }), { intent: 'get to the surface', target: null })
 })
+
+// ---- 6b-6: timeouts never override; micro-actions are control presses; the survive view
+const { EventEmitter } = require('events')
+const { Vec3 } = require('vec3')
+const { Motor } = require('../src/motor')
+const { surviveView, SURVIVE_MAX_TOKENS } = require('../src/player/view')
+
+/** A bot with just enough physics for control presses: 20 game ticks a second, walking 4.3 b/s, sprinting 5.6. */
+function physBot (w, pos) {
+  const bot = Object.assign(new EventEmitter(), {
+    registry: require('prismarine-registry')('26.1'),
+    game: { gameMode: 'survival', dimension: 'overworld' },
+    entity: { position: new Vec3(...pos), yaw: Math.PI, pitch: 0, onGround: true, eyeHeight: 1.62 },
+    entities: {},
+    inventory: { items: () => [], slots: [] },
+    heldItem: null,
+    food: 20,
+    controlState: {},
+    setControlState (c, v) { this.controlState[c] = v },
+    clearControlStates () { this.controlState = {} },
+    look: async (yaw, pitch) => { bot.entity.yaw = yaw; bot.entity.pitch = pitch }
+  })
+  const solid = (x, y, z) => { const c = w.classAt(Math.floor(x), Math.floor(y), Math.floor(z)); return !!(c && c.solid) }
+  bot.timer = setInterval(() => {
+    const cs = bot.controlState
+    if (cs.jump && bot.entity.onGround) { bot.entity.onGround = false; setTimeout(() => { bot.entity.onGround = true }, 400) }
+    if (!cs.forward) return
+    const v = (cs.sprint ? 5.6 : 4.3) / 20
+    const p = bot.entity.position
+    const ux = -Math.sin(bot.entity.yaw); const uz = -Math.cos(bot.entity.yaw)
+    const nx = p.x + ux * v; const nz = p.z + uz * v
+    const ex = nx + ux * 0.3; const ez = nz + uz * 0.3 // the leading edge of the 0.6-wide hitbox
+    if (solid(ex, p.y, ez) || solid(ex, p.y + 1, ez)) return
+    bot.entity.position = new Vec3(nx, p.y, nz)
+  }, 50)
+  return bot
+}
+
+test('timeouts never override: 50% timeouts in survive mode during a scripted goto never pause it; no decision is logged as no choice', async () => {
+  const s = setup(flat(), { pos: [0.5, 10, 0.5] })
+  let n = 0
+  const c = new DecisionClient({
+    url: 'x',
+    timeoutMs: 20,
+    log: () => {},
+    fetchImpl: (url, o) => (n++ % 2
+      ? new Promise((resolve, reject) => {
+        const keep = setTimeout(() => {}, 1000) // AbortSignal.timeout's timer is unref'd: keep the test process alive
+        o.signal.addEventListener('abort', () => { clearTimeout(keep); reject(Object.assign(new Error('timeout'), { name: 'TimeoutError' })) }, { once: true })
+      })
+      : Promise.resolve({ ok: true, json: async () => ({ answers: { action: { choice: 'continue_task', probabilities: { continue_task: 0.8, wait: 0.2 } } } }) }))
+  })
+  const loop = new PlayerLoop({ chooser: c, hz: 100, surviveHz: 100 })
+  let done = false // the scripted verb is still running while this is false (as in body.onCall)
+  const w = loop.watch(s.api, { settled: () => done, interrupt: () => assert.fail('no interrupt') })
+  await new Promise(resolve => setTimeout(resolve, 800))
+  done = true
+  const out = await w
+  assert.ok(out.ticks >= 10, `ticks: ${out.ticks}`)
+  assert.ok(out.undecided >= out.ticks * 0.3, `about half timed out: ${out.undecided}/${out.ticks}`)
+  assert.equal(out.pauses, 0)
+  assert.deepEqual(s.motor.calls.filter(x => x[0] === 'pause' || x[0] === 'resume'), [], 'never paused')
+  const timedOut = loop.last.find(t => t.chosen === '(timeout)')
+  assert.ok(timedOut, 'the dashboard shows the timeout as no choice')
+})
+
+test('play: a timeout is a wait, not a decision: it neither ends a streak nor counts toward one, and is not logged as a choice', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-player-'))
+  const s = setup(flat(), { pos: [0.5, 10, 0.5] })
+  const seq = ['stuck', 'timeout', 'stuck', 'timeout', 'stuck', 'stuck', 'stuck']
+  const chooser = {
+    stats: { add () {} },
+    async choose (v, offered) {
+      const a = seq.shift() || 'wait'
+      if (a === 'timeout') return { choice: 'wait', probabilities: null, confidence: null, margin: null, latency: 60, timedOut: true }
+      return { choice: a, probabilities: null, confidence: 0.2, margin: null, latency: 5, timedOut: false }
+    }
+  }
+  const loop = new PlayerLoop({ chooser, logDir: dir, hz: 1000 })
+  const r = await loop.run(s.api, { intent: 'x', budgetTicks: 20 })
+  await loop.close()
+  assert.equal(r.end, 'stuck')
+  assert.equal(r.ticks, 7, 'five stucks in a row, the two timeouts in between skipped over')
+  const lines = fs.readFileSync(r.log, 'utf8').trim().split('\n').map(l => JSON.parse(l))
+  assert.deepEqual(lines.map(l => l.chosen), ['stuck', null, 'stuck', null, 'stuck', 'stuck', 'stuck'])
+  assert.equal(lines[1].no_decision, 'timeout')
+  assert.equal(lines[1].effect, 'no decision: waited')
+})
+
+test('a step is a forward press: it completes one block in under 400 ms; the tick goes on as soon as the bot moves', async () => {
+  const w = flat()
+  const bot = physBot(w, [0.5, 10, -10.5])
+  try {
+    const m = new Motor(bot)
+    const t0 = Date.now()
+    const r = await m.press('south')
+    const startMs = Date.now() - t0
+    assert.equal(r.moving, true)
+    assert.ok(startMs < 100, `returns once moving: ${startMs} ms`)
+    const d = await m.pressing.done
+    const total = Date.now() - t0
+    assert.ok(total < 400, `one block in ${total} ms`)
+    assert.ok(d.moved >= 0.95 && d.moved < 1.3, `moved ${d.moved}`)
+    assert.equal(bot.controlState.forward, false, 'let go by itself')
+    // into a wall: no movement, the press reports it within startMs
+    w.set(0, 10, 5, 'stone').set(0, 11, 5, 'stone')
+    bot.entity.position = new Vec3(0.5, 10, 4.5)
+    const b = await m.press('south')
+    assert.equal(b.moving, false)
+    await m.pressing?.done
+  } finally { clearInterval(bot.timer) }
+})
+
+test('a 100-tick walk on flat ground with a stub model runs at 10 Hz or more', async () => {
+  const w = flat()
+  const bot = physBot(w, [0.5, 10, -19.5])
+  try {
+    const s = setup(w, { motor: new Motor(bot) })
+    const chooser = new DecisionClient({
+      url: 'x',
+      timeoutMs: 60,
+      fetchImpl: async () => { await new Promise(resolve => setTimeout(resolve, 15)); return { ok: true, json: async () => ({ answers: { action: { choice: 'step', probabilities: { step: 0.9, wait: 0.1 } } } }) } }
+    })
+    const loop = new PlayerLoop({ chooser, hz: 20 })
+    const r = await loop.run(s.api, { intent: 'walk south', budgetTicks: 100, budgetMs: 30000 })
+    assert.equal(r.ticks, 100)
+    const hz = r.ticks / r.seconds
+    assert.ok(hz >= 10, `${hz.toFixed(1)} Hz`)
+    if (process.env.ATLAS_SHOW_RATE) console.log(`walk: ${hz.toFixed(1)} Hz, ${(r.to[2] - r.from[2]).toFixed(1)} blocks`)
+    assert.ok(r.to[2] - r.from[2] >= 15, `walked ${r.to[2] - r.from[2]} blocks south`)
+    assert.match(loop.rateReport(), /^play \d+\.\d Hz \(100 ticks in [\d.]+ s\)$/)
+  } finally { clearInterval(bot.timer) }
+})
+
+test('the survive view is small: vitals, threats, hazards, the last action; ≤120 tokens', () => {
+  const obs = {
+    self: { health: 6, food: 12, held: 'stone_pickaxe', on_ground: true },
+    surroundings: { summary: 'on open flat ground, a long sentence about everything around that survive mode does not need at all', sky: true },
+    entities: [1, 2, 3, 4].map(i => ({ type: 'zombie', rel: [i, 0, 1], dist: i + 0.5, bearing: 'front-left', approaching: true, hostile: true }))
+  }
+  const v = surviveView({ obs, probe: null, recent: [{ action: 'continue_task', effect: 'continuing the task' }, { action: 'attack', effect: 'hit zombie' }] })
+  assert.deepEqual(Object.keys(v), ['self', 'threats', 'hazards', 'last'])
+  assert.deepEqual(v.self, { health: 6, food: 12 })
+  assert.equal(v.threats.length, 3)
+  assert.deepEqual(v.last, { action: 'attack', effect: 'hit zombie' })
+  assert.ok(tokens(v) <= SURVIVE_MAX_TOKENS, `${tokens(v)} tokens`)
+})
+
+test('bare request: timed outside the tick stats, and logged next to them', async () => {
+  const c = new DecisionClient({ url: 'x', fetchImpl: async (u, o) => { await new Promise(resolve => setTimeout(resolve, 5)); return { ok: true, json: async () => ({ body: JSON.parse(o.body) }) } } })
+  const b = await c.bare()
+  assert.equal(b.ok, true)
+  assert.equal(c.stats.ticks, 0)
+  c.stats.add(30)
+  const loop = new PlayerLoop({ chooser: c })
+  assert.match(await loop.reportWithBare(), /^\[player\] 1 ticks in .*; bare request [\d.]+ ms$/)
+  const f = new DecisionClient({ url: 'x', fetchImpl: async () => ({ ok: false, status: 503 }) })
+  f.stats.add(30)
+  assert.match(await new PlayerLoop({ chooser: f }).reportWithBare(), /; bare request failed after [\d.]+ ms \(HTTP 503\)$/)
+})
+
+test('the imitation recorder keeps recording at its own rate while survive mode is quiet (5 Hz)', async () => {
+  const { ImitationRecorder } = require('../src/player/imitation')
+  const s = setup(flat(), { pos: [0.5, 10, 0.5] })
+  s.motor.dir = 'south'
+  const watcher = new PlayerLoop({ chooser: new ScriptedChooser(() => 'continue_task'), hz: 20, surviveHz: 5 })
+  const rec = new ImitationRecorder({ loop: new PlayerLoop({ chooser: null }), hz: 50 })
+  let finish; const finished = new Promise(resolve => { finish = resolve })
+  let settled = false
+  const watching = watcher.watch(s.api, { settled: () => settled, interrupt: () => assert.fail('no interrupt') })
+  const recording = rec.record(s.api, { verb: 'goto', args: { pos: [0.5, 10, 6.5] }, finished })
+  for (let i = 0; i < 6; i++) { await new Promise(resolve => setTimeout(resolve, 60)); s.motor.pos = [0.5, 10, s.motor.pos[2] + 1] }
+  await new Promise(resolve => setTimeout(resolve, 60))
+  finish({ status: 'done' }); settled = true
+  const counts = await recording
+  const out = await watching
+  assert.equal(counts.recorded.step, 6, JSON.stringify(counts))
+  assert.equal(counts.recorded.done, 1)
+  assert.ok(out.ticks <= 4, `survive stayed quiet: ${out.ticks} ticks`)
+  assert.equal(out.pauses, 0)
+})

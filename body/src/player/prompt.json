@@ -4,7 +4,7 @@
   "survive_instructions": "Goal: stay alive while the running task goes on. Pick continue_task unless a threat or a hazard needs a reaction now.",
   "descriptions": {
     "step": "walk one block forward",
-    "sprint": "sprint two blocks forward",
+    "sprint": "sprint forward, up to two blocks",
     "jump": "jump in place",
     "turn_left": "turn 90 degrees to the left",
     "turn_right": "turn 90 degrees to the right",
