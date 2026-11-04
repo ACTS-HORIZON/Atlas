@@ -16,6 +16,29 @@ const RIGHT = { north: 'east', east: 'south', south: 'west', west: 'north' }
 
 const MICRO = ['step', 'sprint', 'jump', 'turn_left', 'turn_right', 'look_up', 'look_down', 'dig_ahead', 'dig_above', 'dig_below',
   'place_below_and_jump', 'place_ahead', 'attack', 'block', 'retreat', 'eat', 'wait', 'done', 'stuck', 'continue_task']
+// One line per micro-action: the `criteria` of the decision model's choice question.
+const DESCRIPTIONS = {
+  step: 'walk one block forward',
+  sprint: 'sprint two blocks forward',
+  jump: 'jump in place',
+  turn_left: 'turn 90 degrees to the left',
+  turn_right: 'turn 90 degrees to the right',
+  look_up: 'tilt the view up',
+  look_down: 'tilt the view down',
+  dig_ahead: 'break the block in front at feet/head height',
+  dig_above: 'break the block above the head',
+  dig_below: 'break the block under the feet and drop into its space',
+  place_below_and_jump: 'jump and place a block under the feet to climb one block',
+  place_ahead: 'place a block in front at feet height',
+  attack: 'hit the nearest hostile mob in reach',
+  block: 'raise the shield',
+  retreat: 'step away from the nearest threat',
+  eat: 'eat food to restore hunger',
+  wait: 'do nothing this tick',
+  done: 'the intent is accomplished',
+  stuck: 'the intent cannot be accomplished from here',
+  continue_task: 'let the running task carry on'
+}
 const SURVIVAL = new Set(['attack', 'block', 'retreat', 'eat', 'jump', 'wait', 'continue_task'])
 
 const HURTS = /^(lava|fire|soul_fire|magma_block|campfire|soul_campfire|cactus|sweet_berry_bush|powder_snow|wither_rose|pointed_dripstone)$/
@@ -103,4 +126,4 @@ function offeredActions (p, mode = 'play') {
   return MICRO.filter(a => out.has(a))
 }
 
-module.exports = { offeredActions, landing, stepOk, blockFor, MICRO, SURVIVAL, DIRS, LEFT, RIGHT, PLACEABLE, isSolid }
+module.exports = { offeredActions, landing, stepOk, blockFor, MICRO, DESCRIPTIONS, SURVIVAL, DIRS, LEFT, RIGHT, PLACEABLE, isSolid }

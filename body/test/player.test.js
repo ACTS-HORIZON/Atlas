@@ -207,11 +207,11 @@ test('decision client: the request, the answer, wait on timeout or an answer not
     return { ok: true, json: async () => body }
   }
   const ok = { model: 'd1-2B', answers: { action: { type: 'choice', choice: 'retreat', probabilities: { retreat: 0.5, wait: 0.2 }, confidence: 0.5 } } }
-  let c = new DecisionClient({ url: 'http://horizon:9931/v1/systemone', model: 'd1-2B', fetchImpl: reply(ok) })
+  let c = new DecisionClient({ url: 'http://10.0.0.140:8000/upstream/d1-2b/v1/systemone', fetchImpl: reply(ok) })
   let r = await c.choose({ self: { health: 9 } }, ['retreat', 'wait'])
   assert.equal(r.choice, 'retreat')
   assert.deepEqual(r.probabilities, { retreat: 0.5, wait: 0.2 })
-  assert.deepEqual(sent[0], { model: 'd1-2B', state: { self: { health: 9 } }, questions: { action: { type: 'choice', question: sent[0].questions.action.question, choices: ['retreat', 'wait'] } } })
+  assert.equal(sent[0].state, '{"self":{"health":9}}', 'the view goes as a JSON string')
   r = await c.choose({}, ['wait', 'step']) // answers retreat, which isn't offered
   assert.equal(r.choice, 'wait')
   c = new DecisionClient({ url: 'x', timeoutMs: 40, fetchImpl: reply(ok, 200) })
@@ -223,4 +223,59 @@ test('decision client: the request, the answer, wait on timeout or an answer not
   r = await c.choose({}, ['step', 'wait'])
   assert.deepEqual([r.choice, r.error], ['wait', 'ECONNREFUSED'])
   assert.match(c.stats.report(), /^\[player\] 1 ticks, latency p50 [\d.]+ ms p95 [\d.]+ ms, 0 timeouts, 1 errors$/)
+})
+
+// ---- the /v1/systemone contract, as verified on Horizon (Session 6b-2) ----
+const http = require('http')
+const { DESCRIPTIONS, MICRO } = require('../src/player/offered')
+
+const KNOWN_VIEW = { self: { health: 14, food: 17, held: 'stone_pickaxe', y: 10, facing: 'south', pitch: 0, on_ground: true },
+  intent: 'get to the surface', threats: [], hazards: ['drop 2 east'], surroundings: 'in a 1-wide shaft 5 deep, stone all sides, roof 1 above', sky: false,
+  recent: [{ action: 'dig_above', effect: 'dug stone above' }], offered: ['jump', 'dig_above', 'place_below_and_jump', 'wait', 'done', 'stuck'] }
+
+test('systemone contract: the request body, byte for byte, for a known view', () => {
+  const c = new DecisionClient({ url: 'http://10.0.0.140:8000/upstream/d1-2b/v1/systemone' })
+  const body = JSON.stringify(c.request(KNOWN_VIEW, KNOWN_VIEW.offered))
+  const expected = '{"model":"d1-2b","state":"{\\"self\\":{\\"health\\":14,\\"food\\":17,\\"held\\":\\"stone_pickaxe\\",\\"y\\":10,\\"facing\\":\\"south\\",\\"pitch\\":0,\\"on_ground\\":true},' +
+    '\\"intent\\":\\"get to the surface\\",\\"threats\\":[],\\"hazards\\":[\\"drop 2 east\\"],\\"surroundings\\":\\"in a 1-wide shaft 5 deep, stone all sides, roof 1 above\\",\\"sky\\":false,' +
+    '\\"recent\\":[{\\"action\\":\\"dig_above\\",\\"effect\\":\\"dug stone above\\"}],\\"offered\\":[\\"jump\\",\\"dig_above\\",\\"place_below_and_jump\\",\\"wait\\",\\"done\\",\\"stuck\\"]}",' +
+    '"questions":{"action":{"type":"choice","instructions":"Choose the one action the player should take this tick to pursue the intent in the state, staying safe.",' +
+    '"criteria":{"jump":"jump in place","dig_above":"break the block above the head","place_below_and_jump":"jump and place a block under the feet to climb one block",' +
+    '"wait":"do nothing this tick","done":"the intent is accomplished","stuck":"the intent cannot be accomplished from here"}}}}'
+  assert.equal(body, expected)
+  const parsed = JSON.parse(body)
+  assert.deepEqual(Object.keys(parsed), ['model', 'state', 'questions'])
+  assert.equal(typeof parsed.state, 'string')
+  assert.deepEqual(JSON.parse(parsed.state), KNOWN_VIEW)
+  assert.deepEqual(Object.keys(parsed.questions.action), ['type', 'instructions', 'criteria'])
+  for (const a of MICRO) assert.equal(typeof DESCRIPTIONS[a], 'string', `a description for ${a}`)
+})
+
+test('systemone: a stub server with the real response shape; the URL is used as is; an answer outside the offered set is wait', async (t) => {
+  const got = []
+  let answer = 'dig_above'
+  const server = http.createServer((req, res) => {
+    let b = ''
+    req.on('data', d => { b += d })
+    req.on('end', () => {
+      got.push({ method: req.method, url: req.url, body: b, type: req.headers['content-type'] })
+      res.setHeader('content-type', 'application/json')
+      res.end(JSON.stringify({ answers: { action: { choice: answer, probabilities: { dig_above: 0.71, jump: 0.2, wait: 0.09 }, confidence: 0.71 } }, usage: { input_tokens: 231, output_tokens: 0 } }))
+    })
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => { server.closeAllConnections(); server.close() })
+  const url = `http://127.0.0.1:${server.address().port}/upstream/d1-2b/v1/systemone`
+  const c = new DecisionClient({ url, timeoutMs: 1000 })
+  const r = await c.choose(KNOWN_VIEW, KNOWN_VIEW.offered)
+  assert.equal(r.choice, 'dig_above')
+  assert.deepEqual(r.probabilities, { dig_above: 0.71, jump: 0.2, wait: 0.09 })
+  assert.equal(r.confidence, 0.71)
+  assert.deepEqual(c.usage, { input_tokens: 231, output_tokens: 0 })
+  assert.deepEqual([got[0].method, got[0].url, got[0].type], ['POST', '/upstream/d1-2b/v1/systemone', 'application/json'])
+  assert.equal(got[0].body, JSON.stringify(c.request(KNOWN_VIEW, KNOWN_VIEW.offered)))
+  answer = 'sprint' // not offered
+  const n = await c.choose(KNOWN_VIEW, KNOWN_VIEW.offered)
+  assert.equal(n.choice, 'wait')
+  assert.equal(n.error, 'answer not offered: sprint')
 })

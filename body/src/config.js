@@ -60,7 +60,7 @@ module.exports = {
   stripMax: positive('ATLAS_STRIP_MAX', 256),
   // The player loop (src/player): the decision model on Horizon; empty URL = off
   playerUrl: env('ATLAS_PLAYER_URL', ''),
-  playerModel: env('ATLAS_PLAYER_MODEL', 'd1-2B'),
+  playerModel: env('ATLAS_PLAYER_MODEL', 'd1-2b'),
   playerTimeoutMs: positive('ATLAS_PLAYER_TIMEOUT_MS', 40),
   playerHz: positive('ATLAS_PLAYER_HZ', 20),
   // while a scripted verb runs, the loop ticks with intent "survive" (0 = off)

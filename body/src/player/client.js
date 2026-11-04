@@ -3,17 +3,18 @@
 // /v1/systemone endpoint on Horizon. One `choice` question per tick over the
 // offered micro-actions; 40 ms budget, `wait` on timeout or any error.
 //
-// Request/response, from the 2026-11-01 bench (Outline, "Decision model
-// bench", ~/bench/s1bench.py):
-//   POST <url>  {"model", "state", "questions"}
-//   200 {"model", "answers": {"action": {"type": "choice", "choice": "retreat",
-//        "probabilities": {...}, "confidence": 0.498}}, "usage": {...}}
-// The bench note gives the request's top-level fields but not the exact
-// shape of one entry in `questions`; it is built in one place, request(),
-// as {action: {type: "choice", question, choices}}. Check it against
-// s1bench.py and adjust there.
+// The shape, verified on Horizon (Session 6b-2):
+//   POST <ATLAS_PLAYER_URL>, the full URL, used as is, e.g.
+//     http://10.0.0.140:8000/upstream/d1-2b/v1/systemone
+//     (llama-swap's model-routed /v1/systemone 404s; LiteLLM doesn't know it)
+//   {"model": "d1-2b", "state": "<the reflex view as a JSON string>",
+//    "questions": {"action": {"type": "choice", "instructions": "<what to decide>",
+//                             "criteria": {"<option>": "<one-line description>", ...}}}}
+//   200 {"answers": {"action": {"choice": "retreat", "probabilities": {...},
+//        "confidence": 0.498}}, "usage": {...}}
+const { DESCRIPTIONS } = require('./offered')
 
-const QUESTION = 'Which action should the player take right now, given the state and the intent?'
+const INSTRUCTIONS = 'Choose the one action the player should take this tick to pursue the intent in the state, staying safe.'
 
 class LatencyStats {
   constructor (keep = 2000) { this.keep = keep; this.samples = []; this.timeouts = 0; this.errors = 0; this.ticks = 0 }
@@ -40,7 +41,7 @@ class LatencyStats {
 }
 
 class DecisionClient {
-  constructor ({ url, model = 'd1-2B', timeoutMs = 40, fetchImpl = globalThis.fetch } = {}) {
+  constructor ({ url, model = 'd1-2b', timeoutMs = 40, fetchImpl = globalThis.fetch } = {}) {
     this.url = url
     this.model = model
     this.timeoutMs = timeoutMs
@@ -48,8 +49,11 @@ class DecisionClient {
     this.stats = new LatencyStats()
   }
 
+  /** The request body: the view as a JSON string, one choice question whose criteria are the offered actions. */
   request (state, offered) {
-    return { model: this.model, state, questions: { action: { type: 'choice', question: QUESTION, choices: offered } } }
+    const criteria = {}
+    for (const a of offered) criteria[a] = DESCRIPTIONS[a] || a
+    return { model: this.model, state: JSON.stringify(state), questions: { action: { type: 'choice', instructions: INSTRUCTIONS, criteria } } }
   }
 
   /** {choice, probabilities, confidence, latency, timedOut, error?}; choice is always one of offered ('wait' on any trouble). */
@@ -66,6 +70,7 @@ class DecisionClient {
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const body = await res.json()
       const a = body && body.answers && body.answers.action
+      if (body && body.usage) this.usage = body.usage
       const latency = performance.now() - t0
       this.stats.add(latency)
       const choice = a && offered.includes(a.choice) ? a.choice : fallback
@@ -91,4 +96,4 @@ class ScriptedChooser {
   }
 }
 
-module.exports = { DecisionClient, ScriptedChooser, LatencyStats, QUESTION }
+module.exports = { DecisionClient, ScriptedChooser, LatencyStats, INSTRUCTIONS }

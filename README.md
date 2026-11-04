@@ -366,13 +366,13 @@ CONTRACT.md "Player loop": the decision model (d1-2B on Horizon, llama.cpp `/v1/
 
 | Variable | Default | |
 |---|---|---|
-| `ATLAS_PLAYER_URL` | — | e.g. `http://<horizon>:9931/v1/systemone`; empty = no player loop |
-| `ATLAS_PLAYER_MODEL` | `d1-2B` | sent as `model` |
+| `ATLAS_PLAYER_URL` | — | the full URL, e.g. `http://10.0.0.140:8000/upstream/d1-2b/v1/systemone` (llama-swap's model-routed `/v1/systemone` 404s; LiteLLM doesn't know the endpoint); empty = no player loop |
+| `ATLAS_PLAYER_MODEL` | `d1-2b` | sent as `model` |
 | `ATLAS_PLAYER_TIMEOUT_MS` | `40` | per tick; `wait` on timeout |
 | `ATLAS_PLAYER_HZ` | `20` | tick rate |
 | `ATLAS_PLAYER_OVERRIDE` | `1` | the survive loop while scripted verbs run |
 
-**Request shape:** the body sends `{"model", "state": <reflex view>, "questions": {"action": {"type": "choice", "question", "choices": [offered]}}}` and reads `answers.action.choice` (and `probabilities`). The top level and the answer follow the 2026-11-01 bench note; the shape of one `questions` entry is built in one place (`DecisionClient.request` in `body/src/player/client.js`). Check it against `~/bench/s1bench.py`.
+**Request shape** (verified on Horizon): `POST` to `ATLAS_PLAYER_URL` exactly as given (no suffix is added), `{"model": "d1-2b", "state": "<the reflex view as a JSON string>", "questions": {"action": {"type": "choice", "instructions": "<what to decide>", "criteria": {"<offered action>": "<one-line description>", …}}}}`. The descriptions are a static map in `body/src/player/offered.js` (`DESCRIPTIONS`). The answer is read from `answers.action.choice`, with `probabilities` and `confidence` (and `usage`). A choice outside the offered set is `wait`.
 
 ### Lessons
 
