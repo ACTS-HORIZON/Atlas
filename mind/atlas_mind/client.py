@@ -20,6 +20,8 @@ Prints every message from the body. Type:
     give <item> <n> <player>        walk to a player and toss them items
     deposit <item> <x> <y> <z> [n]  put items in a chest (all if no n)
     withdraw <item> <x> <y> <z> [n] take from a chest given to Atlas
+    play "<intent>" [seconds] [target]   hand the controls to the player loop with an intent
+    player        the last 10 ticks of logs/player-<date>.jsonl (chosen, latency, effect)
     trace [kind] <text>     send a trace (kind: plan, decision, rag, verb_write,
                             advisor, note; default note); logged, never acted on
     obs           ask for a full view now
@@ -31,8 +33,11 @@ import argparse
 import asyncio
 import json
 import os
+import shlex
 import sys
 import threading
+import time
+from pathlib import Path
 
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
@@ -43,6 +48,7 @@ from .pretty import format_message
 HELP = ("commands: say <text> | stop | recall <type> [x y z] | goto <x y z | target> | explore <dir> <n> |"
         " mine <block> <n> [radius] [y=<level>] | collect <item> | craft <item> [n] | smelt <item> [n] [fuel] | place <block> [x y z] | equip <item> [slot] |"
         " dig <x y z> | eat [item] | give <item> <n> <player> | deposit|withdraw <item> <x y z> [n] |"
+        " play \"<intent>\" [seconds] [target] | player |"
         " trace [kind] <text> | obs | quit")
 DIRECTIONS = ("north", "south", "east", "west", "north-east", "north-west", "south-east", "south-west", "forward")
 TRACE_KINDS = ("plan", "decision", "rag", "verb_write", "advisor", "note")
@@ -167,9 +173,55 @@ def parse_command(line: str, next_id, now_t=lambda: 0) -> dict | None | str:
         return {"type": "trace", "v": CONTRACT_VERSION, "t": int(now_t()), "kind": kind, "text": text.strip(), "data": {}}
     if cmd == "obs":
         return {"type": "observe", "v": CONTRACT_VERSION}
+    if cmd == "play":
+        usage = 'usage: play "<intent>" [seconds] [target]'
+        try:
+            words = shlex.split(rest)
+        except ValueError:
+            return usage
+        if not 1 <= len(words) <= 3 or not words[0].strip():
+            return usage
+        args = {"intent": words[0].strip()}
+        if len(words) >= 2:
+            try:
+                secs = float(words[1])
+            except ValueError:
+                return usage
+            if not 1 <= secs <= 1800:
+                return usage
+            args["budget"] = int(secs) if secs == int(secs) else secs
+        if len(words) == 3:
+            args["target"] = words[2]
+        return call("play", args)
+    if cmd == "player":
+        return "player"
     if cmd in ("quit", "exit"):
         return "quit"
     return HELP
+
+
+def player_tail(log_dir: Path, n: int = 10, day: str | None = None) -> str:
+    """The last n ticks of logs/player-<day>.jsonl, one compact line each: time, mode, chosen, latency, effect."""
+    day = day or time.strftime("%Y-%m-%d", time.gmtime())
+    f = Path(log_dir) / f"player-{day}.jsonl"
+    try:
+        lines = f.read_text(encoding="utf-8").splitlines()[-n:]
+    except OSError:
+        return f"no player ticks today ({f})"
+    out = []
+    for line in lines:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        flag = " TIMEOUT" if r.get("timed_out") else ""
+        out.append(f"{str(r.get('ts', ''))[11:23]} {r.get('mode', '?'):7} {r.get('chosen', '?'):20} {r.get('latency_ms', '?'):>6} ms{flag}  {r.get('effect', '')}")
+    return "\n".join(out) or f"no player ticks today ({f})"
+
+
+def default_log_dir() -> Path:
+    d = os.environ.get("ATLAS_LOG_DIR", "logs")
+    return Path(d) if Path(d).is_absolute() else Path(__file__).resolve().parents[2] / d
 
 
 def default_url() -> str:
@@ -219,6 +271,9 @@ async def main(url: str, raw: bool) -> None:
                         out = parse_command(line, next_id, lambda: last_t)
                         if out == "quit":
                             return
+                        if out == "player":
+                            print(player_tail(default_log_dir()))
+                            continue
                         if isinstance(out, str):
                             print(out)
                         elif out:

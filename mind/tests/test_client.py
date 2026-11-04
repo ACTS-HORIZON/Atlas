@@ -1,4 +1,7 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from atlas_mind.client import parse_command
 from atlas_mind.pretty import format_obs
@@ -103,3 +106,30 @@ class PrettyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlayCommandTest(unittest.TestCase):
+    def test_play_parses(self):
+        from atlas_mind.client import parse_command
+        n = iter(range(100))
+        nid = lambda: f"c{next(n)}"  # noqa: E731
+        m = parse_command('play "get to the surface"', nid)
+        self.assertEqual((m["type"], m["verb"], m["args"]), ("call", "play", {"intent": "get to the surface"}))
+        self.assertEqual(parse_command('play "get to the surface" 90', nid)["args"], {"intent": "get to the surface", "budget": 90})
+        self.assertEqual(parse_command('play "walk to Rook" 30 Rook', nid)["args"], {"intent": "walk to Rook", "budget": 30, "target": "Rook"})
+        self.assertEqual(parse_command("play climb 2.5", nid)["args"], {"intent": "climb", "budget": 2.5})
+        for bad in ("play", 'play "x" soon', 'play "x" 0', 'play "x" 5000', 'play "unclosed', 'play "x" 5 Rook extra'):
+            self.assertTrue(parse_command(bad, nid).startswith("usage: play"), bad)
+        self.assertEqual(parse_command("player", nid), "player")
+
+    def test_player_tail(self):
+        from atlas_mind.client import player_tail
+        with tempfile.TemporaryDirectory() as d:
+            self.assertTrue(player_tail(Path(d), day="2026-11-04").startswith("no player ticks today"))
+            rows = [{"ts": f"2026-11-04T10:00:{i:02d}.000Z", "mode": "play", "chosen": "dig_above", "latency_ms": 17.2 + i,
+                     "timed_out": i == 11, "effect": "dug stone above"} for i in range(12)]
+            (Path(d) / "player-2026-11-04.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+            out = player_tail(Path(d), day="2026-11-04").splitlines()
+            self.assertEqual(len(out), 10, "the last 10")
+            self.assertEqual(out[0], "10:00:02.000 play    dig_above              19.2 ms  dug stone above")
+            self.assertIn("TIMEOUT", out[-1])

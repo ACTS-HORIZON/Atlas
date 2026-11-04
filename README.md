@@ -155,7 +155,7 @@ It prints one line per decision (`[mind] call: <thinking>`). The dashboard's Tra
 cd /opt/atlas/mind && .venv/bin/python -m atlas_mind.client
 ```
 
-Both can be connected at once. A verb you type while the mind's verb is running gets `refused — busy`. Type `say hello`, `goto 10 64 -20`, `explore north 48`, `mine coal_ore 3` (or `mine iron_ore 3 y=16` to staircase down first), `collect oak_log`, `craft oak_planks 4`, `smelt iron_ingot 3`, `place cobblestone 3 64 -2`, `equip iron_pickaxe`, `dig 3 63 -2`, `eat`, `stop`, `recall iron_ore`, `trace plan get iron first`, `obs`, or `quit`. Add `--json` to see raw messages instead of the summary.
+Both can be connected at once. A verb you type while the mind's verb is running gets `refused — busy`. Type `say hello`, `goto 10 64 -20`, `explore north 48`, `mine coal_ore 3` (or `mine iron_ore 3 y=16` to staircase down first), `collect oak_log`, `craft oak_planks 4`, `smelt iron_ingot 3`, `place cobblestone 3 64 -2`, `equip iron_pickaxe`, `dig 3 63 -2`, `eat`, `stop`, `recall iron_ore`, `trace plan get iron first`, `play "get to the surface" 60` (the player loop, with a budget in seconds and an optional target: `play "walk to Rook" 30 Rook`), `player` (the last 10 player-loop ticks from `logs/player-<date>.jsonl`: chosen, latency, effect), `obs`, or `quit`. Add `--json` to see raw messages instead of the summary.
 
 **Logs:**
 
