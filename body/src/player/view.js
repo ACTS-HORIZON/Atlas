@@ -78,7 +78,7 @@ const SURVIVE_MAX_TOKENS = 120
 function surviveView ({ obs, probe, recent = [] }) {
   const s = (obs && obs.self) || {}
   const view = {
-    self: { health: s.health, food: s.food },
+    self: { health: s.health, food: s.food, ...(s.in_water ? { in_water: true } : {}), ...(probe && probe.onFire ? { on_fire: true } : {}) },
     threats: ((obs && obs.entities) || []).filter(e => e.hostile).slice(0, 3)
       .map(e => ({ type: e.type, bearing: e.bearing, dist: e.dist, ...(e.approaching ? { approaching: true } : {}) })),
     hazards: probe ? hazards(probe) : [],

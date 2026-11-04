@@ -23,6 +23,7 @@ const { DecisionClient } = require('./player/client')
 const { ImitationRecorder } = require('./player/imitation')
 const { BuildStats } = require('./stats')
 
+const DAMAGE_EVENT_MS = 3000 // damaged_badly: at most one every 3 s, unless a single drop of 4+
 const r2 = v => Math.round(v * 100) / 100
 
 class Body {
@@ -263,8 +264,11 @@ class Body {
 
   /**
    * damaged_badly (CONTRACT.md events): health dropped by 4 or more in one
-   * update, or any drop while health is below 10. Detail {health, lost, food}.
-   * Not on death (that's died) and not for the first reading after spawn.
+   * update, or any drop while health is below 10. Not on death (that's died)
+   * and not for the first reading after spawn. At most one every 3 s
+   * (DAMAGE_EVENT_MS), except a drop of 4+ in one update, which always goes.
+   * Detail {health, lost, food} plus, when known: in_water, on_fire (what the
+   * player sees), attacker (the nearest visible hostile within 4 blocks).
    */
   checkDamage () {
     const h = this.bot.health
@@ -272,10 +276,20 @@ class Body {
     this.lastHealth = h
     if (typeof h !== 'number' || typeof prev !== 'number' || this.dead || h <= 0) return
     const lost = prev - h
-    if (lost >= 4 || (lost > 0 && h < 10)) {
-      this.event('damaged_badly', { health: h, lost: Math.round(lost * 10) / 10, food: this.bot.food ?? null })
-    }
+    if (!(lost >= 4 || (lost > 0 && h < 10))) return
+    const now = this.clock()
+    if (lost < 4 && this.lastDamageEvent !== undefined && now - this.lastDamageEvent < DAMAGE_EVENT_MS) return
+    this.lastDamageEvent = now
+    const o = this.obs()
+    const detail = { health: h, lost: Math.round(lost * 10) / 10, food: this.bot.food ?? null }
+    if (o && o.self && o.self.in_water) detail.in_water = true
+    if (this.motor && this.motor.onFire && this.motor.onFire()) detail.on_fire = true
+    const near = o ? o.entities.filter(e => e.hostile && e.dist <= 4).sort((a, b) => a.dist - b.dist)[0] : null
+    if (near) detail.attacker = near.type
+    this.link.broadcast({ type: 'event', v: V, kind: 'damaged_badly', detail, obs: o })
   }
+
+  clock () { return Date.now() }
 
   event (kind, detail) {
     this.link.broadcast({ type: 'event', v: V, kind, detail, obs: this.obs() })

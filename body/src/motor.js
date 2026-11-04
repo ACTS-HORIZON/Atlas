@@ -452,7 +452,7 @@ class Motor {
    * observed (or startMs passes without any): {ok, moving}; `this.pressing.done` resolves when the press
    * ends, with {moved, ms}. A new press, or release(), ends the running one first.
    */
-  async press (dir, { sprint = false, maxMs = 300, startMs = 100 } = {}) {
+  async press (dir, { sprint = false, jump = false, maxMs = 300, startMs = 100 } = {}) {
     const bot = this.bot
     this.release()
     if (dir) await this.face(dir)
@@ -465,6 +465,7 @@ class Motor {
     const token = {}
     this.pressing = token
     bot.setControlState('sprint', !!sprint)
+    if (jump) bot.setControlState('jump', true) // in water: swim, and climb onto the shore
     bot.setControlState('forward', true)
     token.done = (async () => {
       let moving = false
@@ -488,6 +489,25 @@ class Motor {
     this.pressing = null
     this.bot.setControlState('forward', false)
     this.bot.setControlState('sprint', false)
+    this.bot.setControlState('jump', false)
+  }
+
+  /** swim_up: hold jump until the bot has risen a block (or out of the water) or maxMs passes. {rose} */
+  async swimUp ({ maxMs = 600 } = {}) {
+    const bot = this.bot
+    const y0 = bot.entity.position.y
+    bot.setControlState('jump', true)
+    const t0 = Date.now()
+    while (Date.now() - t0 < maxMs && bot.entity.position.y - y0 < 1) await new Promise(resolve => setTimeout(resolve, 20))
+    bot.setControlState('jump', false)
+    return { ok: true, rose: Math.round((bot.entity.position.y - y0) * 100) / 100 }
+  }
+
+  /** Burning: the entity's on-fire flag (metadata 0, bit 0x01), which the player sees as flames on screen. */
+  onFire () {
+    const m = this.bot.entity && this.bot.entity.metadata
+    const flags = m ? m[0] : null
+    return typeof flags === 'number' && (flags & 0x01) !== 0
   }
 
   /** One jump press: hold jump until the bot leaves the ground (or 150 ms), then let go. */

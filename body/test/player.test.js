@@ -500,7 +500,15 @@ function physBot (w, pos) {
   const solid = (x, y, z) => { const c = w.classAt(Math.floor(x), Math.floor(y), Math.floor(z)); return !!(c && c.solid) }
   bot.timer = setInterval(() => {
     const cs = bot.controlState
-    if (cs.jump && bot.entity.onGround) { bot.entity.onGround = false; setTimeout(() => { bot.entity.onGround = true }, 400) }
+    // water: holding jump swims up (~2.4 blocks/s), otherwise it sinks slowly
+    const q = bot.entity.position
+    const wet = typeof w.get === 'function' && w.get(Math.floor(q.x), Math.floor(q.y), Math.floor(q.z)) === 'water'
+    bot.entity.isInWater = wet
+    if (wet) {
+      const ny = q.y + (cs.jump ? 0.12 : -0.02)
+      if (!solid(q.x, ny, q.z) && !solid(q.x, ny + 1.8, q.z)) bot.entity.position = new Vec3(q.x, ny, q.z)
+    }
+    if (cs.jump && bot.entity.onGround && !wet) { bot.entity.onGround = false; setTimeout(() => { bot.entity.onGround = true }, 400) }
     if (!cs.forward) return
     const v = (cs.sprint ? 5.6 : 4.3) / 20
     const p = bot.entity.position
@@ -655,4 +663,58 @@ test('the imitation recorder keeps recording at its own rate while survive mode 
   assert.equal(counts.recorded.done, 1)
   assert.ok(out.ticks <= 4, `survive stayed quiet: ${out.ticks} ticks`)
   assert.equal(out.pauses, 0)
+})
+
+// ---- 8b: survive mode in water and fire
+const { shore, waterBeside } = require('../src/player/offered')
+
+/** A pool: water x/z -3..3 from y 5 up to y 12, stone floor at 4, stone around; open air above y 12. */
+function pool () {
+  const w = new FakeWorld({ fill: 'air' }).box([-20, 0, -20], [20, 12, 20], 'stone')
+  w.box([-3, 5, -3], [3, 12, 3], 'water')
+  return w
+}
+
+test('survive mode in water: swim_up offered with room above, exit_water when a shore is in sight; extinguish when burning', () => {
+  const w = pool()
+  const deep = { ...probe(w, { feet: [0, 6, 0] }), inWater: true }
+  const o = offeredActions(deep, 'survive')
+  assert.ok(o.includes('swim_up'), o.join(' '))
+  assert.ok(o.includes('continue_task'))
+  assert.ok(o.every(a => SURVIVAL.has(a)))
+  assert.ok(!o.includes('exit_water'), 'no shore within reach six blocks down: ' + o.join(' '))
+  const top = { ...probe(w, { feet: [2, 12, 0] }), inWater: true }
+  const s = shore(top)
+  assert.deepEqual([s.dir, s.block], ['east', 'stone'])
+  assert.ok(offeredActions(top, 'survive').includes('exit_water'))
+  assert.match(describe(top, ['exit_water', 'swim_up'], {}).exit_water, /^swim east to the shore, 2 blocks \(stone\)$/)
+  const capped = new FakeWorld({ fill: 'stone' }).box([0, 6, 0], [0, 7, 0], 'water') // water with stone right above the head
+  assert.ok(!offeredActions({ ...probe(capped, { feet: [0, 6, 0] }), inWater: true }, 'survive').includes('swim_up'))
+  // on fire: extinguish, into water beside the feet if there is some
+  const burning = { ...probe(w, { feet: [4, 12, 0] }), onFire: true }
+  assert.ok(offeredActions(burning, 'survive').includes('extinguish'))
+  assert.equal(waterBeside(burning), 'west')
+  assert.equal(describe(burning, ['extinguish'], {}).extinguish, 'step west into the water to put the fire out')
+  assert.equal(describe({ ...probe(flat(), { feet: [0, 10, 0] }), onFire: true }, ['extinguish'], {}).extinguish, 'wait for the fire to go out')
+  assert.ok(!offeredActions(probe(flat(), { feet: [0, 10, 0] }), 'survive').some(a => ['swim_up', 'exit_water', 'extinguish'].includes(a)), 'dry and not burning: none of them')
+})
+
+test('survive mode: swim_up chosen in deep water makes the bot rise (real Motor, the jump control held)', async () => {
+  const w = pool()
+  const bot = physBot(w, [0.5, 6, 0.5])
+  try {
+    const s = setup(w, { motor: new Motor(bot) })
+    const seen = []
+    const loop = new PlayerLoop({ chooser: new ScriptedChooser((v, offered) => { seen.push({ v, offered }); return offered.includes('swim_up') ? 'swim_up' : 'continue_task' }), hz: 20, surviveHz: 20 })
+    let done = false
+    const watching = loop.watch(s.api, { settled: () => done, interrupt: () => {} })
+    await new Promise(resolve => setTimeout(resolve, 2500))
+    done = true
+    await watching
+    assert.ok(seen[0].offered.includes('swim_up'), seen[0].offered.join(' '))
+    assert.equal(seen[0].v.self.in_water, true, 'the survive view says in_water')
+    assert.ok(bot.entity.position.y >= 10.5, `rose from y 6 to ${bot.entity.position.y.toFixed(2)}`)
+    assert.match(loop.last.find(t => t.chosen === 'swim_up').effect, /^swam up/)
+    assert.equal(bot.controlState.jump, false, 'jump let go between presses')
+  } finally { clearInterval(bot.timer) }
 })

@@ -183,6 +183,32 @@ class MindTest(MindHarness, unittest.IsolatedAsyncioTestCase):
         m.obs["self"]["health"] = 20
         self.assertFalse(m.idle_allows({"action": "call", "verb": "goto", "args": {"pos": [0, 64, 0]}}))
 
+    async def test_idle_never_forbids_saving_yourself(self):
+        # in water at night, health falling: damaged_badly wakes it, and goto surface is allowed with no task
+        await self.start([
+            {"thinking": "Drowning; get out.", "action": "call", "verb": "goto", "args": {"target": "surface"}},
+            {"thinking": "w", "action": "wait"},
+        ])
+        await self.body.event("damaged_badly", {"health": 9, "lost": 4, "food": 18, "in_water": True})
+        await until(lambda: len(self.body.calls()) >= 1)
+        self.assertEqual(self.body.calls()[0]["verb"], "goto")
+        self.assertIn("event damaged_badly", self.prompt_text(0))
+        m = self.mind
+        for verb, args in (("goto", {"target": "surface"}), ("dig", {"pos": [0, 65, 0]}), ("place", {"block": "dirt"})):
+            self.assertTrue(m.idle_allows({"action": "call", "verb": verb, "args": args}), f"{verb} while taking damage")
+        self.assertTrue(m.idle_allows({"action": "plan", "steps": [{"verb": "dig", "args": {}}, {"verb": "goto", "args": {}}]}))
+        # health below 10 alone is enough; full health and no recent damage: work verbs stay off
+        m.damaged_at = None
+        m.obs["self"]["health"] = 7
+        self.assertTrue(m.idle_allows({"action": "call", "verb": "place", "args": {"block": "dirt"}}))
+        m.obs["self"]["health"] = 20
+        self.assertFalse(m.idle_allows({"action": "call", "verb": "explore", "args": {"direction": "north", "distance": 32}}))
+        self.assertFalse(m.idle_allows({"action": "call", "verb": "goto", "args": {"pos": [0, 64, 0]}}))
+        # health falling between obs counts as taking damage too
+        m.set_obs({**m.obs, "self": {**m.obs["self"], "health": 18}})
+        self.assertTrue(m.idle_allows({"action": "call", "verb": "goto", "args": {"target": "surface"}}))
+        self.assertIn("Being idle never stops you saving yourself", m.system)
+
     async def test_a_delivered_request_in_obs_chat_is_not_shown_again(self):
         await self.start([
             {"thinking": "Confirm.", "action": "say", "text": "On it: an iron pickaxe.", "about": "t1"},

@@ -74,7 +74,11 @@ IDLE_VERBS = {"eat", "say", "stop"}
 # stop_requested, which always do, and the low health / low food wakes). The kinds the body actually
 # emits are listed in docs/verbs.md, "Events": task_from_chat, player_said, stop_requested,
 # damaged_badly, died, respawned, player_joined, player_left.
-IDLE_WAKE_EVENTS = {"died", "damaged_badly"}  # calls allowed with no open task (plus goto when health is low)
+IDLE_WAKE_EVENTS = {"died", "damaged_badly"}
+# Idle never forbids saving yourself (Session 8b): with no open task, any verb is allowed while health is
+# below DANGER_HEALTH or within DAMAGE_WINDOW_S of taking damage (a damaged_badly event, or health falling).
+DANGER_HEALTH = 10
+DAMAGE_WINDOW_S = 15
 MAX_ERROR_RETRIES = 3
 MAX_LOOKUPS_IN_ROW = 2
 HINT_TURNS = 5  # LOOKUP and other hints expire after this many turns (stall hints also when the target changes)
@@ -163,6 +167,8 @@ class Mind:
         self.asking: dict | None = None
         self.failures: list[dict] = []  # {verb, args (canonical), detail, at (RECENT line number), turn, stall, target}
         self.low_health = False
+        self.last_health = None
+        self.damaged_at: float | None = None  # monotonic time of the last damage taken (in_danger)
         self.hungry = False
         self.decisions: list[dict] = []
         self.turns = 0
@@ -263,6 +269,9 @@ class Mind:
                     self.asking = None
                 else:
                     self.wake(f"{d.get('from')} said: {d.get('text')}")
+            elif kind in ("damaged_badly", "died"):
+                self.damaged_at = time.monotonic()
+                self.wake(f"event {kind}" + (f" {json.dumps(d, separators=(',', ':'))}" if d else ""))
             elif kind == "stop_requested":
                 stopped = self.tasks.stop_working()
                 for st in stopped:
@@ -318,6 +327,9 @@ class Mind:
             self.turn_fp = fingerprint(o)  # the baseline: nothing has changed yet
         h = o.get("self", {}).get("health")
         if isinstance(h, (int, float)):
+            if isinstance(self.last_health, (int, float)) and h < self.last_health:
+                self.damaged_at = time.monotonic()  # taking damage, whatever the event stream says
+            self.last_health = h
             if h < self.cfg.retreat_health and not self.low_health:
                 self.low_health = True
                 self.wake(f"health is low ({h}/20)")
@@ -597,13 +609,18 @@ class Mind:
         working = self.tasks.working()
         return working[0] if len(working) == 1 and a["action"] in ("call", "plan", "ask_player") else None
 
+    def in_danger(self) -> bool:
+        """Health below DANGER_HEALTH, or damage taken within the last DAMAGE_WINDOW_S seconds."""
+        h = ((self.obs or {}).get("self") or {}).get("health")
+        if isinstance(h, (int, float)) and h < DANGER_HEALTH:
+            return True
+        return self.damaged_at is not None and time.monotonic() - self.damaged_at < DAMAGE_WINDOW_S
+
     def idle_allows(self, a: dict) -> bool:
-        """With no open task: say, note, wait, lookup, eat (and stop), and goto away when health is low."""
+        """With no open task: say, note, wait, lookup, eat (and stop); while in danger (hurt, or taking
+        damage), any verb: being idle never forbids saving yourself. Work verbs stay off otherwise."""
         def call_ok(verb: str) -> bool:
-            if verb in IDLE_VERBS:
-                return True
-            h = ((self.obs or {}).get("self") or {}).get("health")
-            return verb == "goto" and isinstance(h, (int, float)) and h < self.cfg.retreat_health
+            return verb in IDLE_VERBS or self.in_danger()
         if a["action"] in ("say", "note", "wait", "lookup", "lesson"):  # lookup and lesson don't act in the world
             return True
         if a["action"] == "call":
@@ -618,7 +635,7 @@ class Mind:
         if not self.tasks.open() and not self.idle_allows(a):
             what = a.get("verb") or a["action"]
             raise ActionError(f"no open task, so you are idle: {what} is not allowed. Idle allows say, note, wait and eat "
-                              f"(and goto away from danger when health is below {self.cfg.retreat_health:g}). Work comes from players "
+                              f"(and any verb while health is below {DANGER_HEALTH} or you are taking damage). Work comes from players "
                               "(@-tasks); a standing task is how a player keeps you doing something. Reply with wait.")
         t = self.task_for(a)
         if t and a["action"] in ("say", "ask_player", "call", "done") and t.state in ("done", "stopped"):

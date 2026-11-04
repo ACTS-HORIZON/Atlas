@@ -23,7 +23,7 @@
 //     (20) while one is.
 const fs = require('fs')
 const path = require('path')
-const { offeredActions, describe, blockFor, stepOk, DIRS, LEFT, RIGHT } = require('./offered')
+const { offeredActions, describe, blockFor, stepOk, shore, waterBeside, DIRS, LEFT, RIGHT } = require('./offered')
 const { reflexView, surviveView } = require('./view')
 
 const r1 = v => Math.round(v * 10) / 10
@@ -94,7 +94,9 @@ class PlayerLoop {
       foods: api.foods ? api.foods() : [],
       threats: (o.entities || []).filter(e => e.hostile).map(e => ({ type: e.type, rel: e.rel, dist: e.dist })),
       houseOk: (action, pos) => !api.houseCheck(action, pos),
-      onGround: o.self ? o.self.on_ground !== false : true
+      onGround: o.self ? o.self.on_ground !== false : true,
+      inWater: !!(o.self && o.self.in_water),
+      onFire: !!(api.onFire && api.onFire())
     }
   }
 
@@ -238,6 +240,25 @@ class PlayerLoop {
         const r = await api.press(away, {})
         st.dir = away
         return r.moving ? { effect: `stepping ${away}, away from the ${t.type}` } : { effect: `failed: did not move ${away}` }
+      }
+      case 'swim_up': {
+        if (api.release) api.release()
+        const r = await api.swimUp()
+        return { effect: r.rose >= 0.5 ? `swam up ${Math.round(r.rose * 10) / 10}` : 'swam up (no headway)' }
+      }
+      case 'exit_water': {
+        const s = shore(probe)
+        if (!s) return { effect: 'no shore in sight' }
+        st.dir = s.dir
+        const r = await api.press(s.dir, { jump: true })
+        return { effect: r.moving ? `swimming ${s.dir} to the ${s.block} shore (${s.dist} blocks)` : `failed: did not move ${s.dir}` }
+      }
+      case 'extinguish': {
+        const w = waterBeside(probe)
+        if (!w) return { effect: probe.inWater ? 'in the water, waiting for the fire to go out' : 'no water beside: waiting for the fire to go out' }
+        st.dir = w
+        const r = await api.press(w, {})
+        return { effect: r.moving ? `stepping ${w} into the water` : `failed: did not move ${w}` }
       }
       case 'eat': {
         const food = (probe.foods || [])[0]

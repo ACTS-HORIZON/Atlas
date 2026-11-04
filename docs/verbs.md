@@ -232,7 +232,7 @@ The event kinds the body emits (body → mind, `{"type": "event", "kind", "detai
 | `task_from_chat` | an allowlisted player's `@<bot> …` that isn't `stop`, `status` or the chest grant | `{from, text}` (text without the `@<bot>`) |
 | `player_said` | other chat from an allowlisted player | `{from, text}` |
 | `stop_requested` | `@<bot> stop`, or the dashboard's Stop button | `{from, detail}` |
-| `damaged_badly` | health dropped by 4 or more in one update, or any drop while health is below 10 (not on death) | `{health, lost, food}` |
+| `damaged_badly` | health dropped by 4 or more in one update, or any drop while health is below 10 (not on death). At most one every 3 s, except a drop of 4+ in one update, which always goes | `{health, lost, food}`, plus `in_water: true`, `on_fire: true` and `attacker: <type>` (the nearest visible hostile within 4 blocks) when known |
 | `died` | the bot died | `{pos}` |
 | `respawned` | the bot spawned again after dying | `{pos}` |
 | `player_joined` / `player_left` | another player joined or left (not during the first seconds after the bot joins) | `{name}` |

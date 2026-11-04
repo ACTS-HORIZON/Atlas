@@ -75,7 +75,7 @@ function makeView (world, { pos = [0.5, 10, 0.5], yaw = 0, pitch = 0, sightRadiu
     food: 20,
     xp: 0,
     on_ground: true,
-    in_water: false,
+    in_water: rest.inWater ?? (typeof world.get === 'function' && world.get(Math.floor(pos[0]), Math.floor(pos[1] + 1e-3), Math.floor(pos[2])) === 'water'),
     held: null,
     armor: [],
     effects: [],

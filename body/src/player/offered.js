@@ -11,17 +11,18 @@
 //   threats [{type, rel: [dx, dy, dz], dist}] (visible hostiles),
 //   houseOk(action, pos) -> bool (protected regions), onGround,
 //   sides (optional): obs.surroundings.sides, {north: [feet, head], …}, each "stone 1" | null
+//   inWater, onFire (optional): obs.self.in_water; the burning flag a player sees (Session 8b)
 const DIRS = { north: [0, -1], east: [1, 0], south: [0, 1], west: [-1, 0] }
 const LEFT = { north: 'west', west: 'south', south: 'east', east: 'north' }
 const RIGHT = { north: 'east', east: 'south', south: 'west', west: 'north' }
 
 const MICRO = ['step', 'sprint', 'jump', 'turn_left', 'turn_right', 'look_up', 'look_down', 'dig_ahead', 'dig_above', 'dig_below',
-  'place_below_and_jump', 'place_ahead', 'attack', 'block', 'retreat', 'eat', 'wait', 'done', 'stuck', 'continue_task']
+  'place_below_and_jump', 'place_ahead', 'attack', 'block', 'retreat', 'swim_up', 'exit_water', 'extinguish', 'eat', 'wait', 'done', 'stuck', 'continue_task']
 // The base line per micro-action (src/player/prompt.json, shared with scripts/player_eval.py);
 // describe() overlays what is true right now.
 const PROMPT = require('./prompt.json')
 const DESCRIPTIONS = PROMPT.descriptions
-const SURVIVAL = new Set(['attack', 'block', 'retreat', 'eat', 'jump', 'wait', 'continue_task'])
+const SURVIVAL = new Set(['attack', 'block', 'retreat', 'swim_up', 'exit_water', 'extinguish', 'eat', 'jump', 'wait', 'continue_task'])
 
 const HURTS = /^(lava|fire|soul_fire|magma_block|campfire|soul_campfire|cactus|sweet_berry_bush|powder_snow|wither_rose|pointed_dripstone)$/
 const UNBREAKABLE = /^(bedrock|barrier|end_portal_frame|end_portal|nether_portal|command_block|structure_block|reinforced_deepslate|light)$/
@@ -55,6 +56,40 @@ function stepOk (p, x, y, z, d) {
 }
 
 function blockFor (p) { return PLACEABLE.find(b => (p.inventory[b] || 0) > 0) || null }
+
+/**
+ * The nearest shore from the water: a solid, non-water block within `r` blocks whose top has room to stand
+ * (passable feet and head). {pos: [x, y, z] (the cell to stand in), dir (cardinal, by the larger axis), dist, block} | null.
+ */
+function shore (p, r = 6) {
+  const [x, y, z] = p.feet
+  let best = null
+  for (let dx = -r; dx <= r; dx++) {
+    for (let dz = -r; dz <= r; dz++) {
+      if (!dx && !dz) continue
+      for (const dy of [0, 1, -1]) { // the shore's top at feet level, one up (climb out), or one down
+        const floor = p.cls(x + dx, y + dy - 1, z + dz)
+        if (!isSolid(floor) || floor.name === 'water') continue
+        const f = p.cls(x + dx, y + dy, z + dz); const h = p.cls(x + dx, y + dy + 1, z + dz)
+        if (!passable(f) || !passable(h) || f.name === 'water') continue
+        const d = Math.hypot(dx, dz)
+        if (!best || d < best.dist) best = { pos: [x + dx, y + dy, z + dz], dist: Math.round(d * 10) / 10, block: floor.name, dir: Math.abs(dx) >= Math.abs(dz) ? (dx > 0 ? 'east' : 'west') : (dz > 0 ? 'south' : 'north') }
+        break
+      }
+    }
+  }
+  return best
+}
+
+/** The water to step into when burning: a water cell next to the feet (cardinal). The dir, or null. */
+function waterBeside (p) {
+  const [x, y, z] = p.feet
+  for (const [dir, d] of Object.entries(DIRS)) {
+    const c = p.cls(x + d[0], y, z + d[1])
+    if (c && c.name === 'water') return dir
+  }
+  return null
+}
 
 /** The actions offered this tick, in a fixed order. mode: 'play' (an intent) or 'survive' (a scripted verb is running). */
 function offeredActions (p, mode = 'play') {
@@ -102,6 +137,15 @@ function offeredActions (p, mode = 'play') {
   }
   if ((p.foods || []).length && (p.food ?? 20) < 20) out.add('eat')
 
+  // water and fire (Session 8b): swim up while there is room above the head; swim for the nearest shore;
+  // put the fire out (step into water beside the feet, or wait it out)
+  if (p.inWater) {
+    const head = p.cls(x, y + 1, z); const over = p.cls(x, y + 2, z)
+    if (!isSolid(head) && !isSolid(over) && !(over && over.name === 'lava')) out.add('swim_up')
+    if (shore(p)) out.add('exit_water')
+  }
+  if (p.onFire) out.add('extinguish')
+
   if (mode === 'survive') {
     out.add('continue_task')
     return MICRO.filter(a => out.has(a) && SURVIVAL.has(a))
@@ -139,7 +183,10 @@ function describe (p, offered, { sky = null } = {}) {
     attack: () => t ? `hit the ${t.type} ${t.dist} blocks away` : null,
     block: () => t ? `raise the shield against the ${t.type}` : null,
     retreat: () => t ? `step ${AWAY(t)}, away from the ${t.type}` : null,
-    eat: () => `eat ${(p.foods || [])[0]} (food ${p.food}/20)`
+    eat: () => `eat ${(p.foods || [])[0]} (food ${p.food}/20)`,
+    swim_up: () => `swim up, holding jump (${NAME(c(0, 2, 0))} above your head)`,
+    exit_water: () => { const s = shore(p); return s ? `swim ${s.dir} to the shore, ${s.dist} blocks (${s.block})` : null },
+    extinguish: () => { const w = waterBeside(p); return w ? `step ${w} into the water to put the fire out` : (p.inWater ? 'stay in the water until the fire is out' : 'wait for the fire to go out') }
   }
   const out = {}
   for (const act of offered) {
@@ -150,4 +197,4 @@ function describe (p, offered, { sky = null } = {}) {
   return out
 }
 
-module.exports = { describe, PROMPT, offeredActions, landing, stepOk, blockFor, MICRO, DESCRIPTIONS, SURVIVAL, DIRS, LEFT, RIGHT, PLACEABLE, isSolid }
+module.exports = { describe, PROMPT, offeredActions, landing, stepOk, blockFor, shore, waterBeside, MICRO, DESCRIPTIONS, SURVIVAL, DIRS, LEFT, RIGHT, PLACEABLE, isSolid }

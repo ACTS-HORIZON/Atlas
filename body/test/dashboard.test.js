@@ -161,23 +161,38 @@ test('helpers: bind parsing and secret masking', () => {
   assert.deepEqual(maskSecrets({ a: { token: 't', password: '', n: 1 }, f () {} }), { a: { token: '***', password: '', n: 1 } })
 })
 
-test('damaged_badly: a drop of 4+ in one update, or any drop below 10 health; not small hits when healthy', async (t) => {
-  const { bot, linkUrl } = await startBody(t)
+test('damaged_badly: a drop of 4+ in one update, or any drop below 10 health; at most one per 3 s unless 4+; in_water, on_fire, attacker', async (t) => {
+  const { body, bot, linkUrl } = await startBody(t)
+  let now = 1000000
+  body.clock = () => now
   const mind = client(linkUrl)
   await mind.opened
   await mind.wait(m => m.type === 'obs')
   const hit = h => { bot.health = h; bot.emit('health') }
+  const n = () => mind.got.filter(m => m.kind === 'damaged_badly').length
   hit(20); hit(18) // 2 at full health: nothing
   hit(13) // 5 at once
   const e = await mind.wait(m => m.type === 'event' && m.kind === 'damaged_badly')
   assert.deepEqual(e.detail, { health: 13, lost: 5, food: 20 })
   assert.equal(check('event', e), null)
-  hit(9) // below 10: any drop
+  hit(9) // 4 at once: always, even within 3 s
   await mind.wait(m => m.type === 'event' && m.kind === 'damaged_badly' && m.detail.health === 9)
   hit(10) // healing: nothing
-  hit(8.5)
-  await mind.wait(m => m.type === 'event' && m.kind === 'damaged_badly' && m.detail.health === 8.5)
-  assert.equal(mind.got.filter(m => m.kind === 'damaged_badly').length, 3)
+  hit(8.5); hit(7.5); hit(7) // small drops below 10 within 3 s of the last event: held back
+  await new Promise(resolve => setTimeout(resolve, 100))
+  assert.equal(n(), 2)
+  now += 3100 // 3 s later, a small drop goes again; drowning at night, burning, a zombie at the bot's side
+  bot.entity.isInWater = true
+  bot.entity.metadata = [0x01]
+  bot.entities[9].position = new (require('vec3').Vec3)(0.5, 64, -1.5)
+  hit(6)
+  const d = await mind.wait(m => m.type === 'event' && m.kind === 'damaged_badly' && m.detail.health === 6)
+  assert.deepEqual(d.detail, { health: 6, lost: 1, food: 20, in_water: true, on_fire: true, attacker: 'zombie' })
+  assert.equal(check('event', d), null)
+  assert.equal(n(), 3)
+  hit(5) // and again held back for 3 s
+  await new Promise(resolve => setTimeout(resolve, 100))
+  assert.equal(n(), 3)
   mind.ws.close()
 })
 

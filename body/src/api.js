@@ -286,7 +286,13 @@ class VerbApi {
   jump () { return this.motor.jump() }
 
   /** The player's step/sprint: a forward press toward dir (see Motor.press); resolves once moving. */
-  press (dir, { sprint = false } = {}) { return this.motor.press(dir, { sprint }) }
+  press (dir, { sprint = false, jump = false } = {}) { return this.motor.press(dir, { sprint, jump }) }
+
+  /** swim_up: hold jump to rise in water. {rose} */
+  swimUp () { return this.motor.swimUp ? this.motor.swimUp() : Promise.resolve({ ok: false, rose: 0 }) }
+
+  /** Is the bot on fire (what a player sees on their own screen)? */
+  onFire () { return this.motor.onFire ? this.motor.onFire() : false }
 
   /** Let go of a running press (any other micro-action). */
   release () { if (this.motor.release) this.motor.release() }
