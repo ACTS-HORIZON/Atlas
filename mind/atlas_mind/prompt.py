@@ -1,6 +1,7 @@
 """The system prompt and the per-turn context."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 OUTPUT_FORMAT = """Reply with exactly one JSON object and nothing else. One of:
@@ -85,11 +86,16 @@ VERB REFERENCE (authoritative)
 {verb_reference}"""
 
 
-def load_verb_reference(path: Path) -> str:
+def load_verb_reference(path: Path, play: bool = False) -> str:
+    """docs/verbs.md as the model reads it. With the play layer parked (ATLAS_PLAYER_PLAY=0, the default),
+    the `play` section is left out, so the model doesn't reach for a verb the body refuses."""
     try:
-        return path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
     except OSError:
         return "(verb reference not found)"
+    if not play:
+        text = re.sub(r"^### play \{.*?(?=^#{2,3} )", "", text, flags=re.M | re.S)
+    return text
 
 
 def context(tasks: str, obs: str, recent: list[str], notes: str, wake: str, extra: str = "", knowledge: str = "",

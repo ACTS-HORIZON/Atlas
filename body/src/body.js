@@ -294,7 +294,7 @@ class Body {
       places: this.places,
       api: this.verbApi(),
       player: this.player,
-      cfg: { stripLength: this.cfg.stripLength, stripMax: this.cfg.stripMax, followMaxS: this.cfg.followMaxS }
+      cfg: { stripLength: this.cfg.stripLength, stripMax: this.cfg.stripMax, followMaxS: this.cfg.followMaxS, playerPlay: !!this.cfg.playerPlay, watchTickMs: this.cfg.watchTickMs }
     }
   }
 

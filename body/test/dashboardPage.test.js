@@ -71,6 +71,19 @@ test('dashboard v2 in headless Chromium: no errors, map, merged feed, masked con
   assert.equal(feed.filter(f => f.kind === 'calls').length, 1, 'no separate result row')
   assert.match(feed.find(f => f.kind === 'think').text, /Rook asked for a hello\. I will say it\..*182 tok/)
 
+  // a watched verb: its sub-calls show under the parent call, not as rows of their own
+  const sub = await page.evaluate(() => {
+    const ts = new Date().toISOString()
+    onEnvelope({ ts, dir: 'in', logged: true, msg: { type: 'call', v: '0.1', id: 'c9', verb: 'explore', args: { direction: 'north', distance: 128, watch: [{ see: 'iron_ore', do: { verb: 'mine', args: { block: 'iron_ore', count: 8 } } }] } } })
+    onEnvelope({ ts, dir: 'out', logged: true, msg: { type: 'result', v: '0.1', id: 'c9', status: 'done', detail: 'walked 128 blocks north; saw iron_ore 5; 3 new known places; watched: mined 5 iron_ore', data: { watched: [{ id: 'c9.w1', see: 'iron_ore', seen: 'block', at: [3, 12, -40], verb: 'mine', args: { block: 'iron_ore', count: 8 }, status: 'done', detail: 'mined 5 iron_ore' }] } } })
+    const calls = [...document.querySelectorAll('#feed .it.k-calls')]
+    const it = calls.find(e => e.textContent.includes('explore'))
+    return { rows: calls.length, parent: it.querySelector('.res').textContent, sub: it.querySelector('.subs [data-sub="c9.w1"]')?.textContent || null }
+  })
+  assert.equal(sub.rows, 2, 'one row for the say call, one for the explore (with its sub-call inside)')
+  assert.doesNotMatch(sub.parent, /watched:/)
+  assert.match(sub.sub, /↳ mine.*done.*mined 5 iron_ore.*saw iron_ore at 3 12 -40/)
+
   // filters hide a kind
   await page.click('#filters button[data-f="think"]')
   assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('#feed .it.k-think')).display), 'none')

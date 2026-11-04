@@ -153,7 +153,7 @@ class Mind:
         self.log = log
         self.tasks = TaskList()
         self.notes = Notes(cfg.notes_file, cfg.notes_max_lines)
-        ref = load_verb_reference(cfg.verb_reference)
+        ref = load_verb_reference(cfg.verb_reference, play=cfg.player_play)
         self.verbs = verbs_in_reference(ref)
         self.system = system_prompt(cfg.bot_name, ref, cfg.retreat_health)
         self.obs: dict | None = None

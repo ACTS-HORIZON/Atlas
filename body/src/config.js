@@ -68,6 +68,11 @@ module.exports = {
   playerModel: env('ATLAS_PLAYER_MODEL', 'd1-2b'),
   playerTimeoutMs: positive('ATLAS_PLAYER_TIMEOUT_MS', 60),
   playerHz: positive('ATLAS_PLAYER_HZ', 20),
+  // the play verb (the decision model as the player) is parked: refused unless ATLAS_PLAYER_PLAY=1.
+  // The survive override and the imitation recorder run either way.
+  playerPlay: env('ATLAS_PLAYER_PLAY', '0') === '1',
+  // watches (args.watch on goto/explore/mine/collect): how often the body looks for a `see`
+  watchTickMs: positive('ATLAS_WATCH_TICK_MS', 250),
   // the override's rate while no threat or damage is in view (ATLAS_PLAYER_HZ while one is)
   playerSurviveHz: positive('ATLAS_PLAYER_SURVIVE_HZ', 5),
   // stuck/done end a play run only after this many wins in a row, or one tick at this confidence

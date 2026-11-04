@@ -53,6 +53,8 @@ class Config:
     notes_file: Path = field(default_factory=lambda: ROOT / "data" / "notes.md")
     notes_max_lines: int = 80
     verb_reference: Path = field(default_factory=lambda: ROOT / "docs" / "verbs.md")
+    # the body's play verb is parked unless ATLAS_PLAYER_PLAY=1: its section is left out of the prompt
+    player_play: bool = False
     players: list[str] = field(default_factory=list)
     wiki_index: Path = field(default_factory=lambda: ROOT / "data" / "wiki" / "index.json")
     rag_k: int = 3
@@ -94,6 +96,7 @@ class Config:
             notes_file=path("ATLAS_NOTES_FILE", "data/notes.md"),
             notes_max_lines=int(g("ATLAS_NOTES_MAX_LINES", cls.notes_max_lines)),
             verb_reference=path("ATLAS_VERB_REFERENCE", "docs/verbs.md"),
+            player_play=g("ATLAS_PLAYER_PLAY", "0") == "1",
             players=[p.strip() for p in g("ATLAS_PLAYERS", "").split(",") if p.strip()],
             wiki_index=path("ATLAS_WIKI_INDEX", "data/wiki/index.json"),
             rag_k=int(g("ATLAS_RAG_K", cls.rag_k)),

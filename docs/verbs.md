@@ -16,6 +16,9 @@ CONTRACT.md says what each verb is for. **This file is the authority for argumen
 - **Verbs are hands, not the player.** They are deliberately dumb: `mine` with no pickaxe fails with the reason ("iron_ore needs one of: stone_pickaxe, …"); it does not go make one. Deciding what to do next is the mind's job.
 - **Unknown arguments are rejected:** `failed`, `<verb>: unknown argument "x"`.
 - **Spectator mode:** every verb that acts fails.
+- **Watches (`goto`, `explore`, `mine`, `collect`):** add `"watch": [{"see": "<block type | entity type | item name>", "do": {"verb": "...", "args": {...}}, "max": <n>}, ...]` (1–8 of them; `max` optional, default unlimited) to have the body react to what it sees while the verb runs, with no model turn in between. About 4 times a second the body checks `blocks_seen`, `entities` and the item drops in sight. On a new sighting of `see` (a block at a position not handled yet, an entity type coming into sight, a new drop) it holds the verb, runs `do` as a sub-call, then lets the verb carry on from wherever the bot is now (its path is re-planned). A sub-call's result never fails the parent. Each one is appended to the parent's detail as `; watched: <sub-call detail>; …` (`<verb> <status>: <detail>` when it wasn't `done`) and listed in `data.watched: [{id, see, seen: block|entity|drop, at, verb, args, status, detail}]`. While a sub-call runs, the obs `task` has `sub: {id, verb, args, progress}` (its id is `<parent id>.w<n>`). A sub-call can't watch (no nesting), and can't be `stop` or `play`. `stop` ends the verb and its sub-call. A bad watch is `failed` with the reason, e.g. `craft: watch is only for goto, explore, mine, collect`. Example, mine the iron found on the way:
+  `{"verb": "explore", "args": {"direction": "north", "distance": 128, "watch": [{"see": "iron_ore", "do": {"verb": "mine", "args": {"block": "iron_ore", "count": 8}}}]}}`
+  → `walked 128 blocks north; saw iron_ore 5, coal_ore 9; 14 new known places; watched: mined 5 iron_ore`.
 
 ### Fair play and house rules (enforced by the body, whatever the mind asks)
 - **Targets** must be observed:
@@ -206,6 +209,7 @@ Smelts in a furnace Atlas has seen: in view, or a known place within 32 blocks. 
   - Results carry `data: {item, input, smelted, requested, fuel, fuel_used, furnace}`.
 
 ### play {intent, target?, budget?}
+**Parked (Session 8).** Off unless `ATLAS_PLAYER_PLAY=1`: until then every call is `refused`, `play layer is off`, and the mind leaves this section out of its prompt. The survive override and the imitation recorder keep running when `ATLAS_PLAYER_URL` is set.
 Use play for anything a player would do by hand (climb out, cross terrain, fight); use goto/mine when a script is plainly better.
 - **What it does:** hands the controls to the player loop (the decision model, ~20 Hz) with `intent` (free text, e.g. "get to the surface", "walk to Rook") and an optional `target`. It runs until the model says the intent is done or that it's stuck, the `budget` runs out (seconds, or `{ticks, seconds}`; default 60 s), or `stop`.
 - **Progress:** `<intent>: tick <n>, <action> (<effect>)`.
@@ -213,6 +217,7 @@ Use play for anything a player would do by hand (climb out, cross terrain, fight
   - `done`: `play "<intent>": done after <n> ticks; moved <d> blocks ([x, y, z] → [x, y, z]), dug <k>, placed <k>, damage <h>`
   - `partial`: the same, with `the player is stuck after <n> ticks` or `out of budget after <n> ticks (<s> s)`
   - `failed`: `play: no decision model configured (ATLAS_PLAYER_URL)`
+  - `refused`: `play layer is off` (parked; `ATLAS_PLAYER_PLAY=1` turns it on)
   - Results carry `data: {end, ticks, seconds, moved, from, to, dug, placed, damage, log}`. `log` is the `logs/player-<date>.jsonl` file holding every tick.
 
 ## Not implemented yet

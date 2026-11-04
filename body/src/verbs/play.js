@@ -5,9 +5,11 @@
 // (seconds, or {ticks, seconds}; default 60 s) runs out, or stop.
 // done: the model said the intent is done. partial: stuck, or out of budget.
 // failed: no decision model configured. Every tick is in logs/player-<date>.jsonl.
-const { checkArgs, failed, cannotAct } = require('./common')
+const { checkArgs, failed, refused, cannotAct } = require('./common')
 
 async function run (act, args) {
+  // parked (Session 8): the play layer is off unless ATLAS_PLAYER_PLAY=1
+  if (!(act.cfg && act.cfg.playerPlay)) return refused('play layer is off')
   const err = checkArgs('play', args)
   if (err) return failed(err)
   if (!act.player) return failed('play: no decision model configured (ATLAS_PLAYER_URL)')

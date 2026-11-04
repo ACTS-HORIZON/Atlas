@@ -59,6 +59,8 @@ CONTRACT.md: players out of sight are reported by bearing only, exactly when the
 
 **[docs/verbs.md](docs/verbs.md) is the verb reference.** It is the authority for arguments, limits, `data` shapes, progress strings and failure reasons, and the mind loads it into its prompt.
 
+**Watched verbs (Session 8).** `goto`, `explore`, `mine` and `collect` take `args.watch: [{see, do: {verb, args}, max?}]`. While the verb runs, the body checks what the bot sees about 4 times a second (`ATLAS_WATCH_TICK_MS`, 250), with no model involved. On a new sighting of `see` (a block type, an entity type or a dropped item), it holds the verb, runs `do` as a sub-call, then lets the verb carry on from where the bot is (its path is re-planned). Sub-call results are appended to the parent's detail (`; watched: …`) and `data.watched`, and never fail it. While one runs, the obs `task` shows it as `task.sub`, and the dashboard shows it under the parent call. No nesting; `stop` ends both. Details and an example are in docs/verbs.md, "How verbs run".
+
 - **Implemented:** `say`, `stop`, `recall`, `goto`, `explore`, `mine` (with `y`: staircase down first), `collect`, `craft`, `place`, `equip`, `dig`, `eat`, `give`, `deposit`, `withdraw`, `smelt`.
 - **One at a time:** the running verb is the `task` in the obs, with progress, and `stop` interrupts it.
 - **Filtered API:** verbs act only through `body/src/api.js`, which enforces fair play (targets must be observed; blocks are read only when visible) and house rules (protected regions). The Mineflayer side is `body/src/motor.js`, which also guards `bot.dig` and `bot.placeBlock` against protected regions, so not even the pathfinder digs or builds in one.
@@ -363,7 +365,7 @@ CONTRACT.md "Player loop": the decision model (d1-2B on Horizon, llama.cpp `/v1/
   - **No answer:** a timeout or an error is no decision. In play it is a `wait`, but it doesn't count toward or break a stuck/done streak and is logged with `chosen: null, no_decision: "timeout"`. In survive mode it is `continue_task`: only a real answer can pause a verb.
   - **Ending a run:** `stuck` and `done` end a `play` run only when they win `ATLAS_PLAYER_END_STREAK` (5) ticks in a row, or any one tick at `ATLAS_PLAYER_END_CONF` (0.5) or more. Otherwise that tick is a `wait` (effect `stuck held back (confidence 0.20, 1 of 5 in a row): waited`) and the run goes on.
 - **Tick log:** every tick goes to `logs/player-<date>.jsonl` as `{ts, source, mode, intent, target, view, offered, criteria, chosen, probabilities, confidence, margin, server_choice?, latency_ms, timed_out, error?, effect}` (`source: "player"`). That is the fine-tuning data for d1.
-- **`play {intent, target?, budget?}`** runs the loop with an intent (see docs/verbs.md).
+- **`play {intent, target?, budget?}`** runs the loop with an intent (see docs/verbs.md). **Parked (Session 8):** off unless `ATLAS_PLAYER_PLAY=1`. Until then it is `refused`, `play layer is off`, and the mind leaves `play` out of its verb reference. With `ATLAS_PLAYER_URL` set, the survive override and the imitation recorder keep running either way.
 - **Imitation recorder:** while a scripted verb that moves or digs runs (`goto`, `explore`, `mine`, `collect`, `dig`, `place`), the body records, at the player's tick rate, the view the player loop would see, labelled with the micro-action the script is effectively doing. It writes these to `logs/imitation-<date>.jsonl` in the player log's schema with `source: "script:<verb>"`. This is the training set for fine-tuning d1. It works without `ATLAS_PLAYER_URL`; `ATLAS_IMITATION=0` turns it off.
   - **Labels**, from what changed since the last decision point:
     - the block above the head is gone: `dig_above`; the one under the feet: `dig_below`; one ahead: `dig_ahead`;
@@ -383,6 +385,7 @@ CONTRACT.md "Player loop": the decision model (d1-2B on Horizon, llama.cpp `/v1/
 
 | Variable | Default | |
 |---|---|---|
+| `ATLAS_PLAYER_PLAY` | `0` | `1` turns the parked `play` verb back on (body and mind read it) |
 | `ATLAS_PLAYER_URL` | — | the full URL, e.g. `http://10.0.0.140:8000/upstream/d1-2b/v1/systemone` (llama-swap's model-routed `/v1/systemone` 404s; LiteLLM doesn't know the endpoint); empty = no player loop |
 | `ATLAS_PLAYER_MODEL` | `d1-2b` | sent as `model` |
 | `ATLAS_PLAYER_TIMEOUT_MS` | `60` | per tick; `wait` on timeout |

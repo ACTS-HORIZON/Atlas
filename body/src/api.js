@@ -323,6 +323,29 @@ class VerbApi {
 
   /** Is the motor doing anything right now (the imitation recorder's idle test)? */
   motorActive () { return this.motor.active ? this.motor.active() : false }
+  /** A watch (src/runner.js): hold the running verb's own goto and dig, and let them go again. */
+  holdVerb () { return this.motor.holdMain ? this.motor.holdMain() : Promise.resolve() }
+  releaseVerb () { if (this.motor.releaseMain) this.motor.releaseMain() }
+
+  /**
+   * The same filtered API for a watch's sub-call: its goto and dig run on the "watch" lane, so they
+   * move while the running verb's own are held. Everything else (sight, places, house rules) is shared.
+   */
+  forWatch () {
+    const motor = this.motor
+    const lane = new Proxy(motor, {
+      get (t, k) {
+        if (k === 'goto') return o => t.goto({ ...o, lane: 'watch' })
+        if (k === 'dig') return (pos, o = {}) => t.dig(pos, { ...o, lane: 'watch' })
+        const v = t[k]
+        return typeof v === 'function' ? v.bind(t) : v
+      }
+    })
+    const sub = Object.create(this)
+    sub.motor = lane
+    return sub
+  }
+
   pauseVerb () { if (this.motor.pause) this.motor.pause() }
   resumeVerb () { if (this.motor.resume) this.motor.resume() }
 

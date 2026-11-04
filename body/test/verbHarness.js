@@ -34,6 +34,7 @@ function fakeMotor (w, opt = {}) {
     stop () { this.calls.push(['stop']) },
     toolFor (name) { return opt.tool ? opt.tool(name) : { ok: true, tool: 'iron_pickaxe' } },
     async dig (pos, o = {}) {
+      while (this.held && this.held(o.lane) && !o.signal?.aborted) await new Promise(resolve => setTimeout(resolve, 5))
       this.calls.push(['dig', pos, !!o.allowHand])
       const fail = opt.digFail && opt.digFail(pos, this)
       if (fail) return { ok: false, reason: fail }
@@ -61,6 +62,10 @@ function fakeMotor (w, opt = {}) {
     },
     async attack (type, pos) { this.calls.push(['attack', type, pos]); return { ok: true } },
     async shield () { this.calls.push(['shield']); return { ok: true } },
+    // holds: the player loop's pause holds every lane; a watch holds the running verb's ("main") lane
+    held (lane = null) { return !!this.paused || (!!this.watchHold && lane !== 'watch') },
+    async holdMain () { this.calls.push(['hold']); this.watchHold = true },
+    releaseMain () { this.calls.push(['release']); this.watchHold = false },
     pause () { this.calls.push(['pause']); this.paused = true },
     resume () { this.calls.push(['resume']); this.paused = false },
     async face (d) { this.calls.push(['face', d]); this.dir = d },

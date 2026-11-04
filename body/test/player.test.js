@@ -137,24 +137,32 @@ test('scripted chooser: walk to a visible player -> done next to them', async ()
   assert.equal(r.moved, 7)
 })
 
-test('play verb: runs the loop with the intent; detail says how it ended and what changed', async () => {
-  const s = setup(shaftWorld(), { pos: [0.5, 10, 0.5], inv: { cobblestone: 64 } })
+test('play verb (enabled with ATLAS_PLAYER_PLAY=1): runs the loop with the intent; detail says how it ended and what changed', async () => {
+  const on = x => { x.act.cfg.playerPlay = true; return x }
+  const s = on(setup(shaftWorld(), { pos: [0.5, 10, 0.5], inv: { cobblestone: 64 } }))
   s.act.player = new PlayerLoop({ chooser: new ScriptedChooser(climb), hz: 1000 })
   const r = await run('play', s.act, { intent: 'get to the surface', budget: 30 })
   assert.equal(r.status, 'done')
   assert.match(r.detail, /^play "get to the surface": done after \d+ ticks; moved 19 blocks \(\[0.5, 10, 0.5\] → \[0.5, 29, 0.5\]\), dug 18, placed 19, damage 0$/)
   assert.equal(r.data.end, 'done')
-  const t = setup(shaftWorld(), { pos: [0.5, 10, 0.5] }) // no blocks: it can dig up but not climb
+  const t = on(setup(shaftWorld(), { pos: [0.5, 10, 0.5] })) // no blocks: it can dig up but not climb
   t.act.player = new PlayerLoop({ chooser: new ScriptedChooser(climb), hz: 1000 })
   const p = await run('play', t.act, { intent: 'get to the surface', budget: { ticks: 50 } })
   assert.equal(p.status, 'partial')
   assert.match(p.detail, /the player is stuck after \d+ ticks/)
-  const b = setup(shaftWorld(), { pos: [0.5, 10, 0.5] })
+  const b = on(setup(shaftWorld(), { pos: [0.5, 10, 0.5] }))
   b.act.player = new PlayerLoop({ chooser: new ScriptedChooser(() => 'wait'), hz: 1000 })
   const q = await run('play', b.act, { intent: 'wait around', budget: { ticks: 5 } })
   assert.match(q.detail, /out of budget after 5 ticks/)
-  const n = setup(shaftWorld())
+  const n = on(setup(shaftWorld()))
   assert.deepEqual(await run('play', n.act, { intent: 'x' }), { status: 'failed', detail: 'play: no decision model configured (ATLAS_PLAYER_URL)' })
+})
+
+test('play is parked: refused "play layer is off" unless ATLAS_PLAYER_PLAY=1, even with a decision model', async () => {
+  const s = setup(shaftWorld(), { pos: [0.5, 10, 0.5], inv: { cobblestone: 64 } })
+  s.act.player = new PlayerLoop({ chooser: new ScriptedChooser(climb), hz: 1000 })
+  assert.deepEqual(await run('play', s.act, { intent: 'get to the surface' }), { status: 'refused', detail: 'play layer is off' })
+  if (process.env.ATLAS_PLAYER_PLAY === undefined) assert.equal(require('../src/config').playerPlay, false, 'off by default')
 })
 
 test('override: a non-continue answer pauses the verb, ~1 s (20 ticks) of continue_task resumes it, too long paused interrupts', async () => {

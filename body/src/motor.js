@@ -168,8 +168,13 @@ class Motor {
     return { ...r, recoveries: out.recoveries + (r.recoveries || 0), tried: [...out.tried, ...(r.tried || [])], legs: out.legs + 1, moved: r1(bot.entity.position.distanceTo(start)) }
   }
 
-  /** One planned walk to one goal (see goto). */
-  _leg ({ kind = 'near', pos, range = 1, dig = false, scaffold = false, signal, timeoutMs, stuckMs = 15000, stallMs = 3000, miningStallMs = 12000, planWatchMs = 15000, maxRecoveries = 3, onProgress }) {
+  /** One planned walk to one goal (see goto); a held lane waits before it starts. */
+  async _leg (o) {
+    await this.waitHeld(o.lane, o.signal)
+    return this._legRun(o)
+  }
+
+  _legRun ({ kind = 'near', pos, range = 1, dig = false, scaffold = false, signal, timeoutMs, stuckMs = 15000, stallMs = 3000, miningStallMs = 12000, planWatchMs = 15000, maxRecoveries = 3, onProgress, lane = null }) {
     const bot = this.bot
     if (!bot.pathfinder) return Promise.resolve({ status: 'no_path', remaining: null, moved: 0, recoveries: 0, tried: [], reason: 'pathfinder not loaded' })
     const target = new Vec3(pos[0], pos[1], pos[2])
@@ -224,8 +229,9 @@ class Motor {
         resolve(out)
       }
       const atEnd = () => goal.isEnd(bot.entity.position.floored())
-      const onReached = () => finish('reached')
+      const onReached = () => { if (!this.held(lane)) finish('reached') } // (a watch sub-call's goto reaching its own goal is not ours)
       const onPath = r => {
+        if (this.held(lane)) return // a watch sub-call's plan, not ours
         const end = r.path && r.path.length ? r.path[r.path.length - 1] : null
         lastPlan = { status: r.status, next: r.path && r.path[0] ? r.path[0] : null, visited: r.visitedNodes ?? null, ms: r.time != null ? Math.round(r.time) : null, end: end ? [end.x, end.y, end.z] : null }
         if (r.path.length === 0 && (r.status === 'noPath' || r.status === 'timeout')) {
@@ -236,13 +242,13 @@ class Motor {
       const onAbort = () => finish('aborted')
       let held = false
       const tick = setInterval(() => {
-        if (this.paused) { // the player loop holds the verb: no goal, no clocks running
+        if (this.held(lane)) { // the player loop or a watch holds the verb: no goal, no clocks running
           if (!held) { held = true; heldSince = Date.now(); try { bot.pathfinder.setGoal(null) } catch {}; bot.clearControlStates() }
           const now = Date.now()
           lastMove = lastStep = lastGain = now
           return
         }
-        if (held) { held = false; t0Shift(); try { bot.pathfinder.setGoal(goal) } catch {} }
+        if (held) { held = false; t0Shift(); try { bot.pathfinder.setMovements(movements); bot.pathfinder.setGoal(goal) } catch {} } // re-plan from wherever it is now
         const d = dist()
         try { onProgress?.(r1(d)) } catch {}
         const mining = bot.pathfinder.isMining()
@@ -401,7 +407,7 @@ class Motor {
    * Dig the block at pos with the best tool. The bot must be in reach.
    * {ok, reason?, name}
    */
-  async dig (pos, { signal, allowHand = false } = {}) {
+  async dig (pos, { signal, allowHand = false, lane = null } = {}) {
     const bot = this.bot
     const block = bot.blockAt(new Vec3(pos[0], pos[1], pos[2]))
     if (!block) return { ok: false, reason: 'not loaded' }
@@ -412,7 +418,7 @@ class Motor {
       const item = bot.inventory.items().find(i => i.name === tool.tool)
       if (item && bot.heldItem?.name !== item.name) await bot.equip(item, 'hand')
     }
-    while (this.paused && !signal?.aborted) await new Promise(resolve => setTimeout(resolve, 50)) // held by the player loop
+    await this.waitHeld(lane, signal) // held by the player loop, or by a watch while its sub-call runs
     if (signal?.aborted) return { ok: false, reason: 'aborted' }
     if (!bot.canDigBlock(block)) return { ok: false, reason: 'out of reach' }
     const onAbort = () => { try { bot.stopDigging() } catch {} }
@@ -552,6 +558,28 @@ class Motor {
 
   pause () { this.paused = true }
   resume () { this.paused = false }
+
+  /**
+   * Holds. `paused` (the player loop's override) holds every goto and dig. `watchHold` holds only the
+   * running verb's own ("main" lane) goto and dig while a watch's sub-call runs on the "watch" lane.
+   */
+  held (lane = null) { return !!this.paused || (!!this.watchHold && lane !== 'watch') }
+  async waitHeld (lane, signal) { while (this.held(lane) && !signal?.aborted) await new Promise(resolve => setTimeout(resolve, 50)) }
+
+  /** A watch fired: hold the running verb (its goto lets go of the goal, a dig in progress finishes, ≤5 s). */
+  async holdMain () {
+    this.watchHold = true
+    const bot = this.bot
+    await new Promise(resolve => setTimeout(resolve, 250)) // a running goto's tick sees the hold
+    const t0 = Date.now()
+    while (bot.targetDigBlock && Date.now() - t0 < 5000) await new Promise(resolve => setTimeout(resolve, 50))
+    if (bot.targetDigBlock) { try { bot.stopDigging() } catch {} }
+    try { bot.pathfinder?.setGoal(null) } catch {}
+    try { bot.clearControlStates() } catch {}
+  }
+
+  /** The sub-call is over: let the running verb carry on (its goto re-plans from where the bot is now). */
+  releaseMain () { this.watchHold = false }
 
   /** Turn the head to a yaw (radians, Mineflayer) and pitch. */
   async look (yaw, pitch = 0) {

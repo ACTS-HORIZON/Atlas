@@ -1062,3 +1062,24 @@ class LessonStoreTest(unittest.TestCase):
         self.assertEqual(failure_class("goto", "gave up 13.3 blocks short of [9, 64, 9] (stuck: feet air)"),
                          failure_class("goto", "gave up 2 blocks short of [1, 2, 3] (stuck: head stone)"))
         self.assertNotEqual(failure_class("mine", "mine: no iron_ore in view"), failure_class("craft", "craft: missing 2 planks"))
+
+
+class PlayParkedTest(unittest.TestCase):
+    """Session 8: with the play layer parked (the default), the play section is not in the model's verb reference;
+    the watch paragraph and its example are."""
+
+    def test_reference_without_play_by_default(self):
+        from atlas_mind.loop import verbs_in_reference
+        from atlas_mind.prompt import load_verb_reference
+        ref = ROOT / "docs" / "verbs.md"
+        off = load_verb_reference(ref)
+        on = load_verb_reference(ref, play=True)
+        self.assertNotIn("play", verbs_in_reference(off))
+        self.assertNotIn("### play {", off)
+        self.assertIn("play", verbs_in_reference(on))
+        self.assertIn("## Not implemented yet", off)  # the sections after it survive
+        self.assertIn('"watch": [{"see": "iron_ore", "do": {"verb": "mine"', off)
+        self.assertFalse(Config().player_play)
+        m = Mind(Config(), FakeLLM([]))
+        self.assertNotIn("play", m.verbs)
+        self.assertNotIn("### play {", m.system)

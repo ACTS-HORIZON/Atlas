@@ -56,6 +56,9 @@
   .doing { min-width: 0; }
   .doing .verb { font-size: 18px; font-weight: 650; display: flex; align-items: baseline; gap: 10px; min-width: 0; }
   .doing .args { font-family: var(--mono); font-size: 12px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .doing .progress.sub { color: var(--accent); }
+  .it .subs { margin: 4px 0 0 14px; display: grid; gap: 3px; }
+  .it .subs .res { background: transparent; border-left: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: 0; padding: 1px 8px; }
   .doing .progress { font-size: 12.5px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .stopbox { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
   #stop { background: var(--bad); color: #fff; border: 0; border-radius: 8px; padding: 12px 30px; font-weight: 750; font-size: 15px; letter-spacing: .08em; cursor: pointer; }
@@ -211,6 +214,7 @@
     <div class="verb"><span id="t-verb">idle</span><span id="t-state"></span><span class="faint mono" id="t-age" style="font-size:12px;font-weight:400"></span></div>
     <div class="args" id="t-args"></div>
     <div class="progress" id="t-progress"></div>
+    <div class="progress sub" id="t-sub"></div>
   </div>
   <div class="stopbox">
     <button id="stop" title="Stop the running verb now (the body's own stop path, not through the mind)">STOP</button>
@@ -361,8 +365,12 @@ function renderBand (o) {
     $('t-state').replaceChildren(chip(t.state, 'st-' + t.state))
     $('t-args').textContent = Object.keys(t.args || {}).length ? short(t.args, 120) : ''
     $('t-progress').textContent = t.progress || ''
+    // a watch's sub-call, running under the verb
+    $('t-sub').textContent = t.sub ? `↳ watch: ${t.sub.verb} ${short(t.sub.args || {}, 60)}${t.sub.progress ? ' · ' + t.sub.progress : ''}` : ''
+    const slot = callNodes.get(t.id)
+    if (slot && slot.classList.contains('pending')) slot.textContent = t.sub ? `running… ↳ watch: ${t.sub.verb} ${short(t.sub.args || {}, 60)}${t.sub.progress ? ' (' + t.sub.progress + ')' : ''}` : 'running…'
   } else {
-    $('t-verb').textContent = 'idle'; $('t-state').replaceChildren(); $('t-args').textContent = ''; $('t-progress').textContent = ''
+    $('t-verb').textContent = 'idle'; $('t-state').replaceChildren(); $('t-args').textContent = ''; $('t-progress').textContent = ''; $('t-sub').textContent = ''
   }
 }
 function renderHealth () {
@@ -568,12 +576,22 @@ function feedCall (env) {
   if (callNodes.size > 300) callNodes.delete(callNodes.keys().next().value)
   return node
 }
+/** A watched verb's sub-calls, one line each, under the parent's result. */
+function watchedBlock (data) {
+  const w = data && Array.isArray(data.watched) ? data.watched : []
+  if (!w.length) return null
+  return el('div', { class: 'subs' }, ...w.map(x => el('div', { class: 'res', 'data-sub': x.id, 'data-result': x.status },
+    chip('↳ ' + x.verb, 'c-calls'), chip(x.status, 'st-' + x.status), el('span', { class: 'txt' }, x.detail || ''),
+    el('span', { class: 'faint', style: 'font-size:11px' }, `saw ${x.see}${x.at ? ' at ' + x.at.join(' ') : ''}`))))
+}
 function feedResult (env) {
   const m = env.msg
-  const body = [chip(m.status, 'st-' + m.status), el('span', { class: 'txt' }, m.detail || ''), dataBlock(m.data)]
+  const detail = (m.detail || '').replace(/; watched: .*$/, m.data && m.data.watched ? '' : '$&') // the sub-calls get their own lines
+  const body = [chip(m.status, 'st-' + m.status), el('span', { class: 'txt' }, detail), dataBlock(m.data)]
+  const subs = watchedBlock(m.data)
   const slot = callNodes.get(m.id)
-  if (slot && slot.classList.contains('pending')) { slot.className = 'res'; slot.replaceChildren(...body.filter(Boolean)); slot.dataset.result = m.status; return }
-  feedAppend('calls', env.ts, el('div', { class: 'head' }, chip('result', 'c-calls'), el('span', { class: 'faint mono', style: 'font-size:10.5px' }, m.id)), el('div', { class: 'res', 'data-result': m.status }, ...body))
+  if (slot && slot.classList.contains('pending')) { slot.className = 'res'; slot.replaceChildren(...body.filter(Boolean)); slot.dataset.result = m.status; if (subs) slot.after(subs); return }
+  feedAppend('calls', env.ts, el('div', { class: 'head' }, chip('result', 'c-calls'), el('span', { class: 'faint mono', style: 'font-size:10.5px' }, m.id)), el('div', { class: 'res', 'data-result': m.status }, ...body), subs)
 }
 function feedEvent (env) {
   const m = env.msg
