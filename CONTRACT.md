@@ -1,6 +1,6 @@
 # 📜 Contract v0.1
 
-**Status:** v0.1 — **Approved** 2026-11-02 (Collin) **Last touched:** 2026-11-02
+**Status:** v0.1 — Approved 2026-11-02; amended 2026-11-04 (player loop parked, watched verbs)
 
 The contract is the version-agnostic part of the project. Every layer talks only through it, so the game backend (Mineflayer now, our own Fabric mod later) can be swapped without touching the brain, skills, reflexes or training data.
 
@@ -91,11 +91,11 @@ The body runs one verb at a time; it appears as `task` in the obs. `say`, `recal
 
 | Verb | Args | Notes |
 |------|------|-------|
-| `goto` | `pos` or `target`, `dig`, `scaffold` | pathfinder; `target` may be a player by bearing; `dig` and `scaffold` default true (tunnels and pillars like a player); house rules still apply |
-| `explore` | `direction`, `distance` | walk and look around, reports what it saw |
-| `mine` | `block`, `count`, `radius` or `box` | only seen blocks: notable types from blocks_seen / known places, common types (stone, dirt, gravel, sand, logs…) by looking at the terrain around it with the same line-of-sight check (`mine stone 3` is valid when stone is visible); strip-mines/caves for ores not in view; `box` = dig out a region |
+| `goto` | `pos` or `target`, `dig`, `scaffold`, `watch` | pathfinder; `target` may be a player by bearing; `dig` and `scaffold` default true (tunnels and pillars like a player); house rules still apply |
+| `explore` | `direction`, `distance`, `watch` | walk and look around, reports what it saw |
+| `mine` | `block`, `count`, `radius` or `box`, `watch` | only seen blocks: notable types from blocks_seen / known places, common types (stone, dirt, gravel, sand, logs…) by looking at the terrain around it with the same line-of-sight check (`mine stone 3` is valid when stone is visible); strip-mines/caves for ores not in view; `box` = dig out a region |
 | `dig` | `pos` | one block |
-| `collect` | `item` | pick up nearby drops (this is also how it receives tossed items) |
+| `collect` | `item`, `watch` | pick up nearby drops (this is also how it receives tossed items) |
 | `craft` | `item`, `count` | uses a nearby crafting table if needed |
 | `smelt` | `item`, `count`, `fuel` |       |
 | `place` | `block`, `pos` |       |
@@ -131,6 +131,12 @@ Three layers, not two. Gemma is strategy (seconds). The decision model is **the 
 * **Escalate:** a 2–5 Hz `noul` question ("does the brain need to know?") sends `reflex_escalation` to the mind.
 * **Fair play unchanged:** the reflex view is built by the same filter; micro-actions act on what the player can see.
 * **Risk, named:** d1-2B's quality on real game states is untested (bench caveat). The player loop is measured against the scripted verbs on the same tasks; if it loses badly, the model or its prompt is the problem, not the design.
+
+**Outcome, 2026-11-04 (Collin):** measured. With the plumbing clean (34 ms ticks, 0 timeouts, argmax decoding, end-of-run discipline), d1-2B still could not climb a shaft in 317 ticks (138 jump, 48 stuck, 27% agreement with the script, 60% on the eval twice) while `goto surface` climbed 43 blocks from the same spot. d1 answered every survive-mode tick correctly. **d1 is a reflex classifier, not a planner.** No additional model is added (scope). So:
+
+* **Reflex (d1) stays as built:** survive mode, 5 Hz, 20 Hz under threat or damage; timeouts never pause a verb.
+* **`play` and the micro-action loop stay in the code but off by default** (`ATLAS_PLAYER_PLAY=0`); the imitation recorder keeps logging every scripted run (`logs/imitation-<date>.jsonl`) so a future d1 fine-tune has data. No fine-tuning is scheduled.
+* **Watched verbs replace the play layer for "do X unless you see Y":** `goto`, `explore`, `mine`, `collect` take `watch: [{see: <block|entity|item>, do: {verb, args}, max?}]`. On sight of Y — deterministic, from `blocks_seen`/entities/drops, no model — the body holds the verb, runs the sub-call, and resumes, re-planning the path. Gemma composes ("explore north, mine any iron you see, keep going"); the hands execute; d1 is not asked questions a lookup can answer. Depth 1, `stop` ends both, a failed sub-call never fails the parent.
 
 ## Events (body → mind)
 
