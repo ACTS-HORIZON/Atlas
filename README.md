@@ -181,7 +181,7 @@ The body serves a read-only dashboard on `ATLAS_DASH_BIND` (default `0.0.0.0:808
     - Players in sight are dots with names; players on the Locator Bar are arrows at the edge in their bearing's direction (↑/↓ when above/below).
     - The side list is the legend: players, known places by type with counts (click a type to hide it), and the blocks seen.
     - Fair play: everything on it comes from the obs or known places, never from the server's world.
-  - **Feed:** one timeline, oldest at the top, newest at the bottom. It holds chat, the mind's thinking (as prose, with the action, tokens and task under it), notes and lessons, events, calls with their result inline underneath, and other traces (plan, rag). Filter chips hide a kind.
+  - **Feed:** one timeline, newest first by default (a toggle switches to oldest first; this browser remembers the choice). **Pause** freezes it: new items, and results arriving for shown calls, wait as "resume · N new" until resumed, while the band, the map and the other cards keep updating. It holds chat, the mind's thinking (as prose, with the action, tokens and task under it), notes and lessons, events, calls with their result inline underneath, and other traces (plan, rag). Filter chips hide a kind.
   - **Player loop:** mode, achieved Hz, p50/p95 and timeouts over the last 60 s; a latency sparkline with the timeout budget as a dashed line (play blue, survive orange, timeouts as red ticks); the last 20 actions as chips, with confidence as opacity.
   - **Inventory:** a compact grid with counts; the held item is outlined.
   - **Session charts:** completion tokens per turn and turns per task, from the mind's decision traces (`data.tokens`, `data.task`), and obs build time from `/api/stats`.

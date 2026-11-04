@@ -140,6 +140,10 @@
   .it pre { margin: 4px 0 0; font: 11px/1.4 var(--mono); white-space: pre-wrap; word-break: break-word; background: var(--panel2); padding: 6px 8px; border-radius: 6px; }
   #feed.hide-chat .k-chat, #feed.hide-think .k-think, #feed.hide-notes .k-notes, #feed.hide-events .k-events, #feed.hide-calls .k-calls, #feed.hide-other .k-other { display: none; }
   #newer { position: absolute; right: 18px; bottom: 12px; display: none; cursor: pointer; }
+  #feed.newest-first + #newer { top: 8px; bottom: auto; }
+  .feedctl { display: inline-flex; gap: 6px; margin-left: 8px; text-transform: none; letter-spacing: 0; }
+  .feedctl button { cursor: pointer; }
+  #pause.on { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
   .feedwrap { position: relative; flex: 1; display: flex; flex-direction: column; min-height: 0; }
 
   /* ---- player loop ---- */
@@ -239,11 +243,12 @@
   </section>
 
   <section class="card">
-    <h2>Feed <span class="n" id="feed-n"></span></h2>
+    <h2>Feed <span class="n" id="feed-n"></span>
+      <span class="feedctl"><button id="order" class="chip" title="Order of the feed">newest first</button><button id="pause" class="chip" title="Freeze the feed; the map and the band keep updating">pause</button></span></h2>
     <div class="feed-filters" id="filters"></div>
     <div class="feedwrap">
       <div id="feed"><div class="empty" id="feed-empty">waiting for the first messages…</div></div>
-      <button id="newer" class="chip c-calls">newer below ↓</button>
+      <button id="newer" class="chip c-calls">newer ↑</button>
     </div>
   </section>
 
@@ -368,7 +373,7 @@ function renderBand (o) {
     // a watch's sub-call, running under the verb
     $('t-sub').textContent = t.sub ? `↳ watch: ${t.sub.verb} ${short(t.sub.args || {}, 60)}${t.sub.progress ? ' · ' + t.sub.progress : ''}` : ''
     const slot = callNodes.get(t.id)
-    if (slot && slot.classList.contains('pending')) slot.textContent = t.sub ? `running… ↳ watch: ${t.sub.verb} ${short(t.sub.args || {}, 60)}${t.sub.progress ? ' (' + t.sub.progress + ')' : ''}` : 'running…'
+    if (slot && !slot.dataset.got && !FEED.paused) slot.textContent = t.sub ? `running… ↳ watch: ${t.sub.verb} ${short(t.sub.args || {}, 60)}${t.sub.progress ? ' (' + t.sub.progress + ')' : ''}` : 'running…'
   } else {
     $('t-verb').textContent = 'idle'; $('t-state').replaceChildren(); $('t-args').textContent = ''; $('t-progress').textContent = ''; $('t-sub').textContent = ''
   }
@@ -528,21 +533,59 @@ $('filters').replaceChildren(...FILTERS.map(([k, label, cls]) => el('button', {
 }, label, el('span', { class: 'faint', id: 'fc-' + k }, ''))))
 const callNodes = new Map()
 let feedN = 0
-function feedAppend (kind, ts, ...body) {
+// Order (Session 9a): newest first by default (the toggle is remembered in this browser), or oldest first.
+// Pause freezes the feed: new items and changes to shown ones wait in a queue ("N new") until resumed;
+// the band, the map and the rest keep updating from the same messages.
+const FEED = { newestFirst: true, paused: false, queue: [], queued: 0 }
+try { FEED.newestFirst = localStorage.getItem('atlas.feed.order') !== 'oldest' } catch {}
+const atLatest = () => { const f = $('feed'); return FEED.newestFirst ? f.scrollTop < 40 : f.scrollHeight - f.scrollTop - f.clientHeight < 40 }
+function goLatest () { const f = $('feed'); f.scrollTop = FEED.newestFirst ? 0 : f.scrollHeight; $('newer').style.display = 'none' }
+function insertNode (node) {
   const feed = $('feed')
-  const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40
+  const stick = atLatest()
   $('feed-empty')?.remove()
+  if (FEED.newestFirst) feed.prepend(node); else feed.append(node)
+  while (feed.children.length > 800) (FEED.newestFirst ? feed.lastElementChild : feed.firstElementChild).remove()
+  if (stick) goLatest(); else $('newer').style.display = 'inline-flex'
+}
+/** Run a change to the feed now, or after Resume when paused. */
+function live (fn, counted = false) {
+  if (!FEED.paused) return fn()
+  FEED.queue.push(fn)
+  if (counted) FEED.queued++
+  $('pause').textContent = `resume · ${FEED.queued} new`
+}
+function feedAppend (kind, ts, ...body) {
   const node = el('div', { class: 'it k-' + kind, 'data-kind': kind, 'data-ts': ts }, el('time', { datetime: ts }, clock(ts)), el('div', null, ...body))
-  feed.append(node)
   counts[kind]++; $('fc-' + kind).textContent = ' ' + counts[kind]
   $('feed-n').textContent = `${++feedN} items`
-  while (feed.children.length > 800) feed.firstElementChild.remove()
-  if (atBottom) feed.scrollTop = feed.scrollHeight
-  else $('newer').style.display = 'inline-flex'
+  live(() => insertNode(node), true)
   return node
 }
-$('feed').addEventListener('scroll', () => { const f = $('feed'); if (f.scrollHeight - f.scrollTop - f.clientHeight < 40) $('newer').style.display = 'none' })
-$('newer').onclick = () => { const f = $('feed'); f.scrollTop = f.scrollHeight; $('newer').style.display = 'none' }
+function setOrder (newestFirst) {
+  if (newestFirst === FEED.newestFirst) return
+  FEED.newestFirst = newestFirst
+  try { localStorage.setItem('atlas.feed.order', newestFirst ? 'newest' : 'oldest') } catch {}
+  const feed = $('feed')
+  feed.append(...[...feed.children].reverse())
+  renderFeedCtl(); goLatest()
+}
+function renderFeedCtl () {
+  $('feed').classList.toggle('newest-first', FEED.newestFirst)
+  $('order').textContent = FEED.newestFirst ? 'newest first' : 'oldest first'
+  $('newer').textContent = FEED.newestFirst ? 'newer ↑' : 'newer below ↓'
+  $('pause').classList.toggle('on', FEED.paused)
+  $('pause').textContent = FEED.paused ? `resume · ${FEED.queued} new` : 'pause'
+}
+$('order').onclick = () => setOrder(!FEED.newestFirst)
+$('pause').onclick = () => {
+  FEED.paused = !FEED.paused
+  if (!FEED.paused) { const q = FEED.queue; FEED.queue = []; FEED.queued = 0; for (const fn of q) fn() }
+  renderFeedCtl()
+}
+renderFeedCtl()
+$('feed').addEventListener('scroll', () => { if (atLatest()) $('newer').style.display = 'none' })
+$('newer').onclick = goLatest
 
 const chatSeen = new Set()
 function feedChat (o, ts) {
@@ -590,7 +633,7 @@ function feedResult (env) {
   const body = [chip(m.status, 'st-' + m.status), el('span', { class: 'txt' }, detail), dataBlock(m.data)]
   const subs = watchedBlock(m.data)
   const slot = callNodes.get(m.id)
-  if (slot && slot.classList.contains('pending')) { slot.className = 'res'; slot.replaceChildren(...body.filter(Boolean)); slot.dataset.result = m.status; if (subs) slot.after(subs); return }
+  if (slot && !slot.dataset.got) { slot.dataset.got = '1'; live(() => { slot.className = 'res'; slot.replaceChildren(...body.filter(Boolean)); slot.dataset.result = m.status; if (subs) slot.after(subs) }); return }
   feedAppend('calls', env.ts, el('div', { class: 'head' }, chip('result', 'c-calls'), el('span', { class: 'faint mono', style: 'font-size:10.5px' }, m.id)), el('div', { class: 'res', 'data-result': m.status }, ...body), subs)
 }
 function feedEvent (env) {

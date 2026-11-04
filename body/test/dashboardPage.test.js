@@ -56,8 +56,8 @@ test('dashboard v2 in headless Chromium: no errors, map, merged feed, masked con
   assert.match(map.legend, /iron ore/)
   assert.match(map.players, /Rook · \w/)
 
-  // the feed: one timeline, in order, the result inline under its call
-  const feed = await page.evaluate(() => [...document.querySelectorAll('#feed .it')].map(e => ({
+  // the feed: one timeline, newest first by default, the result inline under its call
+  const feed = await page.evaluate(() => [...document.querySelectorAll('#feed .it')].reverse().map(e => ({
     kind: e.dataset.kind,
     text: e.textContent.replace(/\s+/g, ' ').trim(),
     result: e.querySelector('.res') ? e.querySelector('.res').dataset.result || null : undefined
@@ -83,6 +83,35 @@ test('dashboard v2 in headless Chromium: no errors, map, merged feed, masked con
   assert.equal(sub.rows, 2, 'one row for the say call, one for the explore (with its sub-call inside)')
   assert.doesNotMatch(sub.parent, /watched:/)
   assert.match(sub.sub, /↳ mine.*done.*mined 5 iron_ore.*saw iron_ore at 3 12 -40/)
+
+  // newest first: the explore call (the last item) is on top; the toggle flips it to oldest first and back
+  const top = () => page.evaluate(() => document.querySelector('#feed .it').textContent)
+  assert.match(await top(), /explore/)
+  await page.click('#order')
+  assert.match(await top(), /Rook asked for a hello/)
+  await page.click('#order')
+  assert.match(await top(), /explore/)
+
+  // pause freezes the feed (new items and in-place results wait, "N new"); the band and the map keep updating
+  await page.click('#pause')
+  const paused = await page.evaluate(() => {
+    const ts = new Date().toISOString()
+    const before = document.querySelectorAll('#feed .it').length
+    onEnvelope({ ts, dir: 'in', logged: true, msg: { type: 'trace', v: '0.1', t: 50, kind: 'note', text: 'while paused' } })
+    onEnvelope({ ts, dir: 'in', logged: true, msg: { type: 'call', v: '0.1', id: 'p1', verb: 'say', args: { text: 'x' } } })
+    const o = JSON.parse(JSON.stringify(S.obs)); o.self.pos = [30.5, 64, -12.5]
+    onEnvelope({ ts, dir: 'out', logged: false, msg: o })
+    return { before, after: document.querySelectorAll('#feed .it').length, label: document.getElementById('pause').textContent, pos: document.getElementById('pos').textContent }
+  })
+  assert.equal(paused.after, paused.before, 'nothing added while paused')
+  assert.equal(paused.label, 'resume · 2 new')
+  assert.equal(paused.pos, '30  64  -13', 'the band keeps updating')
+  await page.click('#pause')
+  const resumed = await page.evaluate(() => ({ n: document.querySelectorAll('#feed .it').length, top: document.querySelector('#feed .it').textContent, label: document.getElementById('pause').textContent }))
+  assert.equal(resumed.n, paused.before + 2)
+  assert.match(resumed.top, /say/, 'the newest (the call) on top after resume')
+  assert.equal(resumed.label, 'pause')
+  await page.evaluate(() => { const o = JSON.parse(JSON.stringify(S.obs)); o.self.pos = [0.5, 64, 0.5]; onEnvelope({ ts: new Date().toISOString(), dir: 'out', logged: false, msg: o }) })
 
   // filters hide a kind
   await page.click('#filters button[data-f="think"]')
