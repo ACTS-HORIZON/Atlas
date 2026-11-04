@@ -139,6 +139,25 @@ function atSurface (s) {
   return Object.values(s.sides || {}).some(([, head]) => head === null || !/ 1$/.test(head))
 }
 
+/**
+ * One goto leg of the climb, cut short the moment the bot is at the surface: a leg aims up to 16 blocks
+ * higher, and without this it went on pillaring into the open air above the ground (live: 57 blocks).
+ */
+async function climbLeg (act, api, goal, opts, everyMs = 50) {
+  const ac = new AbortController()
+  const onAbort = () => ac.abort()
+  act.signal.addEventListener('abort', onAbort, { once: true })
+  const timer = setInterval(() => {
+    try { if (atSurface((api.observe() || {}).surroundings)) ac.abort() } catch {}
+  }, everyMs)
+  try {
+    return await api.goto(goal, { ...opts, signal: ac.signal })
+  } finally {
+    clearInterval(timer)
+    act.signal.removeEventListener('abort', onAbort)
+  }
+}
+
 async function toSurface (act, api, move) {
   const y0 = Math.floor(api.here().pos[1])
   const done = (y, p) => ({ status: 'done', detail: `reached open sky at y ${y} (climbed ${y - y0})`, data: { pos: p.map(r1), y, climbed: y - y0 } })
@@ -156,13 +175,13 @@ async function toSurface (act, api, move) {
     const blocks = SCAFFOLD.reduce((n, b) => n + (inv[b] || 0), 0)
     act.progress(`to the surface: y ${f[1]}, ${blocks} scaffold blocks`)
     // straight up: pillar with scaffold blocks, dig through what is above
-    let r = await api.goto([p[0], f[1] + 16, p[2]], { kind: 'near', range: 1, dig: move.dig !== false, scaffold: blocks > 0, signal: act.signal })
+    let r = await climbLeg(act, api, [p[0], f[1] + 16, p[2]], { kind: 'near', range: 1, dig: move.dig !== false, scaffold: blocks > 0 })
     if (act.signal.aborted) return null
     if (Math.floor(api.here().pos[1]) > f[1]) continue
     // a rising staircase dug into the wall, each side in turn
     let climbed = false
     for (const [dx, dz] of STAIRS) {
-      r = await api.goto([p[0] + dx * 4, f[1] + 4, p[2] + dz * 4], { kind: 'near', range: 1, dig: move.dig !== false, scaffold: blocks > 0, signal: act.signal })
+      r = await climbLeg(act, api, [p[0] + dx * 4, f[1] + 4, p[2] + dz * 4], { kind: 'near', range: 1, dig: move.dig !== false, scaffold: blocks > 0 })
       if (act.signal.aborted) return null
       if (Math.floor(api.here().pos[1]) > f[1]) { climbed = true; break }
     }

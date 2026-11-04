@@ -12,11 +12,15 @@
 //
 // Two ways to run:
 //   run(api, {intent, target, budgetTicks, budgetMs, signal})  the play verb:
-//     until the model answers done or stuck, the budget runs out, or stop;
+//     until the model answers done or stuck (5 ticks in a row, or one at
+//     confidence 0.5 or more; a lone weak stuck/done is done as wait), the
+//     budget runs out, or stop;
 //   watch(api, {settled, interrupt})  the override while a scripted verb runs:
 //     intent "survive", only survival actions (+ continue_task) offered; any
 //     other answer pauses the verb and acts; ~1 s of continue_task resumes it;
 //     still paused after maxPauseMs: interrupt() (the verb ends interrupted).
+//     It ticks at surviveHz (5) while no threat or damage is in view, at hz
+//     (20) while one is.
 const fs = require('fs')
 const path = require('path')
 const { offeredActions, describe, blockFor, stepOk, DIRS, LEFT, RIGHT } = require('./offered')
@@ -25,9 +29,9 @@ const { reflexView } = require('./view')
 const r1 = v => Math.round(v * 10) / 10
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-/** logs/player-YYYY-MM-DD.jsonl, one line per tick. */
+/** logs/<prefix>-YYYY-MM-DD.jsonl, one line per tick (player-…: the loop; imitation-…: the recorder). */
 class TickLog {
-  constructor (dir) { this.dir = dir; this.day = null; this.stream = null }
+  constructor (dir, prefix = 'player') { this.dir = dir; this.prefix = prefix; this.day = null; this.stream = null }
   write (rec) {
     if (!this.dir) return
     const day = new Date().toISOString().slice(0, 10)
@@ -35,7 +39,7 @@ class TickLog {
       if (this.stream) this.stream.end()
       fs.mkdirSync(this.dir, { recursive: true })
       this.day = day
-      this.path = path.join(this.dir, `player-${day}.jsonl`)
+      this.path = path.join(this.dir, `${this.prefix}-${day}.jsonl`)
       this.stream = fs.createWriteStream(this.path, { flags: 'a' })
     }
     this.stream.write(JSON.stringify({ ts: new Date().toISOString(), ...rec }) + '\n')
@@ -48,10 +52,19 @@ class TickLog {
 }
 
 class PlayerLoop {
-  constructor ({ chooser, logDir = null, hz = 20, resumeTicks = 20, maxPauseMs = 20000, obsMaxAgeMs = 200 } = {}) {
+  /**
+   * endStreak / endConf: stuck and done end a run only after winning endStreak ticks in a row, or on one
+   * tick at endConf or more; otherwise they are done as wait. surviveHz: the override's rate while no
+   * threat or damage is in view (hz while one is, and for a second after damage).
+   */
+  constructor ({ chooser, logDir = null, hz = 20, surviveHz = 5, resumeTicks = 20, maxPauseMs = 20000, obsMaxAgeMs = 200, endStreak = 5, endConf = 0.5 } = {}) {
     this.chooser = chooser
     this.log = new TickLog(logDir)
     this.periodMs = 1000 / hz
+    this.survivePeriodMs = 1000 / Math.min(hz, surviveHz)
+    this.endStreak = endStreak
+    this.endConf = endConf
+    this.rates = { play: { ticks: 0, ms: 0 }, survive: { ticks: 0, ms: 0 } }
     this.resumeTicks = resumeTicks
     this.maxPauseMs = maxPauseMs
     this.obsMaxAgeMs = obsMaxAgeMs
@@ -65,8 +78,8 @@ class PlayerLoop {
     return this.obsCache.obs
   }
 
-  probe (api, st) {
-    const o = this.obs(api) || {}
+  probe (api, st, obs = this.obs(api)) {
+    const o = obs || {}
     const s = api.sight()
     const pos = api.here().pos
     const feet = [Math.floor(pos[0]), Math.floor(pos[1] + 1e-3), Math.floor(pos[2])] // 63.9999 standing on a block is 64
@@ -84,16 +97,34 @@ class PlayerLoop {
     }
   }
 
-  /** One tick: view, offered, choice, execute. {view, offered, chosen, latency, timedOut, effect, end?} */
-  async tick (api, st, mode) {
-    const probe = this.probe(api, st)
+  /** What the player sees this tick: {obs, probe, offered, view, criteria} (shared with the imitation recorder). */
+  snapshot (api, st, mode, obs = this.obs(api)) {
+    const probe = this.probe(api, st, obs)
     const offered = offeredActions(probe, mode)
-    const obs = this.obs(api)
     const view = reflexView({ obs, probe, intent: st.intent, target: st.target, recent: st.recent, offered, pitch: st.pitch, noProgress: st.noProgress })
     const criteria = describe(probe, offered, { sky: obs && obs.surroundings ? !!obs.surroundings.sky : null })
-    const c = await this.chooser.choose(view, offered, { intent: mode === 'survive' ? null : (st.target ? `${st.intent} (target: ${st.target})` : st.intent), criteria })
+    return { obs, probe, offered, view, criteria }
+  }
+
+  /**
+   * stuck/done: accepted (ends the run) on endStreak wins in a row or one at endConf or more; otherwise
+   * done as wait. Returns the action to execute and, when held back, why.
+   */
+  endGate (st, chosen, confidence) {
+    if (chosen !== 'stuck' && chosen !== 'done') { st.endRun = null; return { act: chosen } }
+    st.endRun = st.endRun && st.endRun.action === chosen ? { action: chosen, n: st.endRun.n + 1 } : { action: chosen, n: 1 }
+    const conf = typeof confidence === 'number' ? confidence : 0
+    if (conf >= this.endConf || st.endRun.n >= this.endStreak) return { act: chosen }
+    return { act: 'wait', held: `${chosen} held back (confidence ${conf.toFixed(2)}, ${st.endRun.n} of ${this.endStreak} in a row): waited` }
+  }
+
+  /** One tick: view, offered, choice, execute. {view, offered, chosen, latency, timedOut, effect, end?} */
+  async tick (api, st, mode) {
+    const { obs, probe, offered, view, criteria } = this.snapshot(api, st, mode)
+    const c = await this.chooser.choose(view, offered, { mode, intent: mode === 'survive' ? null : (st.target ? `${st.intent} (target: ${st.target})` : st.intent), criteria })
     const before = { pos: api.here().pos, health: obs && obs.self ? obs.self.health : null }
-    const res = await this.execute(api, st, c.choice, probe)
+    const gate = mode === 'play' ? this.endGate(st, c.choice, c.confidence) : { act: c.choice }
+    const res = gate.held ? { effect: gate.held } : await this.execute(api, st, gate.act, probe)
     this.obsCache.at = 0 // the world changed: look again next tick
     this.obsCache.obs = null
     const after = api.here().pos
@@ -108,9 +139,26 @@ class PlayerLoop {
     if (res.dug) st.dug++
     if (res.placed) st.placed++
     st.ticks++
-    const rec = { mode, intent: st.intent, target: st.target, view, offered, criteria, chosen: c.choice, probabilities: c.probabilities, latency_ms: r1(c.latency), timed_out: c.timedOut, ...(c.error ? { error: c.error } : {}), effect }
+    const rec = {
+      source: 'player',
+      mode,
+      intent: st.intent,
+      target: st.target,
+      view,
+      offered,
+      criteria,
+      chosen: c.choice,
+      probabilities: c.probabilities,
+      confidence: c.confidence ?? null,
+      margin: c.margin ?? null,
+      ...(c.serverChoice ? { server_choice: c.serverChoice } : {}),
+      latency_ms: r1(c.latency),
+      timed_out: c.timedOut,
+      ...(c.error ? { error: c.error } : {}),
+      effect
+    }
     this.log.write(rec)
-    this.last.push({ t: Date.now(), mode, offered, chosen: c.choice, latency_ms: r1(c.latency), effect })
+    this.last.push({ t: Date.now(), mode, offered, chosen: c.choice, confidence: c.confidence ?? null, latency_ms: r1(c.latency), effect })
     if (this.last.length > 10) this.last.shift()
     return { ...rec, end: res.end }
   }
@@ -196,6 +244,7 @@ class PlayerLoop {
       if (tk.end) end = tk.end
       if (onProgress) onProgress(`${intent}: tick ${st.ticks}, ${tk.chosen} (${tk.effect})`)
       await sleep(Math.max(0, this.periodMs - (Date.now() - start))) // 20 Hz, and always yield
+      this.count('play', start)
     }
     const to = api.here().pos
     return {
@@ -217,10 +266,16 @@ class PlayerLoop {
     const st = { intent: 'survive', target: null, dir: api.facing(), pitch: 0, recent: [], ticks: 0, dug: 0, placed: 0 }
     let paused = false; let cont = 0; let pausedAt = 0
     const out = { ticks: 0, pauses: 0, interrupted: false }
+    let hotUntil = 0; let lastHealth = null
     while (!settled()) {
       const start = Date.now()
       const tk = await this.tick(api, st, 'survive')
       out.ticks++
+      // full rate while a threat or damage is in view (and a second after damage); otherwise surviveHz
+      const h = tk.view && tk.view.self ? tk.view.self.health : null
+      if (typeof h === 'number' && lastHealth !== null && h < lastHealth) hotUntil = Date.now() + 1000
+      if (typeof h === 'number') lastHealth = h
+      const hot = (tk.view && tk.view.threats && tk.view.threats.length > 0) || Date.now() < hotUntil
       if (tk.chosen === 'continue_task') {
         if (paused && ++cont >= this.resumeTicks) { api.resumeVerb(); paused = false; cont = 0 }
       } else {
@@ -233,11 +288,24 @@ class PlayerLoop {
         interrupt('the player loop paused it to survive and could not resume it')
         break
       }
-      await sleep(Math.max(0, this.periodMs - (Date.now() - start)))
+      await sleep(Math.max(0, (hot || paused ? this.periodMs : this.survivePeriodMs) - (Date.now() - start)))
+      this.count('survive', start)
     }
     if (paused) api.resumeVerb()
     return out
   }
+
+  count (mode, start) { const r = this.rates[mode]; r.ticks++; r.ms += Date.now() - start }
+
+  /** "play 19.8 Hz (1180 ticks in 59.6 s), survive 5.0 Hz (300 ticks in 60.0 s)", the rates achieved per mode; resets. */
+  rateReport () {
+    const parts = Object.entries(this.rates).filter(([, r]) => r.ticks).map(([m, r]) => `${m} ${(r.ticks / Math.max(0.001, r.ms / 1000)).toFixed(1)} Hz (${r.ticks} ticks in ${(r.ms / 1000).toFixed(1)} s)`)
+    this.rates = { play: { ticks: 0, ms: 0 }, survive: { ticks: 0, ms: 0 } }
+    return parts.length ? parts.join(', ') : null
+  }
+
+  /** The 60 s line for body.out: latency, errors, and the achieved rate per mode. */
+  report (now = Date.now()) { return this.chooser.stats.report(now, this.rateReport()) }
 
   close () { return this.log.close() }
 }

@@ -46,7 +46,7 @@ The nearest known place of `type` in this dimension. `near` defaults to the bot'
 ### goto {pos | target, range?, dig = true, scaffold = true}
 - **`pos`:** `[x, y, z]`.
 - **`target`:** a visible player's name; a visible entity type (nearest); a block type in `blocks_seen` or known places (nearest); or a player shown on the Locator Bar.
-- **`target: "surface"`:** climbs until there is open sky overhead and a side open at head height (the bottom of an open shaft doesn't count): straight up in 16-block legs, pillaring with scaffold blocks and digging what is above, else a staircase dug into the wall. `done`: `reached open sky at y <n> (climbed <k>)`, `data: {pos, y, climbed}`. `partial`: `stopped at y <n> (climbed <k>): lava above at y <m>` (or water), `bedrock above at y <m>`, or `no way up` (` (no scaffold blocks to pillar with)` when it had none).
+- **`target: "surface"`:** climbs until there is open sky overhead and a side open at head height (the bottom of an open shaft doesn't count): straight up in legs of up to 16 blocks, pillaring with scaffold blocks and digging what is above, else a staircase dug into the wall. A leg stops the moment the bot is at the surface (it used to pillar on into the open air above the ground). `done`: `reached open sky at y <n> (climbed <k>)`, `data: {pos, y, climbed}`. `partial`: `stopped at y <n> (climbed <k>): lava above at y <m>` (or water), `bedrock above at y <m>`, or `no way up` (` (no scaffold blocks to pillar with)` when it had none).
 - **`range`:** 0–32; default 1, or 2 with a target.
 - **`dig`:** may tunnel through blocks in the way.
 - **`scaffold`:** may place blocks to pillar or bridge, from dirt, cobblestone, cobbled_deepslate, netherrack, andesite, diorite, granite or tuff in the inventory.

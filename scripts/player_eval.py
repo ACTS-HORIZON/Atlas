@@ -5,11 +5,14 @@ Replays reflex views against the live d1 endpoint with the current
 instructions and criteria (body/src/player/prompt.json, the same file the
 body reads), and prints what d1 picks for each view and the overall action
 distribution. Tune the wording in prompt.json, rerun, compare: minutes, no game.
+d1's answer is decoded as the body decodes it: the argmax of the returned
+probabilities over the offered actions (confidence = top, margin = top - second).
 
     python3 scripts/player_eval.py                         # the 10 hand-written views
     python3 scripts/player_eval.py --repeat 5              # ask each view 5 times
     python3 scripts/player_eval.py --logs                  # the last 50 ticks from logs/player-*.jsonl
     python3 scripts/player_eval.py --logs 200 --log-dir logs
+    python3 scripts/player_eval.py --imitation 500         # agreement with the scripts' actions: the pre-fine-tuning baseline
     python3 scripts/player_eval.py --views my_views.json
     python3 scripts/player_eval.py --print-request 0       # the request body for view 0, no network
 
@@ -75,10 +78,12 @@ def load_views(path: Path) -> list[dict]:
     return out
 
 
-def load_logs(log_dir: Path, n: int) -> list[dict]:
-    """The last n ticks across logs/player-*.jsonl (oldest file first). Ticks with no model call are skipped."""
+def load_logs(log_dir: Path, n: int, prefix: str = "player") -> list[dict]:
+    """The last n ticks across logs/<prefix>-*.jsonl (oldest file first). Ticks with no view are skipped.
+    prefix "imitation": the recorder's ticks; the script's action becomes the wanted answer."""
+    imitation = prefix == "imitation"
     lines = []
-    for f in sorted(log_dir.glob("player-*.jsonl")):
+    for f in sorted(log_dir.glob(f"{prefix}-*.jsonl")):
         try:
             lines += f.read_text(encoding="utf-8").splitlines()
         except OSError:
@@ -94,9 +99,11 @@ def load_logs(log_dir: Path, n: int) -> list[dict]:
         intent = None if r.get("mode") == "survive" else (r.get("intent") or r["view"].get("intent"))
         if r.get("target") and intent and "(target:" not in intent:
             intent = f"{intent} (target: {r['target']})"
-        out.append({"name": f"{r.get('ts', '?')} {r.get('mode', '')} chose {r.get('chosen')}", "intent": intent,
-                    "want": [], "logged": r.get("chosen"), "state": r["view"], "offered": r["offered"],
-                    "criteria": r.get("criteria")})
+        if imitation and r.get("chosen") not in r["offered"]:
+            continue
+        name = f"{r.get('ts', '?')} {r.get('source', '')} did {r.get('chosen')}" if imitation else f"{r.get('ts', '?')} {r.get('mode', '')} chose {r.get('chosen')}"
+        out.append({"name": name, "intent": intent, "want": [r["chosen"]] if imitation else [], "logged": r.get("chosen"),
+                    "state": r["view"], "offered": r["offered"], "criteria": r.get("criteria")})
         if len(out) >= n:
             break
     return list(reversed(out))
@@ -129,6 +136,20 @@ def ask(url: str, body: dict, timeout: float) -> tuple[dict | None, float, str |
         return None, (time.perf_counter() - t0) * 1000, str(getattr(e, "reason", e))
 
 
+def decode(ans: dict, offered: list) -> tuple[str | None, float | None, float | None]:
+    """The body's decoding (client.js decode()): the argmax of the probabilities over the offered actions,
+    never the server's `choice` alone; (choice, confidence, margin). No probabilities: the server's choice."""
+    probs = ans.get("probabilities") if isinstance(ans.get("probabilities"), dict) else {}
+    ranked = sorted((o for o in offered if isinstance(probs.get(o), (int, float))), key=lambda o: (-probs[o], offered.index(o)))
+    if ranked:
+        top_p = probs[ranked[0]]
+        second = probs[ranked[1]] if len(ranked) > 1 else 0
+        return ranked[0], round(top_p, 3), round(top_p - second, 3)
+    if ans.get("choice") in offered:
+        return ans["choice"], ans.get("confidence"), None
+    return None, None, None
+
+
 def top(probs: dict | None, k: int = 3) -> str:
     if not isinstance(probs, dict):
         return ""
@@ -142,6 +163,8 @@ def main(argv=None) -> int:
     ap.add_argument("--model", default=os.environ.get("ATLAS_PLAYER_MODEL", "d1-2b"))
     ap.add_argument("--views", type=Path, default=VIEWS_FILE, help="a views file (default: the hand-written set)")
     ap.add_argument("--logs", type=int, nargs="?", const=50, default=None, metavar="N", help="replay the last N logged ticks instead (default 50)")
+    ap.add_argument("--imitation", type=int, nargs="?", const=200, default=None, metavar="N",
+                    help="replay the last N imitation ticks (logs/imitation-*.jsonl, default 200) and report agreement with the script's action")
     ap.add_argument("--log-dir", type=Path, default=ROOT / "logs")
     ap.add_argument("--repeat", type=int, default=1, help="ask each view this many times")
     ap.add_argument("--timeout", type=float, default=2.0, help="seconds per request (offline: no tick budget)")
@@ -149,9 +172,15 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
 
     prompt = load_prompt()
-    views = load_logs(a.log_dir, a.logs) if a.logs is not None else load_views(a.views)
+    if a.imitation is not None:
+        views = load_logs(a.log_dir, a.imitation, "imitation")
+    elif a.logs is not None:
+        views = load_logs(a.log_dir, a.logs)
+    else:
+        views = load_views(a.views)
     if not views:
-        print("no views" + (f" in {a.log_dir}/player-*.jsonl" if a.logs is not None else ""), file=sys.stderr)
+        where = f" in {a.log_dir}/imitation-*.jsonl" if a.imitation is not None else f" in {a.log_dir}/player-*.jsonl" if a.logs is not None else ""
+        print("no views" + where, file=sys.stderr)
         return 1
     if a.print_request is not None:
         v = views[a.print_request]
@@ -164,6 +193,7 @@ def main(argv=None) -> int:
         return 1
 
     overall = collections.Counter()
+    per_action = collections.defaultdict(lambda: [0, 0])  # wanted action -> [asked, agreed]
     lat, errors, scored, hits = [], collections.Counter(), 0, 0
     for i, v in enumerate(views):
         body = build_request(prompt, v["state"], v["offered"], v["intent"], v["criteria"], a.model)
@@ -172,16 +202,19 @@ def main(argv=None) -> int:
             data, ms, err = ask(url, body, a.timeout)
             lat.append(ms)
             ans = ((data or {}).get("answers") or {}).get("action") or {}
-            choice = ans.get("choice")
-            if err or not choice:
+            if err or not ans:
                 errors[err or "no answer"] += 1
                 dist["(error)"] += 1
                 continue
-            if choice not in v["offered"]:
-                choice = f"{choice} (not offered)"
+            choice, conf, margin = decode(ans, v["offered"])
+            if not choice:
+                choice = f"{ans.get('choice')} (not offered)"
             dist[choice] += 1
             overall[choice] += 1
-            last = ans
+            last = {**ans, "_conf": conf, "_margin": margin}
+            if v["want"]:
+                per_action[v["want"][0]][0] += 1
+                per_action[v["want"][0]][1] += choice in v["want"]
         verdict = ""
         if v["want"]:
             n = sum(c for k, c in dist.items() if k in v["want"])
@@ -193,13 +226,19 @@ def main(argv=None) -> int:
         print(f"    intent: {v['intent'] or '(survive)'}")
         print(f"    chose:  {', '.join(f'{k} x{c}' for k, c in dist.most_common())}{verdict}")
         if last:
-            print(f"    probs:  {top(last.get('probabilities'))}" + (f"  (confidence {float(last['confidence']):.2f})" if last.get("confidence") is not None else ""))
+            extra = f"  (top {last['_conf']:.2f}, margin {last['_margin']:.2f})" if last.get("_margin") is not None else ""
+            served = f"  server choice: {last.get('choice')}" if last.get("choice") and last.get("choice") not in dist else ""
+            print(f"    probs:  {top(last.get('probabilities'))}{extra}{served}")
 
     total = sum(overall.values())
     print()
     print(f"distribution over {total} answers: " + ", ".join(f"{k} {100 * c / total:.0f}%" for k, c in overall.most_common()) if total else "no answers")
     if scored:
-        print(f"wanted: {hits}/{scored} ({100 * hits / scored:.0f}%)")
+        label = "agreement with the script (d1 argmax == script action)" if a.imitation is not None else "wanted"
+        print(f"{label}: {hits}/{scored} ({100 * hits / scored:.0f}%)")
+        if a.imitation is not None:
+            for act, (n, ok) in sorted(per_action.items(), key=lambda kv: -kv[1][0]):
+                print(f"    {act:<22} {ok}/{n} ({100 * ok / n:.0f}%)")
     if lat:
         s = sorted(lat)
         print(f"latency p50 {s[len(s) // 2]:.1f} ms p95 {s[min(len(s) - 1, int(0.95 * len(s)))]:.1f} ms" +

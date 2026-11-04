@@ -20,6 +20,7 @@ const { Tap } = require('./tap')
 const { Dashboard, parseBind, verbLibrary, tailFile } = require('./dashboard')
 const { PlayerLoop } = require('./player/loop')
 const { DecisionClient } = require('./player/client')
+const { ImitationRecorder } = require('./player/imitation')
 const { BuildStats } = require('./stats')
 
 class Body {
@@ -44,7 +45,18 @@ class Body {
     this.locator = new Locator() // Locator Bar waypoints, from the tracked_waypoint packet
     // the player loop (CONTRACT.md "Player loop"); off without a decision model URL
     this.player = cfg.playerUrl
-      ? new PlayerLoop({ chooser: new DecisionClient({ url: cfg.playerUrl, model: cfg.playerModel, timeoutMs: cfg.playerTimeoutMs }), logDir: cfg.logDir, hz: cfg.playerHz })
+      ? new PlayerLoop({
+        chooser: new DecisionClient({ url: cfg.playerUrl, model: cfg.playerModel, timeoutMs: cfg.playerTimeoutMs }),
+        logDir: cfg.logDir,
+        hz: cfg.playerHz,
+        surviveHz: cfg.playerSurviveHz,
+        endStreak: cfg.playerEndStreak,
+        endConf: cfg.playerEndConf
+      })
+      : null
+    // the imitation recorder: scripted verbs' ticks as the player would see them (logs/imitation-<date>.jsonl)
+    this.imitation = cfg.imitation !== false
+      ? new ImitationRecorder({ loop: this.player || new PlayerLoop({ chooser: null }), logDir: cfg.logDir, hz: cfg.playerHz || 20 })
       : null
     this.backoff = 5000
     this.timers = []
@@ -96,7 +108,7 @@ class Body {
       if (this.ready() && (this.link.count || this.dash?.count)) { const o = this.obs(); if (o) this.link.broadcast(o) }
     }, this.cfg.obsIntervalMs))
     this.timers.push(setInterval(() => this.stats.report(), 60000))
-    if (this.player) this.timers.push(setInterval(() => { if (this.player.chooser.stats.ticks) console.log(this.player.chooser.stats.report()) }, 60000))
+    if (this.player) this.timers.push(setInterval(() => { if (this.player.chooser.stats.ticks) console.log(this.player.report()) }, 60000))
   }
 
   connect () {
@@ -307,6 +319,10 @@ class Body {
       this.player.watch(act.api, { settled: () => settled, interrupt: reason => { if (this.runner.current && this.runner.current.id === call.id) this.runner.interrupt(act, reason) } })
         .catch(err => console.warn(`[player] override: ${err.message}`))
     }
+    if (this.imitation && act.api && call.verb !== 'play' && this.runner.current && this.runner.current.id === call.id) {
+      this.imitation.record(act.api, { verb: call.verb, args: call.args || {}, finished: running })
+        .catch(err => console.warn(`[imitation] ${err.message}`))
+    }
     const r = await running
     if (r.status === 'done' && call.verb === 'say') await new Promise(resolve => setTimeout(resolve, 50))
     return { ...r, obs: this.obs() }
@@ -399,6 +415,7 @@ class Body {
     await Promise.all([this.link.close(), this.dash?.close()])
     await this.log.close()
     if (this.player) await this.player.close()
+    if (this.imitation) await this.imitation.close()
   }
 }
 

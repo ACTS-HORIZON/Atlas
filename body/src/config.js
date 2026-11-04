@@ -28,6 +28,11 @@ function placesFileFor (host, port) {
   return path.join('data', `known-places.${h}_${port}.json`)
 }
 
+const num = (k, d) => {
+  const v = Number(env(k, String(d)))
+  if (!Number.isFinite(v)) throw new Error(`${k} must be a number`)
+  return v
+}
 const positive = (k, d) => {
   const v = int(k, d)
   if (v < 1) throw new Error(`${k} must be at least 1`)
@@ -63,6 +68,13 @@ module.exports = {
   playerModel: env('ATLAS_PLAYER_MODEL', 'd1-2b'),
   playerTimeoutMs: positive('ATLAS_PLAYER_TIMEOUT_MS', 60),
   playerHz: positive('ATLAS_PLAYER_HZ', 20),
+  // the override's rate while no threat or damage is in view (ATLAS_PLAYER_HZ while one is)
+  playerSurviveHz: positive('ATLAS_PLAYER_SURVIVE_HZ', 5),
+  // stuck/done end a play run only after this many wins in a row, or one tick at this confidence
+  playerEndStreak: positive('ATLAS_PLAYER_END_STREAK', 5),
+  playerEndConf: num('ATLAS_PLAYER_END_CONF', 0.5),
+  // the imitation recorder: scripted verbs' ticks as the player would see them, to logs/imitation-<date>.jsonl (0 = off)
+  imitation: env('ATLAS_IMITATION', '1') !== '0',
   // while a scripted verb runs, the loop ticks with intent "survive" (0 = off)
   playerOverride: env('ATLAS_PLAYER_OVERRIDE', '1') !== '0',
   // goto/give by Locator Bar bearing: hard time cap for one bearing-follow (seconds)

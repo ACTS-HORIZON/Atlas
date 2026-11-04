@@ -115,7 +115,8 @@ test('scripted chooser: up a 20-block shaft by dig_above / place_below_and_jump 
   await loop.close()
   const lines = fs.readFileSync(r.log, 'utf8').trim().split('\n').map(l => JSON.parse(l))
   assert.equal(lines.length, r.ticks)
-  assert.deepEqual(Object.keys(lines[0]).sort(), ['chosen', 'criteria', 'effect', 'intent', 'latency_ms', 'mode', 'offered', 'probabilities', 'target', 'timed_out', 'ts', 'view'])
+  assert.deepEqual(Object.keys(lines[0]).sort(), ['chosen', 'confidence', 'criteria', 'effect', 'intent', 'latency_ms', 'margin', 'mode', 'offered', 'probabilities', 'source', 'target', 'timed_out', 'ts', 'view'])
+  assert.equal(lines[0].source, 'player')
   assert.equal(lines[0].criteria.dig_above, 'break the stone block above you (sky not visible)')
   assert.equal(lines[0].chosen, 'dig_above')
   assert.equal(lines[0].effect, 'dug stone above')
@@ -158,7 +159,7 @@ test('play verb: runs the loop with the intent; detail says how it ended and wha
 test('override: a non-continue answer pauses the verb, ~1 s (20 ticks) of continue_task resumes it, too long paused interrupts', async () => {
   const s = setup(flat(), { pos: [0.5, 10, 0.5] })
   const seq = [...Array(5).fill('continue_task'), 'jump', ...Array(25).fill('continue_task')]
-  const loop = new PlayerLoop({ chooser: new ScriptedChooser(() => seq.shift() || 'continue_task'), hz: 1000 })
+  const loop = new PlayerLoop({ chooser: new ScriptedChooser(() => seq.shift() || 'continue_task'), hz: 1000, surviveHz: 1000 })
   let done = false
   const w = loop.watch(s.api, { settled: () => done, interrupt: () => assert.fail('no interrupt') })
   await new Promise(resolve => setTimeout(resolve, 300))
@@ -171,7 +172,7 @@ test('override: a non-continue answer pauses the verb, ~1 s (20 ticks) of contin
   assert.ok(offered.includes('continue_task') && offered.every(a => SURVIVAL.has(a)))
 
   const t = setup(flat(), { pos: [0.5, 10, 0.5] })
-  const l2 = new PlayerLoop({ chooser: new ScriptedChooser(() => 'wait'), hz: 200, maxPauseMs: 100 })
+  const l2 = new PlayerLoop({ chooser: new ScriptedChooser(() => 'wait'), hz: 200, surviveHz: 200, maxPauseMs: 100 })
   let why = null
   const o2 = await l2.watch(t.api, { settled: () => why !== null, interrupt: r => { why = r } })
   assert.equal(o2.interrupted, true)
@@ -265,13 +266,14 @@ test('systemone contract: the request body, byte for byte, for a known view', ()
 test('systemone: a stub server with the real response shape; the URL is used as is; an answer outside the offered set is wait', async (t) => {
   const got = []
   let answer = 'dig_above'
+  let probs = { dig_above: 0.71, jump: 0.2, wait: 0.09 }
   const server = http.createServer((req, res) => {
     let b = ''
     req.on('data', d => { b += d })
     req.on('end', () => {
       got.push({ method: req.method, url: req.url, body: b, type: req.headers['content-type'] })
       res.setHeader('content-type', 'application/json')
-      res.end(JSON.stringify({ answers: { action: { choice: answer, probabilities: { dig_above: 0.71, jump: 0.2, wait: 0.09 }, confidence: 0.71 } }, usage: { input_tokens: 231, output_tokens: 0 } }))
+      res.end(JSON.stringify({ answers: { action: { choice: answer, probabilities: probs, confidence: 0.71 } }, usage: { input_tokens: 231, output_tokens: 0 } }))
     })
   })
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
@@ -285,7 +287,7 @@ test('systemone: a stub server with the real response shape; the URL is used as 
   assert.deepEqual(c.usage, { input_tokens: 231, output_tokens: 0 })
   assert.deepEqual([got[0].method, got[0].url, got[0].type], ['POST', '/upstream/d1-2b/v1/systemone', 'application/json'])
   assert.equal(got[0].body, JSON.stringify(c.request(KNOWN_VIEW, KNOWN_VIEW.offered)))
-  answer = 'sprint' // not offered
+  answer = 'sprint'; probs = { sprint: 0.9 } // not offered, and no probability for anything offered
   const n = await c.choose(KNOWN_VIEW, KNOWN_VIEW.offered)
   assert.equal(n.choice, 'wait')
   assert.equal(n.error, 'answer not offered: sprint')
@@ -383,4 +385,84 @@ test('scripts/player_eval.py: the 10 hand-written views, and its requests are by
     const want = JSON.stringify(c.request(v.state, v.offered, { intent: v.mode === 'survive' ? null : v.intent, criteria: v.criteria }))
     assert.equal(out, want, `view ${i} (${v.name})`)
   })
+})
+
+// ---- 6b-5: greedy decoding, end-of-run discipline, survive rate
+const { decode } = require('../src/player/client')
+
+test('decoding: the argmax of the probabilities over the offered actions, never the sampled choice; confidence and margin', async () => {
+  assert.deepEqual(decode({ choice: 'stuck', probabilities: { stuck: 0.2, dig_above: 0.45, wait: 0.35 } }, ['dig_above', 'wait', 'stuck']), { choice: 'dig_above', confidence: 0.45, margin: 0.1 })
+  assert.deepEqual(decode({ choice: 'jump', probabilities: { sprint: 0.6, jump: 0.3, wait: 0.1 } }, ['jump', 'wait']), { choice: 'jump', confidence: 0.3, margin: 0.2 }, 'unoffered options are not candidates')
+  assert.deepEqual(decode({ choice: 'wait', confidence: 0.8 }, ['jump', 'wait']), { choice: 'wait', confidence: 0.8, margin: null }, 'no probabilities: the server choice')
+  const c = new DecisionClient({ url: 'x', fetchImpl: async () => ({ ok: true, json: async () => ({ answers: { action: { choice: 'stuck', probabilities: { stuck: 0.2, dig_above: 0.45, wait: 0.35 }, confidence: 0.2 } } }) }) })
+  const r = await c.choose({}, ['dig_above', 'wait', 'stuck'])
+  assert.deepEqual([r.choice, r.confidence, r.margin, r.serverChoice], ['dig_above', 0.45, 0.1, 'stuck'])
+})
+
+test('end of run: a lone stuck at 0.2 is a wait and the run goes on; five in a row end it; one at 0.6 ends it', async () => {
+  const runWith = async seq => {
+    const s = setup(flat(), { pos: [0.5, 10, 0.5] })
+    const q = [...seq]
+    const loop = new PlayerLoop({ chooser: new ScriptedChooser(() => q.shift() || { choice: 'wait' }), hz: 1000 })
+    const r = await loop.run(s.api, { intent: 'x', budgetTicks: 12 })
+    return { r, last: loop.last }
+  }
+  const lone = await runWith([{ choice: 'stuck', confidence: 0.2 }])
+  assert.equal(lone.r.end, 'budget', 'a stuck at 0.2 once: the run continues')
+  assert.equal(lone.r.ticks, 12)
+  const five = await runWith(Array(5).fill({ choice: 'stuck', confidence: 0.2 }))
+  assert.equal(five.r.end, 'stuck')
+  assert.equal(five.r.ticks, 5)
+  assert.match(five.last[0].effect, /^stuck held back \(confidence 0\.20, 1 of 5 in a row\): waited$/)
+  const broken = await runWith([...Array(4).fill({ choice: 'stuck', confidence: 0.2 }), 'jump', { choice: 'stuck', confidence: 0.2 }])
+  assert.equal(broken.r.end, 'budget', 'the streak resets on any other answer')
+  const sure = await runWith([{ choice: 'done', confidence: 0.6 }])
+  assert.equal(sure.r.end, 'done')
+  assert.equal(sure.r.ticks, 1)
+})
+
+test('survive mode: 5 Hz with nothing in view, 20 Hz with a threat; rates reported per mode', async () => {
+  const s = setup(flat(), { pos: [0.5, 10, 0.5] })
+  const loop = new PlayerLoop({ chooser: new ScriptedChooser(() => 'continue_task'), hz: 20, surviveHz: 5 })
+  let done = false
+  const w = loop.watch(s.api, { settled: () => done, interrupt: () => {} })
+  await new Promise(resolve => setTimeout(resolve, 1000))
+  done = true
+  const calm = await w
+  assert.ok(calm.ticks >= 4 && calm.ticks <= 7, `~5 ticks in 1 s, got ${calm.ticks}`)
+  assert.match(loop.rateReport(), /^survive [45]\.\d Hz \(\d+ ticks in [\d.]+ s\)$/)
+  const t = setup(flat(), { pos: [0.5, 10, 0.5], entities: [{ id: 7, type: 'zombie', pos: [0.5, 10, 3.5], hostile: true }] })
+  const l2 = new PlayerLoop({ chooser: new ScriptedChooser(() => 'continue_task'), hz: 20, surviveHz: 5 })
+  done = false
+  const w2 = l2.watch(t.api, { settled: () => done, interrupt: () => {} })
+  await new Promise(resolve => setTimeout(resolve, 1000))
+  done = true
+  const hot = await w2
+  assert.ok(hot.ticks >= 15, `~20 ticks in 1 s with a zombie in view, got ${hot.ticks}`)
+})
+
+test('imitation labels: step, turn, dig_ahead, wait, and an ambiguous diagonal move is skipped', () => {
+  const { ImitationRecorder, intentOf } = require('../src/player/imitation')
+  const w = flat()
+  w.set(0, 10, 2, 'stone') // a block two south, at feet height
+  const s = setup(w, { pos: [0.5, 10, 0.5] })
+  s.motor.dir = 'south'
+  const rec = new ImitationRecorder({ loop: new PlayerLoop({ chooser: null }) })
+  const sess = rec.begin(s.api, 'explore', { direction: 'south', distance: 32 })
+  assert.equal(sess.st.intent, 'explore south 32')
+  s.motor.pos = [0.5, 10, 0.9]
+  assert.equal(rec.sample(sess), null, 'walking inside the block: in progress')
+  s.motor.pos = [0.5, 10, 1.5]
+  assert.equal(rec.sample(sess), 'step')
+  w.set(0, 10, 2, 'air')
+  assert.equal(rec.sample(sess), 'dig_ahead')
+  s.motor.dir = 'east'
+  assert.equal(rec.sample(sess), 'turn_left')
+  assert.equal(rec.sample(sess), 'wait', 'nothing changed, the motor idle')
+  s.motor.pos = [1.5, 10, 2.5]
+  assert.equal(rec.sample(sess), 'skip')
+  assert.deepEqual(sess.counts, { recorded: { step: 1, dig_ahead: 1, turn_left: 1, wait: 1 }, skipped: { 'diagonal or vertical move': 1 } })
+  assert.deepEqual(sess.st.recent.map(r => r.action), ['step', 'dig_ahead', 'turn_left', 'wait'])
+  assert.deepEqual(intentOf('goto', { target: 'Rook' }), { intent: 'go to Rook', target: 'Rook' })
+  assert.deepEqual(intentOf('goto', { target: 'surface' }), { intent: 'get to the surface', target: null })
 })

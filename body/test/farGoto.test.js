@@ -40,7 +40,9 @@ function underground ({ confined = true } = {}) {
 }
 
 /** A bot whose pathfinder is the real A* behind a plugin-like loop. */
-function simBot (w, { neverPlans = false, pos = [0.5, 60, 0.5], items = [] } = {}) {
+// staged: one broken block per sim tick, then the move and its places (as in the game, a dig takes its own
+// ticks); onStep: called after each change (the imitation test samples there).
+function simBot (w, { neverPlans = false, pos = [0.5, 60, 0.5], items = [], staged = false, onStep = null, tickMs = 2 } = {}) {
   const bot = Object.assign(new EventEmitter(), {
     registry,
     version: '26.1',
@@ -76,11 +78,19 @@ function simBot (w, { neverPlans = false, pos = [0.5, 60, 0.5], items = [] } = {
       if (!updated) { updated = true; astar = new AStar(new Move(feet.x, feet.y, feet.z, bot.movements.countScaffoldingItems(), 0), bot.movements, goal, 5000, 40, -1) }
       return // a timed-out path that ran out: the plugin idles here
     }
+    while (staged && path[0].toBreak.length && w.blockAt(new Vec3(path[0].toBreak[0].x, path[0].toBreak[0].y, path[0].toBreak[0].z))?.name === 'air') path[0].toBreak.shift()
+    if (staged && path[0].toBreak.length) {
+      const b = path[0].toBreak.shift()
+      w.set(b.x, b.y, b.z, 'air'); bot.emit('diggingCompleted', w.blockAt(new Vec3(b.x, b.y, b.z)))
+      if (onStep) onStep()
+      return
+    }
     const n = path.shift()
     for (const b of n.toBreak) { w.set(b.x, b.y, b.z, 'air'); bot.emit('diggingCompleted', w.blockAt(new Vec3(b.x, b.y, b.z))) }
     for (const b of n.toPlace) if (!b.useOne) { w.set(b.x + b.dx, b.y + b.dy, b.z + b.dz, 'cobblestone'); bot.placed = (bot.placed || 0) + 1 }
     bot.entity.position = new Vec3(n.x + 0.5, n.y, n.z + 0.5)
-  }, 2)
+    if (onStep) onStep()
+  }, tickMs)
   bot.pathfinder = {
     bestHarvestTool: () => null,
     setMovements: m => { bot.movements = m },
@@ -271,5 +281,47 @@ test('goto surface: lava above stops it, with the reason; so does a bedrock cap;
     const r = await VERBS.goto.run(surfaceAct(w, bot).act, { target: 'surface' })
     assert.equal(r.status, 'partial')
     assert.match(r.detail, /^stopped at y -1 \(climbed 0\): no way up \(no scaffold blocks to pillar with\)/)
+  } finally { bot.stopSim() }
+})
+
+// ---- 6b-5: the imitation recorder on the real goto surface: dig_above / place_below_and_jump, then done
+test('imitation: goto surface up a capped shaft records dig_above and place_below_and_jump in step, then one done', { timeout: 60000 }, async () => {
+  const fs = require('fs'); const os = require('os'); const path = require('path')
+  const { ImitationRecorder } = require('../src/player/imitation')
+  const { PlayerLoop } = require('../src/player/loop')
+  // the 9x9 column, solid stone over a 2-block pocket at y -1..0 up to grass at y 11, open sky above
+  const w = shaftWorld()
+  for (let x = -3; x <= 3; x++) for (let z = -3; z <= 3; z++) for (let y = 12; y <= 75; y++) w.set(x, y, z, 'air')
+  for (let x = -3; x <= 3; x++) for (let z = -3; z <= 3; z++) w.set(x, 11, z, 'grass_block')
+  for (let y = 1; y <= 10; y++) w.set(0, y, 0, 'stone')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-imitation-'))
+  const rec = new ImitationRecorder({ loop: new PlayerLoop({ chooser: null }), logDir: dir })
+  let sess = null
+  const bot = simBot(w, { pos: [0.5, -1, 0.5], items: cobble(), staged: true, tickMs: 60, onStep: () => { if (sess) rec.sample(sess) } })
+  bot.entity.yaw = Math.PI // facing south
+  try {
+    const { act } = surfaceAct(w, bot)
+    sess = rec.begin(act.api, 'goto', { target: 'surface' })
+    const r = await VERBS.goto.run(act, { target: 'surface' })
+    assert.equal(r.status, 'done', r.detail)
+    const counts = rec.end(sess, r)
+    sess = null
+    await rec.close()
+    const lines = fs.readFileSync(fs.readdirSync(dir).map(f => path.join(dir, f))[0], 'utf8').trim().split('\n').map(l => JSON.parse(l))
+    const n = a => lines.filter(l => l.chosen === a).length
+    assert.ok(lines.every(l => l.source === 'script:goto' && l.intent === 'get to the surface' && l.mode === 'play'))
+    assert.deepEqual(Object.keys(lines[0]).sort(), ['chosen', 'confidence', 'criteria', 'effect', 'intent', 'latency_ms', 'margin', 'mode', 'offered', 'probabilities', 'source', 'target', 'timed_out', 'ts', 'view'])
+    assert.equal(lines[0].chosen, 'dig_above', 'first: the stone over the pocket')
+    assert.equal(lines[0].criteria.dig_above, 'break the stone block above you (sky not visible)')
+    assert.equal(lines.at(-1).chosen, 'done')
+    assert.ok(r.data.y <= 12, `stops climbing at the surface (grass top y 11), not 16 up: ${r.detail}`)
+    assert.equal(n('done'), 1)
+    assert.ok(n('dig_above') >= 9 && n('dig_above') <= 11, `the 10 blocks y 1..10 (and the grass): ${JSON.stringify(counts)}`)
+    assert.ok(n('place_below_and_jump') >= 11, `one pillar per block climbed (y -1 to the surface): ${JSON.stringify(counts)}`)
+    assert.ok(n('dig_above') + n('place_below_and_jump') + n('done') >= 0.9 * lines.length, `almost nothing else: ${JSON.stringify(counts)}`)
+    for (const l of lines) assert.ok(l.offered.includes(l.chosen), `${l.chosen} was offered`)
+    const pillar = lines.find(l => l.chosen === 'place_below_and_jump')
+    assert.match(pillar.effect, /^pillared up on cobblestone$/)
+    assert.ok(lines.at(-2).view.recent.length > 0, 'the view carries the script\'s recent actions')
   } finally { bot.stopSim() }
 })

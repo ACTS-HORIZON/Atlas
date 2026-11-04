@@ -494,6 +494,15 @@ class Motor {
   }
 
   /** The override (src/player): goto and dig hold still while paused, and carry on when resumed. */
+  /** Is the bot doing anything (walking a path, digging, building, holding a control)? For the imitation recorder's "idle". */
+  active () {
+    const bot = this.bot; const pf = bot.pathfinder
+    const call = f => { try { return !!(pf && typeof pf[f] === 'function' && pf[f]()) } catch { return false } }
+    if (bot.targetDigBlock || call('isMoving') || call('isMining') || call('isBuilding')) return true
+    const cs = bot.controlState || {}
+    return ['forward', 'back', 'left', 'right', 'jump', 'sprint'].some(c => cs[c])
+  }
+
   pause () { this.paused = true }
   resume () { this.paused = false }
 

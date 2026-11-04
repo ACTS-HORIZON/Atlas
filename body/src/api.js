@@ -316,6 +316,8 @@ class VerbApi {
   }
 
   /** The override: hold the running scripted verb's movement and digging, and let it go again. */
+  /** Is the motor doing anything right now (the imitation recorder's idle test)? */
+  motorActive () { return this.motor.active ? this.motor.active() : false }
   pauseVerb () { if (this.motor.pause) this.motor.pause() }
   resumeVerb () { if (this.motor.resume) this.motor.resume() }
 

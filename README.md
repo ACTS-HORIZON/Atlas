@@ -352,16 +352,26 @@ CONTRACT.md "Player loop": the decision model (d1-2B on Horizon, llama.cpp `/v1/
 - **Each tick:**
   - **View:** the reflex view (≤250 tokens): vitals, held item, the nearest threats with bearing and distance, hazards in the 8 cells around and below, the surroundings sentence, the intent (and where its target is: in sight, on the Locator Bar, or not seen), the last 5 micro-actions with their effect, and `no progress for N ticks` when the block and the surroundings haven't changed.
   - **Offered actions:** only the micro-actions that are possible and not immediately lethal (`body/src/player/offered.js`): no step into lava or a drop over 3, no `step`/`sprint` when the cell ahead at feet or head is solid (that is `dig_ahead`'s job, and the surroundings the model sees are cross-checked), no `dig_below` with air under it, no `eat` without food, `place_below_and_jump` only with a block to place.
-  - **Choice:** one question over the offered set, with a 60 ms budget; `wait` on a timeout or any error. The instructions carry the intent and the rule: "Goal: <intent>. Pick the one action that makes progress toward it now. If no offered action can make progress, answer stuck. Answer done only when the goal is satisfied." Each offered action's criteria line is written for this tick (`describe()` in offered.js): `dig_above`: "break the stone block above you (sky not visible)", `step`: "walk one block south into open air", `turn_left`: "face east (stone)". The wording lives in `body/src/player/prompt.json`.
+  - **Choice:** one question over the offered set, with a 60 ms budget; `wait` on a timeout or any error. The answer is decoded greedily: the offered action with the highest returned probability, never the server's `choice` field alone (when the two differ, the tick log keeps the server's as `server_choice`). Every tick logs `confidence` (the top probability) and `margin` (top minus the runner-up). The instructions carry the intent and the rule: "Goal: <intent>. Pick the one action that makes progress toward it now. If no offered action can make progress, answer stuck. Answer done only when the goal is satisfied." Each offered action's criteria line is written for this tick (`describe()` in offered.js): `dig_above`: "break the stone block above you (sky not visible)", `step`: "walk one block south into open air", `turn_left`: "face east (stone)". The wording lives in `body/src/player/prompt.json`.
   - **Act:** the answer is executed through the filtered API: one step, one block of dig, one jump, one place.
-- **Tick log:** every tick goes to `logs/player-<date>.jsonl` as `{ts, mode, intent, target, view, offered, criteria, chosen, probabilities, latency_ms, timed_out, error?, effect}`. That is the fine-tuning data for d1.
+  - **Ending a run:** `stuck` and `done` end a `play` run only when they win `ATLAS_PLAYER_END_STREAK` (5) ticks in a row, or any one tick at `ATLAS_PLAYER_END_CONF` (0.5) or more. Otherwise that tick is a `wait` (effect `stuck held back (confidence 0.20, 1 of 5 in a row): waited`) and the run goes on.
+- **Tick log:** every tick goes to `logs/player-<date>.jsonl` as `{ts, source, mode, intent, target, view, offered, criteria, chosen, probabilities, confidence, margin, server_choice?, latency_ms, timed_out, error?, effect}` (`source: "player"`). That is the fine-tuning data for d1.
 - **`play {intent, target?, budget?}`** runs the loop with an intent (see docs/verbs.md).
-- **Override:** while a scripted verb runs, the loop ticks with intent "survive". Only `attack`, `block`, `retreat`, `eat`, `jump`, `wait` and `continue_task` are offered.
+- **Imitation recorder:** while a scripted verb that moves or digs runs (`goto`, `explore`, `mine`, `collect`, `dig`, `place`), the body records, at the player's tick rate, the view the player loop would see, labelled with the micro-action the script is effectively doing. It writes these to `logs/imitation-<date>.jsonl` in the player log's schema with `source: "script:<verb>"`. This is the training set for fine-tuning d1. It works without `ATLAS_PLAYER_URL`; `ATLAS_IMITATION=0` turns it off.
+  - **Labels**, from what changed since the last decision point:
+    - the block above the head is gone: `dig_above`; the one under the feet: `dig_below`; one ahead: `dig_ahead`;
+    - feet one block up on a new block: `place_below_and_jump`; a block appeared ahead: `place_ahead`;
+    - feet one block over in the facing direction: `step`;
+    - facing turned 90°, or the script digs or steps to a side: `turn_left` / `turn_right`;
+    - nothing changed and the motor idle: `wait`; the verb ended done: `done`.
+  - **Skipped:** two changes at once, a diagonal or vertical move, a 180° turn, or a label the filter didn't offer at that point. Ticks mid-action (walking inside a block, a dig in progress) wait for the action to finish.
+  - **Intent:** the call's own, in words: `goto {target: "surface"}` is "get to the surface", `goto {target: "Rook"}` "go to Rook", `mine {...}` "mine iron_ore 3".
+- **Override:** while a scripted verb runs, the loop ticks with intent "survive". Only `attack`, `block`, `retreat`, `eat`, `jump`, `wait` and `continue_task` are offered. It ticks at `ATLAS_PLAYER_SURVIVE_HZ` (5) while no threat or damage is in view, and at the full rate while one is (and for a second after damage).
   - Any other answer than `continue_task` pauses the verb (its goto and digging hold still) and acts.
   - 20 ticks (~1 s) of `continue_task` resume it.
   - Still paused after 20 s, the verb ends `interrupted`.
   - `ATLAS_PLAYER_OVERRIDE=0` turns this off.
-- **Latency:** `body.out` gets `[player] <n> ticks in <s> s (<hz> Hz achieved), latency p50 <ms> ms p95 <ms> ms, <k> timeouts, <e> errors (<kind> x<n>, …), <u> answers not offered` every 60 s. Each error is also logged with its kind (`fetch failed: UND_ERR_SOCKET`, `HTTP 503`, …), at most 5 lines a minute.
+- **Latency:** `body.out` gets `[player] <n> ticks in <s> s (play <hz> Hz (<n> ticks in <s> s), survive <hz> Hz (…)), latency p50 <ms> ms p95 <ms> ms, <k> timeouts, <e> errors (<kind> x<n>, …), <u> answers not offered` every 60 s. Each error is also logged with its kind (`fetch failed: UND_ERR_SOCKET`, `HTTP 503`, …), at most 5 lines a minute.
 - **Dashboard:** the Reflexes panel shows the last 10 ticks: mode, chosen action, latency, effect, and what was offered.
 
 | Variable | Default | |
@@ -371,6 +381,10 @@ CONTRACT.md "Player loop": the decision model (d1-2B on Horizon, llama.cpp `/v1/
 | `ATLAS_PLAYER_TIMEOUT_MS` | `60` | per tick; `wait` on timeout |
 | `ATLAS_PLAYER_HZ` | `20` | tick rate |
 | `ATLAS_PLAYER_OVERRIDE` | `1` | the survive loop while scripted verbs run |
+| `ATLAS_PLAYER_SURVIVE_HZ` | `5` | the survive loop's rate while no threat or damage is in view |
+| `ATLAS_PLAYER_END_STREAK` | `5` | `stuck`/`done` end a run after this many wins in a row… |
+| `ATLAS_PLAYER_END_CONF` | `0.5` | …or one tick at this confidence |
+| `ATLAS_IMITATION` | `1` | the imitation recorder (`logs/imitation-<date>.jsonl`); `0` = off |
 
 **Request shape** (verified on Horizon): `POST` to `ATLAS_PLAYER_URL` exactly as given (no suffix is added), `{"model": "d1-2b", "state": "<the reflex view as a JSON string>", "questions": {"action": {"type": "choice", "instructions": "<what to decide>", "criteria": {"<offered action>": "<one-line description>", …}}}}`. The base descriptions are a static map in `body/src/player/prompt.json`, overlaid each tick with what is true now. The answer is read from `answers.action.choice`, with `probabilities` and `confidence` (and `usage`). A choice outside the offered set is `wait`.
 
@@ -384,7 +398,11 @@ python3 scripts/player_eval.py --repeat 5
 python3 scripts/player_eval.py --logs 200
 ```
 
-The default set is 10 hand-written views (`scripts/player_eval_views.json`, each with the answers wanted): a wall ahead with a shaft or stone above (dig_above / place_below_and_jump), open ground with the target north (step, or turn_left when facing east), a zombie adjacent at low health (retreat / attack, also in survive mode), the goal met (done), and sealed in with nothing to place (stuck). `--logs N` replays the last N logged ticks instead; `--print-request I` prints one request body without sending it. The URL is `--url`, else `ATLAS_PLAYER_URL` (environment or `atlas.env`).
+```bash
+python3 scripts/player_eval.py --imitation 500
+```
+
+The default set is 10 hand-written views (`scripts/player_eval_views.json`, each with the answers wanted): a wall ahead with a shaft or stone above (dig_above / place_below_and_jump), open ground with the target north (step, or turn_left when facing east), a zombie adjacent at low health (retreat / attack, also in survive mode), the goal met (done), and sealed in with nothing to place (stuck). `--logs N` replays the last N logged ticks instead. `--imitation N` replays the last N imitation ticks and reports how often d1's argmax agrees with the script's action, overall and per action: the baseline before any fine-tuning. d1's answers are decoded as the body decodes them (argmax over the offered actions). `--print-request I` prints one request body without sending it. The URL is `--url`, else `ATLAS_PLAYER_URL` (environment or `atlas.env`).
 
 ### Lessons
 
